@@ -1,0 +1,534 @@
+# DECISIONS — Registro de decisiones de arquitectura
+
+> Registro ligero tipo ADR (*Architecture Decision Record*).
+>
+> **Por qué existe:** sin un registro explícito, las decisiones importantes se toman
+> implícitamente dentro de un commit cualquiera y nadie recuerda después por qué el
+> sistema es como es. Cada decisión relevante se anota aquí **antes** o **en el
+> momento** de implementarse.
+>
+> **Cómo usarlo**
+> - Toda decisión que afecte a seguridad, modelo de datos, fronteras entre componentes,
+>   trazabilidad o reproducibilidad se registra aquí.
+> - Las decisiones **no se borran**: se marcan como sustituidas y se enlaza la nueva.
+> - Las decisiones pendientes se registran igual, con lo que se sabe y lo que falta.
+>
+> Ver [AI_INSTRUCTIONS.md](../AI_INSTRUCTIONS.md), Regla 14.
+
+**Estados:** ✅ Aceptada · ⏳ Pendiente · ♻️ Sustituida · ❌ Rechazada
+
+---
+
+## Índice
+
+| ADR | Título | Estado |
+|---|---|---|
+| [ADR-001](#adr-001) | Camino único de acceso a datos fiscales | ✅ |
+| [ADR-002](#adr-002) | RLS como mecanismo de aislamiento; restricción de claves privilegiadas | ✅ |
+| [ADR-003](#adr-003) | Separación `reported_*` / `computed_*` | ✅ |
+| [ADR-004](#adr-004) | Temporalidad del Tax Engine: `as_of_date` y versión de regla | ✅ |
+| [ADR-005](#adr-005) | Tax Engine como paquete aislado; ubicación de los tests | ✅ |
+| [ADR-006](#adr-006) | Pipeline de comprobantes con capa anticorrupción | ✅ |
+| [ADR-007](#adr-007) | Documento original íntegro, inmutable y verificable por hash | ✅ |
+| [ADR-008](#adr-008) | Precisión monetaria decimal exacta | ✅ |
+| [ADR-009](#adr-009) | Knowledge Base compartida vs. datos fiscales aislados | ✅ |
+| [ADR-010](#adr-010) | `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma | ✅ |
+| [ADR-011](#adr-011) | Hosting del backend FastAPI | ⏳ |
+| [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ⏳ |
+| [ADR-013](#adr-013) | Proveedor LLM inicial | ⏳ |
+| [ADR-014](#adr-014) | Estrategia de embeddings | ⏳ |
+| [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ⏳ |
+| [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | ⏳ |
+
+---
+---
+
+# DECISIONES ACEPTADAS
+
+<a id="adr-001"></a>
+## ADR-001 — Camino único de acceso a datos fiscales
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+El frontend Next.js puede comunicarse con Supabase directamente **y** con FastAPI. Si
+ambos caminos permitieran leer o modificar datos fiscales, existirían dos superficies
+de seguridad independientes que mantener sincronizadas indefinidamente.
+
+### Decisión
+
+- Los datos fiscales del contribuyente **pasan normalmente por FastAPI**.
+- El frontend puede utilizar Supabase directamente para **autenticación** y, cuando
+  corresponda, **Storage bajo políticas explícitas**.
+- **No** queremos múltiples caminos independientes que permitan modificar datos
+  fiscales sin pasar por nuestra capa de aplicación.
+
+### Consecuencias
+
+- Un único punto donde se aplican validación, autorización, auditoría y trazabilidad.
+- El frontend no implementa lógica de acceso a datos fiscales.
+- Coste asumido: el backend es una dependencia en el camino crítico de toda lectura
+  de datos fiscales, incluidas las triviales.
+
+---
+
+<a id="adr-002"></a>
+## ADR-002 — RLS como mecanismo de aislamiento; restricción de claves privilegiadas
+
+**Estado:** ✅ Aceptada (Día 1) · **Criticidad: máxima**
+
+### Contexto
+
+Row Level Security aplica sobre la identidad del solicitante. Una clave privilegiada
+del tipo `service_role` **anula RLS por completo**. Si el backend accediera siempre con
+ella, el aislamiento multiempresa dejaría de estar garantizado por la base de datos y
+pasaría a depender de que ningún desarrollador olvide nunca una condición de filtrado
+por empresa. Eso no es aislamiento: es disciplina, y la disciplina falla.
+
+### Decisión
+
+- El aislamiento multiempresa mediante **RLS es un requisito crítico**.
+- Las operaciones normales realizadas en contexto de un usuario **deben preservar la
+  identidad del usuario y el aislamiento del tenant**.
+- `service_role` y las claves privilegiadas **no deben convertirse en el mecanismo
+  habitual** para acceder a datos fiscales de usuarios.
+- Las operaciones administrativas y los jobs internos que requieran privilegios
+  elevados se implementarán como **caminos separados**: estrictamente controlados,
+  exclusivamente server-side y auditables.
+
+### Consecuencias
+
+- Dos capas de defensa: autorización en el backend **y** RLS en la base de datos.
+- Los caminos privilegiados serán una excepción explícita, identificable y auditada,
+  no la vía por defecto.
+- El mecanismo técnico concreto de propagación de identidad queda abierto en **ADR-012**.
+
+### Notas
+
+No implementado en Día 1. Documentado para que la Fase 1 lo respete desde el diseño del
+esquema.
+
+---
+
+<a id="adr-003"></a>
+## ADR-003 — Separación `reported_*` / `computed_*`
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+El Dashboard (Fase 3) llega antes que el Tax Engine (Fase 4) y mostrará importes de
+impuestos. Esos importes provendrán del XML: son valores **declarados por el emisor**,
+no cálculos propios. Si ambos conceptos comparten campo, llegado el momento en que el
+Tax Engine discrepe del documento, nadie sabrá qué cifra está mirando.
+
+### Decisión
+
+Distinguir desde el diseño, en base de datos, API, frontend y Tax Engine:
+
+| Prefijo | Significado |
+|---|---|
+| `reported_*` | Valores provenientes del comprobante o documento fuente |
+| `computed_*` | Valores producidos posteriormente por nuestro Tax Engine |
+
+**Nunca deben confundirse ni fusionarse en un mismo campo.**
+
+### Consecuencias
+
+- Mayor número de campos en el modelo de datos. Coste aceptado.
+- La discrepancia entre ambos se convierte en **una señal de producto**, no en un
+  problema a ocultar: detectar que un comprobante declara un impuesto distinto del que
+  corresponde es exactamente lo que el contribuyente necesita saber.
+- El frontend debe indicar visualmente el origen de cada valor mostrado.
+
+---
+
+<a id="adr-004"></a>
+## ADR-004 — Temporalidad del Tax Engine: `as_of_date` y versión de regla
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+Las reglas tributarias tienen vigencia temporal. Un motor que calcule siempre "con las
+reglas actuales" produciría, tras un cambio normativo, un resultado distinto al
+recalcular un período anterior — y el sistema dejaría de ser auditable.
+
+### Decisión
+
+Todo cálculo tributario contempla desde su diseño:
+
+- **`as_of_date`** — fecha que determina qué regla resulta aplicable
+- **versión de la regla aplicada** — persistida junto al resultado
+
+Objetivo explícito: **poder reproducir históricamente cualquier cálculo.**
+
+### Consecuencias
+
+- Toda función de cálculo recibe una fecha de aplicabilidad; ninguna asume "hoy".
+- Los resultados persistidos incluyen la versión de regla utilizada.
+- Los tests incluyen casos de regresión histórica.
+- Introducirlo ahora es gratuito; añadirlo después obligaría a revisar todas las
+  firmas, todos los datos persistidos y todos los tests.
+
+---
+
+<a id="adr-005"></a>
+## ADR-005 — Tax Engine como paquete aislado; ubicación de los tests
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+El principio rector `LLM ≠ Tax Engine` necesita una garantía mecánica, no solo
+documental. Un motor capaz de consultar la base de datos o de invocar un modelo dejaría
+de ser verificable en aislamiento.
+
+Adicionalmente, `tests/` en la raíz se solapaba conceptualmente con los tests propios de
+cada paquete.
+
+### Decisión
+
+`tax-engine/` será conceptualmente un **paquete Python independiente**. Debe buscar ser:
+
+- determinista
+- testeable
+- sin dependencia del LLM
+- sin FastAPI
+- sin acceso directo a base de datos
+- sin I/O innecesario
+
+Sobre los tests: la raíz `tests/` se utilizará principalmente para **integración y
+end-to-end**; los tests unitarios específicos podrán vivir junto al módulo
+correspondiente.
+
+### Consecuencias
+
+- La separación física impone la separación lógica: un paquete que no importa FastAPI
+  ni cliente de base de datos no puede violar sus fronteras por descuido.
+- El backend lee los datos y se los entrega al motor; el motor devuelve un resultado.
+- Si una implementación pareciera exigir romper alguna de estas condiciones, se
+  replantea la implementación — no se rompe la condición.
+
+---
+
+<a id="adr-006"></a>
+## ADR-006 — Pipeline de comprobantes con capa anticorrupción
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+Si el modelo interno replicase la estructura del formato XML externo, cada cambio de
+versión de ese formato rompería nuestro esquema, nuestras consultas y nuestro Tax
+Engine. Además existen distintos tipos de comprobante y distintas versiones del formato.
+
+### Decisión
+
+Se adopta conceptualmente el pipeline:
+
+```
+Raw XML  →  Source DTO  →  Validation  →  Normalizer  →  InternalInvoice
+```
+
+El modelo `InternalInvoice` **no debe limitarse a copiar la estructura del formato XML
+externo**. Debe estar **desacoplado de versiones y proveedores externos**.
+
+### Consecuencias
+
+- El conocimiento del formato externo queda confinado a la capa `Source DTO`.
+- Un cambio en el formato externo impacta en un solo punto del sistema.
+- El modelo interno debe contemplar desde el inicio el tipo de documento y la versión
+  del formato de origen.
+- El mismo pipeline se reutilizará para futuras integraciones (Fase 9), preservando el
+  desacoplamiento del modelo interno.
+
+> **Nota:** los tipos de comprobante y las versiones concretas del formato costarricense
+> **no se enumeran** en esta documentación. Requieren fuente oficial verificada
+> (AI_INSTRUCTIONS.md, Regla 2).
+
+---
+
+<a id="adr-007"></a>
+## ADR-007 — Documento original íntegro, inmutable y verificable por hash
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+El XML de un comprobante electrónico es un documento firmado con valor probatorio. Sin
+conservarlo, la trazabilidad del dato sería una aspiración documental en lugar de una
+propiedad verificable del sistema.
+
+### Decisión
+
+- El XML original **se conserva íntegro e inmutable**.
+- Posteriormente se almacenará también un **hash** que permita comprobar su integridad.
+- El modelo normalizado **siempre** conservará trazabilidad hacia el documento original.
+
+### Consecuencias
+
+- Cualquier dato fiscal puede rastrearse hasta el documento del que proviene.
+- Ante una discrepancia, siempre existe la fuente original para verificar.
+- Es posible re-normalizar documentos ya ingeridos si el normalizador mejora, sin
+  pedir de nuevo los datos al usuario.
+- Coste asumido: almacenamiento de los documentos originales, sujeto al mismo
+  aislamiento por tenant que el resto de datos fiscales.
+
+---
+
+<a id="adr-008"></a>
+## ADR-008 — Precisión monetaria decimal exacta
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+La coma flotante introduce errores de representación inaceptables en cálculos
+tributarios. Además, los comprobantes pueden expresarse en distintas monedas con su
+correspondiente información de conversión.
+
+### Decisión
+
+- Los valores monetarios **nunca** se manejan con coma flotante cuando pueda producir
+  errores de precisión. Se utiliza **representación decimal exacta**.
+- Se conserva la **moneda original** y la **información de conversión disponible**
+  cuando aplique.
+
+### Consecuencias
+
+- Tipos decimales exactos en base de datos, backend y Tax Engine.
+- La frontera con el frontend (serialización) debe preservar la precisión.
+- Las reglas de redondeo pertenecen a la regla tributaria, no al código de utilidad.
+- Decisión barata hoy; una migración dolorosa si se pospone.
+
+---
+
+<a id="adr-009"></a>
+## ADR-009 — Knowledge Base compartida vs. datos fiscales aislados
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+Aplicar uniformemente el patrón de aislamiento por tenant a toda la base de datos
+produciría normativa duplicada por empresa y divergencias entre tenants.
+
+### Decisión
+
+Dos categorías de datos con **políticas de acceso deliberadamente distintas**:
+
+| | Datos fiscales del contribuyente | Knowledge Base |
+|---|---|---|
+| Naturaleza | Privados de cada empresa | Conocimiento compartido del sistema |
+| Aislamiento | Estricto por tenant (RLS) | No aislado por tenant |
+| Escritura | Vía aplicación, auditada | Proceso controlado con verificación de fuente |
+
+### Consecuencias
+
+- La normativa se mantiene una sola vez, coherente para todos los tenants.
+- Las políticas de acceso no pueden diseñarse con una plantilla única.
+- La Knowledge Base **no contiene datos de contribuyentes** bajo ninguna circunstancia.
+
+---
+
+<a id="adr-010"></a>
+## ADR-010 — `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma
+
+**Estado:** ✅ Aceptada (Día 1)
+
+### Contexto
+
+Si `CLAUDE.md` y `AI_INSTRUCTIONS.md` contuvieran ambos el conjunto completo de reglas,
+divergirían con el tiempo y nadie sabría cuál obedecer.
+
+Adicionalmente, el proyecto es de dominio costarricense (español) pero el código debe
+envejecer bien si el equipo crece.
+
+### Decisión
+
+- **`AI_INSTRUCTIONS.md` es la fuente de verdad** de las reglas permanentes de desarrollo.
+- **`CLAUDE.md` es un resumen operativo conciso** que apunta a `AI_INSTRUCTIONS.md`,
+  evitando duplicar innecesariamente todas las reglas. Ante discrepancia, prevalece
+  `AI_INSTRUCTIONS.md`.
+- **Idioma:** documentación explicativa en **español**; código, identificadores, nombres
+  técnicos, variables, funciones, clases, nombres de archivo y mensajes de commit en
+  **inglés**.
+
+### Consecuencias
+
+- Un único lugar que actualizar cuando cambian las reglas.
+- `CLAUDE.md` se mantiene corto por diseño: es contexto operativo, no normativa.
+
+---
+---
+
+# DECISIONES PENDIENTES
+
+<a id="adr-011"></a>
+## ADR-011 — Hosting del backend FastAPI
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1
+
+### Contexto
+
+El hosting del frontend está previsto en Vercel. Para el backend solo se ha definido
+"servicio administrado compatible con FastAPI", sin elección concreta.
+
+### Por qué importa
+
+La elección condiciona la Fase 2. Si el servicio tiene arranques en frío o límites
+estrictos de duración de petición, la ingesta de XML no podrá procesarse de forma
+síncrona y requerirá procesamiento en segundo plano (**ADR-016**).
+
+También condiciona: gestión de secretos, conectividad con Supabase, observabilidad,
+backups y costes.
+
+### Qué falta
+
+Definir criterios de selección (coste, arranque en frío, límites de ejecución, región,
+facilidad de despliegue, observabilidad) y evaluar opciones concretas.
+
+### Situación actual
+
+Abierta. No bloquea la Fase 0.
+
+---
+
+<a id="adr-012"></a>
+## ADR-012 — Mecanismo de propagación de identidad hacia RLS
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1 · **Criticidad: alta**
+
+### Contexto
+
+**ADR-002** establece *qué* debe ocurrir: las operaciones en contexto de usuario
+preservan su identidad y su tenant, y RLS es el mecanismo de aislamiento. Queda abierto
+el *cómo* técnico: de qué forma el backend FastAPI propaga la identidad del usuario
+hasta la conexión con PostgreSQL para que RLS actúe sobre ella.
+
+### Por qué importa
+
+Es la decisión de la que depende que el aislamiento multiempresa sea real. Condiciona
+el diseño del esquema, la capa de repositorio, el pooling de conexiones y el
+rendimiento. Descubrirla en la Fase 4 sería muy costoso.
+
+### Qué falta
+
+Evaluar los mecanismos disponibles, sus implicaciones sobre el pooling de conexiones y
+su comportamiento bajo carga. Definir además cómo se identifican y auditan los caminos
+privilegiados excepcionales previstos en ADR-002.
+
+### Situación actual
+
+Abierta. **Debe cerrarse antes de definir el esquema de base de datos.**
+
+---
+
+<a id="adr-013"></a>
+## ADR-013 — Proveedor LLM inicial
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 6
+
+### Contexto
+
+La arquitectura será agnóstica de proveedor (abstracción con adaptadores para OpenAI,
+Anthropic, Gemini u otros). Queda por decidir cuál se implementa primero.
+
+### Por qué importa
+
+Menos de lo que parece — ese es precisamente el objetivo de la abstracción. Afecta al
+coste, la calidad del tool calling y la latencia, pero no debe afectar a la arquitectura.
+
+### Qué falta
+
+Evaluar en el momento de la Fase 6, con criterios de calidad de tool calling, coste,
+latencia y disponibilidad.
+
+### Situación actual
+
+Abierta. No bloquea ninguna fase anterior a la 6. **Ningún SDK de proveedor se importa
+directamente en el código del agente** (ARCHITECTURE.md §10.4).
+
+---
+
+<a id="adr-014"></a>
+## ADR-014 — Estrategia de embeddings
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 5
+
+### Contexto
+
+La Knowledge Base utilizará pgvector para búsqueda semántica sobre normativa. Queda por
+decidir el modelo de embeddings, su dimensionalidad y la estrategia de fragmentación.
+
+### Por qué importa
+
+Cambiar de modelo de embeddings obliga a reindexar todo el corpus. La dimensionalidad
+condiciona el esquema. La estrategia de fragmentación determina la calidad de la
+recuperación y la precisión de las citas.
+
+### Qué falta
+
+Definir modelo, dimensionalidad, estrategia de fragmentación y cómo se preservan los
+metadatos obligatorios (fuente, artículo, fecha, vigencia, versión) en cada fragmento.
+
+### Situación actual
+
+Abierta. No bloquea fases anteriores a la 5.
+
+---
+
+<a id="adr-015"></a>
+## ADR-015 — Modelo de permisos usuario–empresa
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1
+
+### Contexto
+
+Un usuario puede tener acceso a una o varias empresas. Queda por definir el modelo de
+relación y si existirán roles diferenciados dentro de una empresa (por ejemplo,
+propietario frente a contador externo con acceso de solo lectura).
+
+### Por qué importa
+
+El usuario secundario del producto — contadores y despachos que gestionan múltiples
+clientes — hace que el caso multiempresa por usuario sea real desde el principio, no
+una hipótesis futura. Condiciona el esquema, RLS y la interfaz.
+
+### Qué falta
+
+Definir el modelo de relación, los roles y su interacción con las políticas RLS.
+
+### Situación actual
+
+Abierta. **Debe cerrarse junto con ADR-012**, antes de definir el esquema.
+
+---
+
+<a id="adr-016"></a>
+## ADR-016 — Estrategia de procesamiento en segundo plano
+
+**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 2
+
+### Contexto
+
+La ingesta de XML (parseo, validación, normalización, almacenamiento, hash) puede no ser
+apropiada para ejecución síncrona dentro de una petición HTTP, especialmente en cargas
+de múltiples documentos.
+
+### Por qué importa
+
+Depende directamente de **ADR-011**: los límites del hosting elegido determinan si el
+procesamiento síncrono es viable. Afecta a la experiencia de carga, al manejo de errores
+parciales y a la idempotencia de la reingesta.
+
+### Qué falta
+
+Decidir si la ingesta es síncrona, asíncrona o mixta, y qué mecanismo se utiliza.
+Evaluar tras cerrar ADR-011.
+
+### Situación actual
+
+Abierta. No bloquea la Fase 1.

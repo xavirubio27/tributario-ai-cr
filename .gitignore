@@ -1,0 +1,134 @@
+# =============================================================================
+# .gitignore — Asistente Tributario IA (Costa Rica)
+# =============================================================================
+# Este proyecto procesa informacion tributaria sensible.
+# Regla permanente: NUNCA se versiona un secreto, una credencial ni un
+# documento fiscal real de un contribuyente.
+# Ver AI_INSTRUCTIONS.md (Regla 6).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Secretos y variables de entorno
+# -----------------------------------------------------------------------------
+.env
+.env.*
+*.env
+.envrc
+
+# Excepcion deliberada: .env.example SI debe versionarse.
+# Es una plantilla de nombres de variables, nunca de valores reales.
+# La negacion se declara despues de los patrones que la capturarian.
+!.env.example
+!**/.env.example
+
+# Claves, certificados y material criptografico
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+secrets/
+credentials/
+service-account*.json
+
+# -----------------------------------------------------------------------------
+# Datos fiscales reales (NUNCA deben entrar al repositorio)
+# -----------------------------------------------------------------------------
+# Los comprobantes electronicos reales contienen datos de contribuyentes.
+# Solo se versionan fixtures anonimizados y explicitamente marcados como tales.
+/data/
+/samples/real/
+*.real.xml
+
+# -----------------------------------------------------------------------------
+# Node.js / Frontend
+# -----------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# -----------------------------------------------------------------------------
+# Python / Backend / Tax Engine
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.egg-info/
+.eggs/
+.tox/
+.nox/
+
+# -----------------------------------------------------------------------------
+# Supabase (local)
+# -----------------------------------------------------------------------------
+.supabase/
+supabase/.branches/
+supabase/.temp/
+
+# -----------------------------------------------------------------------------
+# Sistema operativo
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Editores e IDE (configuracion local no compartida)
+# -----------------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# -----------------------------------------------------------------------------
+# Herramientas de agentes / trabajo local
+# -----------------------------------------------------------------------------
+.claude/settings.local.json
+scratch/
+tmp/
+*.local.md
+
+# -----------------------------------------------------------------------------
+# Logs y artefactos temporales
+# -----------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.bak
+*.tmp
