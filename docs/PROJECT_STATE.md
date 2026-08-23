@@ -21,14 +21,19 @@ Roadmap: **Fase 1 — Infrastructure / Auth / Company** (ver [ROADMAP.md](../ROA
 ## Last Stable Commit
 
 ```
-4a80ca5 — docs: establish project foundation   (2026-08-22)
+85c3556 — feat: establish secure tenancy and Next.js foundation   (2026-08-23)
 ```
 
-Único commit del repositorio, **ya publicado en `origin/main`**.
+Publicado en `origin/main`. `HEAD == origin/main`.
 
-**Working tree:** 28 entradas sin commit (`git status --porcelain`; los directorios sin
-seguimiento cuentan como una). Todo el Día 2 —Supabase, migraciones, tests, frontend y
-documentación— está **pendiente de revisión y commit**.
+**Working tree: limpio.** Todo el trabajo del Día 2 —Supabase, migraciones, tests,
+frontend y documentación— está commiteado y publicado.
+
+Historial:
+```
+85c3556  feat: establish secure tenancy and Next.js foundation   (2026-08-23)
+4a80ca5  docs: establish project foundation                      (2026-08-22)
+```
 
 ## Completed — implementado y verificado
 
