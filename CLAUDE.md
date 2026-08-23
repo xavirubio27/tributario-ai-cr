@@ -2,6 +2,9 @@
 
 Contexto operativo para Claude Code en este repositorio.
 
+> **Empieza toda sesión leyendo [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)** — es la
+> fotografía del estado actual y el punto de entrada del proyecto.
+>
 > **Las reglas completas del proyecto están en [AI_INSTRUCTIONS.md](AI_INSTRUCTIONS.md).**
 > Este documento es un resumen operativo; ante cualquier discrepancia, prevalece
 > `AI_INSTRUCTIONS.md`.
@@ -80,6 +83,8 @@ Hosting del backend: **decisión pendiente** (ADR-011).
 10. **Un cambio, un propósito** — nada de refactors masivos ni abstracciones prematuras.
 11. **Ciclo:** arquitectura → implementación → tests → ejecución → corrección → documentación.
 12. **Avisar antes** de cualquier decisión arquitectónica que pueda comprometer el proyecto.
+13. **Revisar el diff completo** antes de aplicar configuración a un entorno remoto
+    (`supabase config push` empuja el archivo entero y no tiene `--dry-run`).
 
 ### Convenciones
 
@@ -121,17 +126,26 @@ implementación.
 
 ## Estado del repositorio
 
-**Day 1 — Project Foundation.**
+**Day 2 — Infrastructure & Tenancy.**
 
-Solo existe documentación y estructura de directorios (`frontend/`, `backend/`,
-`tax-engine/`, `tests/`, `docs/` — todos vacíos, con `.gitkeep`).
+| Componente | Estado |
+|---|---|
+| Documentación y reglas | ✅ |
+| Esquema de tenancy (`companies`, `company_memberships`) | ✅ migraciones aplicadas |
+| Row Level Security | ✅ activa, aislamiento probado (11/11 tests) |
+| **Next.js foundation** | ✅ **implementada** |
+| **Auth** | ⬜ **no implementada** |
+| **Company UI** | ⬜ **no implementada** |
+| Backend FastAPI · Tax Engine · Parser XML · KB/RAG · AI Agent · CI | ⬜ no iniciados |
 
-**No hay:** dependencias instaladas · aplicaciones · esquema SQL · migraciones ·
-parser XML · autenticación · Tax Engine · Knowledge Base · tools · AI Agent ·
-conexión a Supabase · conexión a proveedores de IA · CI.
+**Supabase:** proyecto de **DESARROLLO** conectado. Migraciones en `supabase/migrations/`,
+aplicadas con `supabase db push`. Config como código con `supabase config push`
+(ver Regla 15). Entorno local con Docker diferido (ADR-018).
+
+**Frontend:** Next.js 16 (App Router, `src/`, Tailwind 4, TypeScript). Clientes Supabase
+preparados en `src/lib/supabase/{client,server}.ts`. Sesión y `proxy.ts` pendientes.
 
 Verifica antes de asumir que algo existe.
 
-**Siguiente hito:** que un XML real de comprobante electrónico costarricense entre al
-sistema, se normalice a `InternalInvoice`, se almacene en PostgreSQL aislado por
-empresa y se visualice en la interfaz.
+**Siguiente hito:** signup / login / sesión, y creación y listado de empresa desde la
+interfaz. Después, la ingesta de XML.

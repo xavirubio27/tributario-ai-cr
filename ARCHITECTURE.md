@@ -528,12 +528,17 @@ asume conscientemente el acoplamiento.
 
 ```
 tributario-ai-cr/
-├── frontend/      Next.js · React · TypeScript        (vacío en Día 1)
-├── backend/       Python · FastAPI                    (vacío en Día 1)
-├── tax-engine/    Paquete Python independiente        (vacío en Día 1)
-├── tests/         Integración y end-to-end            (vacío en Día 1)
+├── supabase/      Migraciones SQL · config.toml
+├── frontend/      Next.js · React · TypeScript · Tailwind
+├── backend/       Python · FastAPI                    (vacío)
+├── tax-engine/    Paquete Python independiente        (vacío)
+├── tests/         Integración y end-to-end
 └── docs/          Decisiones y glosario
 ```
+
+**Sobre `supabase/`:** es la convención de la CLI. Contiene las migraciones —única vía
+admitida para cambios de esquema (ADR-018)— y `config.toml`, que se aplica al proyecto
+remoto con `supabase config push`.
 
 **Sobre el nombre del paquete:** la carpeta conceptual puede llamarse `tax-engine/`,
 pero cuando se cree el paquete Python importable deberá utilizar un nombre válido como

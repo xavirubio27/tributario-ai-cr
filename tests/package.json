@@ -1,0 +1,14 @@
+{
+  "name": "tributario-ai-cr-tests",
+  "private": true,
+  "type": "module",
+  "description": "Integration and end-to-end tests (ADR-005)",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "2.112.3",
+    "dotenv": "17.4.2",
+    "vitest": "4.1.11"
+  }
+}

@@ -1,8 +1,8 @@
 # Asistente Tributario IA — Costa Rica
 
-> **Project Status: Day 1 — Project Foundation**
-> Repositorio en fase de fundación. No existe todavía código de producto: ni aplicaciones,
-> ni esquema de base de datos, ni parser, ni Tax Engine, ni agente de IA.
+> **Project Status: Day 2 — Infrastructure & Tenancy**
+> Existe el modelo de tenancy con RLS verificada y la base de la aplicación Next.js.
+> Todavía no hay autenticación, ni UI de empresa, ni parser, ni Tax Engine, ni agente de IA.
 
 Capa de inteligencia tributaria construida sobre los datos fiscales reales de un
 contribuyente costarricense.
@@ -149,17 +149,19 @@ Lo que existe hoy es exclusivamente documentación y estructura de directorios.
 |---|---|
 | Documentación de producto y arquitectura | ✅ Creada |
 | Reglas para agentes de programación | ✅ Creadas |
-| Estructura de directorios | ✅ Creada (vacía) |
-| Frontend | ⬜ No iniciado |
-| Backend | ⬜ No iniciado |
+| Estructura de directorios | ✅ Creada |
+| Esquema de base de datos (tenancy) | ✅ Migraciones aplicadas |
+| Row Level Security | ✅ Activa y verificada con tests |
+| Next.js foundation | ✅ Implementada |
+| Autenticación | ⬜ No implementada |
+| UI de empresa | ⬜ No implementada |
+| Backend FastAPI | ⬜ No iniciado |
 | Tax Engine | ⬜ No iniciado |
-| Esquema de base de datos | ⬜ No iniciado |
 | Parser XML | ⬜ No iniciado |
-| Autenticación | ⬜ No iniciada |
 | Knowledge Base / RAG | ⬜ No iniciada |
 | AI Agent | ⬜ No iniciado |
 
-**No hay dependencias instaladas. No hay servicios conectados. No hay secretos.**
+**No hay secretos en el repositorio.** Supabase (proyecto de DESARROLLO) está conectado; ver [ADR-018](docs/DECISIONS.md#adr-018).
 
 ### Primer objetivo técnico
 
@@ -194,13 +196,15 @@ tributario-ai-cr/
 ├── docs/
 │   ├── DECISIONS.md       Registro de decisiones de arquitectura
 │   └── GLOSSARY.md        Vocabulario compartido del proyecto
-├── frontend/              Next.js · React · TypeScript   (vacío)
+├── supabase/              Migraciones SQL y config.toml
+├── frontend/              Next.js · React · TypeScript · Tailwind
 ├── backend/               Python · FastAPI                (vacío)
 ├── tax-engine/            Paquete Python independiente    (vacío)
-└── tests/                 Integración y end-to-end        (vacío)
+└── tests/                 Integración y end-to-end
 ```
 
-Los directorios contienen `.gitkeep` porque Git no versiona directorios vacíos.
+Los directorios aún vacíos contienen `.gitkeep` porque Git no versiona directorios vacíos.
+El paquete Python importable de `tax-engine/` deberá llamarse `tax_engine`.
 
 **Convención de idioma:** la documentación explicativa se escribe en español; el
 código, los identificadores, los nombres técnicos y los mensajes de commit se

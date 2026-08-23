@@ -172,6 +172,68 @@ trazabilidad o a la reproducibilidad de los cálculos.
 
 Las decisiones aceptadas se registran en [docs/DECISIONS.md](docs/DECISIONS.md).
 
+### Regla 15 — Revisar el diff completo antes de aplicar configuración remota
+
+`supabase config push` envía **todo** `config.toml`, no solo las líneas editadas. Los
+valores por defecto de la CLI están pensados para desarrollo local y pueden degradar
+ajustes del proyecto remoto sin que nadie lo pida.
+
+**Nunca ejecutar `config push` contra staging o production sin revisar previamente el
+diff completo de configuración.**
+
+- El comando **no tiene `--dry-run`**: imprime el diff y aplica en el mismo acto.
+- Antes de ejecutarlo, comprobar que local y remoto están sincronizados (un `config
+  push` previo que devuelva `up_to_date` en todos los servicios). Con esa línea base,
+  el diff remoto solo puede ser el delta de los cambios locales.
+- Tras aplicar, contrastar el diff impreso contra los cambios previstos. Si aparece
+  algo no previsto, **detenerse y avisar**.
+- El mismo criterio vale para cualquier operación que sincronice configuración
+  completa hacia un entorno remoto.
+
+Precedente que originó la regla: un `config push` de desarrollo desactivó MFA TOTP y
+redujo `otp_length` sin intención, porque el archivo local arrastraba los valores por
+defecto de la CLI.
+
+### Regla 16 — Continuidad entre sesiones
+
+El proyecto no depende del historial de conversación. El estado vive en el repositorio.
+
+**Al comenzar toda sesión de desarrollo:**
+
+1. Leer [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
+2. Leer este documento (`AI_INSTRUCTIONS.md`).
+3. Consultar [docs/DECISIONS.md](docs/DECISIONS.md) cuando sea relevante.
+4. Ejecutar `git status`.
+5. Revisar el último commit antes de modificar nada.
+
+**Al cerrar cada checkpoint:**
+
+- Actualizar `docs/PROJECT_STATE.md`.
+
+**Al cerrar cada día de construcción:**
+
+- Actualizar `docs/PROJECT_STATE.md`.
+- Añadir la entrada correspondiente a `docs/SESSION_LOG.md`.
+- Verificar que la documentación concuerda con Git, tests y migraciones.
+- Hacer commit **solo tras revisión**.
+
+#### Jerarquía de verdad
+
+```
+1. Git + tests + migraciones     ← estado técnico verificado
+2. docs/DECISIONS.md
+3. docs/PROJECT_STATE.md
+4. docs/SESSION_LOG.md
+5. contexto conversacional        ← el menos fiable
+```
+
+**Si la documentación contradice el estado técnico verificado, gana el estado técnico
+verificado.** En ese caso, corregir la documentación — nunca al revés, y nunca en
+silencio.
+
+Antes de afirmar que algo existe o funciona, comprobarlo. Un documento describe lo que
+era cierto cuando se escribió.
+
 ---
 
 ## 2. Fronteras entre componentes

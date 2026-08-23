@@ -15,7 +15,7 @@
 >
 > Ver [AI_INSTRUCTIONS.md](../AI_INSTRUCTIONS.md), Regla 14.
 
-**Estados:** ✅ Aceptada · ⏳ Pendiente · ♻️ Sustituida · ❌ Rechazada
+**Estados:** ✅ Aceptada · ◐ Parcialmente resuelta · ⏳ Pendiente · ♻️ Sustituida · ❌ Rechazada
 
 ---
 
@@ -34,11 +34,14 @@
 | [ADR-009](#adr-009) | Knowledge Base compartida vs. datos fiscales aislados | ✅ |
 | [ADR-010](#adr-010) | `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma | ✅ |
 | [ADR-011](#adr-011) | Hosting del backend FastAPI | ⏳ |
-| [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ⏳ |
+| [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ◐ |
 | [ADR-013](#adr-013) | Proveedor LLM inicial | ⏳ |
 | [ADR-014](#adr-014) | Estrategia de embeddings | ⏳ |
-| [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ⏳ |
+| [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ◐ |
 | [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | ⏳ |
+| [ADR-017](#adr-017) | Frontera entre datos de identidad/tenancy y datos fiscales | ✅ |
+| [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
+| [ADR-019](#adr-019) | Confirmación de email desactivada solo en desarrollo | ✅ |
 
 ---
 ---
@@ -399,7 +402,19 @@ Abierta. No bloquea la Fase 0.
 <a id="adr-012"></a>
 ## ADR-012 — Mecanismo de propagación de identidad hacia RLS
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1 · **Criticidad: alta**
+**Estado:** ◐ Parcialmente resuelta (Día 2) · **Resto a cerrar en:** fase de FastAPI · **Criticidad: alta**
+
+### Resuelto (Día 2)
+
+Para el **acceso directo del frontend a Supabase** en esta fase: el cliente propaga el
+JWT del usuario mediante cookies gestionadas por `@supabase/ssr`, y PostgreSQL evalúa
+las políticas sobre `auth.uid()` de forma nativa. No interviene `service_role`.
+
+### Sigue abierto
+
+La propagación del JWT **hacia FastAPI** y desde FastAPI hasta la conexión de
+PostgreSQL. Es la parte crítica y no se ha abordado. Sigue condicionando el diseño del
+acceso a datos fiscales.
 
 ### Contexto
 
@@ -483,7 +498,18 @@ Abierta. No bloquea fases anteriores a la 5.
 <a id="adr-015"></a>
 ## ADR-015 — Modelo de permisos usuario–empresa
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1
+**Estado:** ◐ Parcialmente resuelta (Día 2)
+
+### Resuelto (Día 2)
+
+Relación N:M mediante `public.company_memberships` (`user_id`, `company_id`, `role`),
+con un único rol `owner`. `role` se modela como `text` + `CHECK` en lugar de `enum`
+para que ampliarlo sea DDL corriente.
+
+### Sigue abierto
+
+Roles adicionales, permisos diferenciados por rol y el caso del contador externo con
+acceso de solo lectura.
 
 ### Contexto
 
@@ -532,3 +558,138 @@ Evaluar tras cerrar ADR-011.
 ### Situación actual
 
 Abierta. No bloquea la Fase 1.
+
+---
+---
+
+# DECISIONES ACEPTADAS — DÍA 2
+
+<a id="adr-017"></a>
+## ADR-017 — Frontera entre datos de identidad/tenancy y datos fiscales
+
+**Estado:** ✅ Aceptada (Día 2) · **Relacionada con:** [ADR-001](#adr-001)
+
+### Contexto
+
+ADR-001 establece que los datos fiscales del contribuyente pasan normalmente por
+FastAPI, y que el frontend usa Supabase directamente solo para autenticación y Storage.
+
+El Día 2 introduce `companies` y `company_memberships`, escritas y leídas por el
+frontend directamente contra Supabase, sin FastAPI. Antes de implementarlo hay que
+determinar si eso contradice ADR-001 — es decir, si estas tablas son "datos fiscales".
+
+### Decisión
+
+**No lo son.** Se establece la frontera:
+
+| Categoría | Tablas | Camino de acceso |
+|---|---|---|
+| **Identidad, tenancy y autorización** | `companies`, `company_memberships` | Supabase directo bajo RLS |
+| **Datos fiscales del contribuyente** | `invoices`, `tax_profiles`, `tax_calculations`, … | **ADR-001**: capa de aplicación / FastAPI |
+
+`companies` y `company_memberships` responden a *quién es el usuario y a qué empresa
+pertenece*. No contienen hechos fiscales, no alimentan al Tax Engine y no requieren
+trazabilidad hacia un documento origen.
+
+Por eso, en esta fase, pueden utilizar Supabase directamente siguiendo RLS.
+
+### Consecuencias
+
+- El Día 2 no necesita FastAPI y no incumple ADR-001.
+- Las tablas de esta categoría **no deben** acumular campos fiscales por conveniencia.
+  Un identificador tributario o un régimen fiscal pertenecen al perfil fiscal, no a
+  `companies`. Por eso el esquema del Día 2 los excluye deliberadamente.
+- Cuando aparezca la primera tabla fiscal, ADR-001 vuelve a aplicar íntegramente.
+- El criterio de clasificación ante una tabla nueva: *¿describe la identidad del
+  usuario/empresa, o describe un hecho económico del contribuyente?*
+
+### Notas
+
+Esta frontera es interpretable, y por eso se registra de forma explícita en lugar de
+darse por supuesta ([AI_INSTRUCTIONS.md](../AI_INSTRUCTIONS.md), Regla 14).
+
+---
+
+<a id="adr-018"></a>
+## ADR-018 — Proyecto Supabase alojado de desarrollo; entorno local diferido
+
+**Estado:** ✅ Aceptada (Día 2)
+
+### Contexto
+
+El stack local de Supabase (`supabase start`) requiere un runtime de contenedores. La
+inspección del entorno el Día 2 confirmó que **no hay Docker, Colima, Podman ni
+OrbStack instalados**.
+
+Instalar uno era posible, pero se prefirió no añadir esa dependencia todavía.
+
+### Decisión
+
+- Se utiliza un **proyecto Supabase alojado dedicado exclusivamente a desarrollo**.
+- Ese proyecto es **DEVELOPMENT y nunca producción**.
+- **No** se instala Docker ni se levanta Supabase local por ahora.
+- **Todas las migraciones viven en el repositorio** (`supabase/migrations/`) y se
+  aplican con la CLI: `supabase login` → `supabase link` → `supabase db push`.
+- **No se realizan cambios de esquema manualmente** mediante el Table Editor si pueden
+  expresarse como migración.
+- La configuración del proyecto se gestiona como código en `supabase/config.toml` y se
+  aplica con `supabase config push`.
+
+### Consecuencias
+
+- Se evita instalar un runtime de contenedores hoy.
+- **Coste asumido:** no existe `supabase db reset`, de modo que los tests de
+  aislamiento no parten de estado limpio. Deben usar identificadores únicos por
+  ejecución, y los usuarios de prueba se acumulan en el proyecto de desarrollo.
+- Los tests dependen de red.
+
+### Revisión pendiente
+
+**El entorno local reproducible con Docker queda diferido y deberá reconsiderarse
+cuando crezca la suite de integración.** El punto de disparo natural es el momento en
+que la acumulación de estado en el proyecto de desarrollo empiece a producir tests
+frágiles — algo previsible al llegar la ingesta de comprobantes (Fase 2).
+
+---
+
+<a id="adr-019"></a>
+## ADR-019 — Confirmación de email desactivada solo en desarrollo
+
+**Estado:** ✅ Aceptada (Día 2) · **Ámbito: exclusivamente desarrollo**
+
+### Contexto
+
+Con la confirmación de email activa, un usuario recién registrado no puede iniciar
+sesión hasta confirmar. Eso impide probar el flujo signup → login de inmediato y hace
+inejecutables los tests automatizados de aislamiento RLS.
+
+### Decisión
+
+En el proyecto de **desarrollo**, `supabase/config.toml`:
+
+```toml
+[auth.email]
+enable_confirmations = false
+```
+
+Queda registrado como **configuración de desarrollo**, anotado en el propio
+`config.toml` y aplicable mediante `supabase config push`.
+
+### Lo que esta decisión NO es
+
+**No constituye la decisión para producción.** La política de confirmación de email en
+producción es una decisión aparte, todavía **no tomada**, que deberá evaluarse junto
+con el proveedor SMTP, la recuperación de contraseña y la política de verificación de
+identidad.
+
+### Consecuencias
+
+- El flujo signup → login funciona de inmediato en desarrollo.
+- Los tests de aislamiento son ejecutables sin intervención manual.
+- Queda una decisión abierta para producción, que **no debe resolverse por omisión**
+  heredando la configuración de desarrollo.
+
+### Ajuste relacionado
+
+En la misma configuración se elevó `minimum_password_length` de 6 a 8: el sistema
+procesará información tributaria sensible.

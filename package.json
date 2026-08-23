@@ -1,0 +1,16 @@
+{
+  "name": "tributario-ai-cr",
+  "private": true,
+  "description": "Asistente Tributario IA (Costa Rica) - repository tooling",
+  "scripts": {
+    "db:login": "supabase login",
+    "db:link": "supabase link",
+    "db:push": "supabase db push",
+    "db:diff": "supabase db diff --linked",
+    "db:lint": "supabase db lint --linked",
+    "config:push": "supabase config push"
+  },
+  "devDependencies": {
+    "supabase": "2.115.0"
+  }
+}
