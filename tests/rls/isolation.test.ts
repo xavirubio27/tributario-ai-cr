@@ -20,8 +20,9 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from 'dotenv'
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { type SupabaseClient } from '@supabase/supabase-js'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { assertOk, newClient as makeClient, requireId, signUpOrFail } from '../support/harness'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 config({ path: path.resolve(here, '..', '.env.local') })
@@ -38,13 +39,7 @@ if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
 
 /** Cliente para ejecucion en Node: sin persistencia ni refresco automatico. */
 function newClient(): SupabaseClient {
-  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  })
+  return makeClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
 }
 
 const runId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -59,28 +54,26 @@ let clientAnon: SupabaseClient
 let userAId = ''
 let userBId = ''
 let companyAId = ''
-let membershipAId = ''
+let companyA: { id: string; name: string; created_by: string } | null = null
 
 beforeAll(async () => {
   clientAnon = newClient()
 
   clientA = newClient()
-  const { data: a, error: errA } = await clientA.auth.signUp(USER_A)
-  if (errA) throw new Error(`signUp User A fallo: ${errA.message}`)
-  if (!a.session) {
-    throw new Error(
-      'signUp User A no devolvio sesion. Revisa que enable_confirmations = false (ADR-019).',
-    )
-  }
-  userAId = a.user!.id
+  userAId = await signUpOrFail(clientA, USER_A, 'User A')
 
   clientB = newClient()
-  const { data: b, error: errB } = await clientB.auth.signUp(USER_B)
-  if (errB) throw new Error(`signUp User B fallo: ${errB.message}`)
-  if (!b.session) throw new Error('signUp User B no devolvio sesion.')
-  userBId = b.user!.id
+  userBId = await signUpOrFail(clientB, USER_B, 'User B')
 
   expect(userAId).not.toBe(userBId)
+
+  // PRERREQUISITO COMPARTIDO (auditoría Codex): la creación de Company A la
+  // necesitan 5 casos. Vive en el hook para que un fallo aquí IMPIDA ejecutarlos
+  // en lugar de propagar un identificador vacío. El caso 1 solo lo verifica.
+  const created = await clientA.rpc('create_company', { p_name: `Company A ${runId}` })
+  assertOk(created.error, 'create_company de User A (prerrequisito)')
+  companyA = created.data as { id: string; name: string; created_by: string }
+  companyAId = requireId(companyA?.id, 'create_company de User A (prerrequisito)')
 }, 60_000)
 
 describe('Checkpoint C — aislamiento RLS entre tenants', () => {
@@ -97,15 +90,12 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
     expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBeUndefined()
   })
 
-  it('1. User A crea Company A mediante create_company()', async () => {
-    const { data, error } = await clientA.rpc('create_company', {
-      p_name: `Company A ${runId}`,
-    })
-    expect(error).toBeNull()
-    expect(data).toBeTruthy()
-    companyAId = (data as any).id
+  it('1. User A crea Company A mediante create_company()', () => {
+    // La creación ocurre en beforeAll; aquí se verifica su resultado.
+    expect(companyA).not.toBeNull()
     expect(companyAId).toBeTruthy()
-    expect((data as any).created_by).toBe(userAId)
+    expect(companyA!.name).toBe(`Company A ${runId}`)
+    expect(companyA!.created_by).toBe(userAId)
   })
 
   it('2. User A lista companies y ve Company A', async () => {
@@ -124,12 +114,13 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
     expect(data![0].company_id).toBe(companyAId)
     expect(data![0].user_id).toBe(userAId)
     expect(data![0].role).toBe('owner')
-    membershipAId = data![0].id
+    expect(data![0].id).toBeTruthy()
   })
 
   it('4. User B lista companies -> 0 filas (RLS filtra, no da error)', async () => {
     const { data, error } = await clientB.from('companies').select('id')
-    expect(error).toBeNull() // RLS filtra; NO es un error de privilegio
+    // RLS FILTRA: 0 filas y error null. NO es denegacion de privilegio.
+    expect(error).toBeNull()
     expect(data).toHaveLength(0)
   })
 
@@ -140,10 +131,26 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
   })
 
   it('6. User B lista memberships -> no ve la membership de User A', async () => {
-    const { data, error } = await clientB.from('company_memberships').select('id, user_id')
-    expect(error).toBeNull()
-    expect(data).toHaveLength(0)
-    expect((data ?? []).some((r: any) => r.id === membershipAId)).toBe(false)
+    // (a) B no ve NINGUNA membership. RLS filtra: 0 filas y error null.
+    const todas = await clientB.from('company_memberships').select('id, user_id, company_id')
+    expect(todas.error).toBeNull()
+    expect(todas.data).toHaveLength(0)
+
+    // (b) Y, explicitamente, ninguna membership DE LA EMPRESA DE A.
+    //
+    // Antes esto se comprobaba con `.some(r => r.id === membershipAId)` sobre el
+    // resultado anterior, usando un id producido por el caso 3. Ademas de crear
+    // una dependencia entre tests, la asercion era vacua: sobre una lista vacia
+    // `.some()` es falso aunque el id estuviera vacio.
+    //
+    // Una consulta dirigida por `companyAId` -- que proviene del hook -- prueba
+    // la propiedad de seguridad de forma directa y no depende de ningun otro it().
+    const deCompanyA = await clientB
+      .from('company_memberships')
+      .select('id')
+      .eq('company_id', companyAId)
+    expect(deCompanyA.error).toBeNull()
+    expect(deCompanyA.data).toHaveLength(0)
   })
 
   it('7. User B intenta INSERT en company_memberships para unirse a Company A -> falla', async () => {
@@ -151,7 +158,10 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
       .from('company_memberships')
       .insert({ company_id: companyAId, user_id: userBId, role: 'owner' })
       .select()
-    expect(error).not.toBeNull() // sin privilegio -> error, no 0 filas
+    // Denegacion por PRIVILEGIO: codigo SQLSTATE explicito. Comprobar solo que
+    // "hay error" permitiria que un fallo de red o de rate limit diera un PASS
+    // falso (auditoria Codex).
+    expect(error?.code).toBe('42501')
     expect(data).toBeNull()
   })
 
@@ -160,7 +170,7 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
       .from('companies')
       .insert({ name: `Intruso ${runId}`, created_by: userBId })
       .select()
-    expect(error).not.toBeNull()
+    expect(error?.code).toBe('42501')
     expect(data).toBeNull()
   })
 
@@ -168,7 +178,7 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
     const { data, error } = await clientAnon.rpc('create_company', {
       p_name: `Anon ${runId}`,
     })
-    expect(error).not.toBeNull()
+    expect(error?.code).toBe('42501')
     expect(data).toBeNull()
   })
 
@@ -183,9 +193,8 @@ describe('Checkpoint C — aislamiento RLS entre tenants', () => {
     const { data: created, error: errCreate } = await clientB.rpc('create_company', {
       p_name: `Company B ${runId}`,
     })
-    expect(errCreate).toBeNull()
-    const companyBId = (created as any).id
-    expect(companyBId).toBeTruthy()
+    assertOk(errCreate, 'create_company de User B')
+    const companyBId = requireId((created as { id?: string } | null)?.id, 'create_company de User B')
 
     const { data, error } = await clientB.from('companies').select('id')
     expect(error).toBeNull()
