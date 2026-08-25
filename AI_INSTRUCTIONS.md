@@ -339,11 +339,10 @@ Formas incorrectas:
 
 ## 6. Estado actual del repositorio
 
-**Día 1 — Project Foundation.**
+**El estado operativo vive en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).** Este
+documento contiene reglas permanentes; no duplica una fotografía del repositorio, que
+volvería a quedar obsoleta.
 
-Existe únicamente documentación y estructura de directorios. No hay dependencias
-instaladas, ni aplicaciones, ni esquema de base de datos, ni parser, ni autenticación,
-ni Tax Engine, ni Knowledge Base, ni AI Agent, ni conexiones a servicios externos.
-
-Antes de asumir que algo existe, verifícalo. Este documento describe reglas y diseño,
-no código existente.
+Antes de asumir que algo existe, **verifícalo contra Git, los tests y las migraciones**
+— la jerarquía de verdad de la Regla 16. Este documento describe reglas y diseño, no
+código existente.

@@ -11,9 +11,11 @@
 ## Current Phase
 
 ```
-Day 2 — COMPLETED
-Sign-off final de Codex ... OBTENIDO
-Next: Day 3 — Data Model / Invoice Foundation
+Day 2 — COMPLETED  (sign-off final de Codex obtenido, commiteado y publicado)
+
+Day 3 — Data Model / Invoice Foundation
+Checkpoint A — Architecture & Baseline Gate — COMPLETED
+Next: Checkpoint B — por diseñar
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -34,16 +36,24 @@ Roadmap: **Fase 1 — Infrastructure / Auth / Company** (ver [ROADMAP.md](../ROA
 ## Last Substantive Checkpoint Commit
 
 ```
-85c3556 — feat: establish secure tenancy and Next.js foundation   (2026-08-23)
+22875b1 — feat: complete day 2 auth tenancy and security hardening   (2026-08-24)
 ```
 
 Este campo identifica el último commit que contiene **implementación o checkpoint
 estable**. Deliberadamente **no** referencia el commit documental que actualiza este
 propio archivo: hacerlo generaría una autorreferencia infinita.
 
-**Working tree:** contiene los Checkpoints **E (Authentication)**, **F (Company UI)**,
-**G (auditoría y cierre)** y las **correcciones posteriores a Codex**. Con el sign-off
-obtenido, **listos para commit y push**.
+**Working tree: limpio.** El Día 2 completo —Checkpoints E, F, G y las correcciones
+posteriores a Codex— está commiteado y publicado. `HEAD == origin/main == 22875b1`,
+sin commits por delante ni por detrás.
+
+Historial:
+```
+22875b1  feat: complete day 2 auth tenancy and security hardening   (2026-08-24)
+ebf3be4  docs: update project state after checkpoint                (2026-08-23)
+85c3556  feat: establish secure tenancy and Next.js foundation      (2026-08-23)
+4a80ca5  docs: establish project foundation                         (2026-08-22)
+```
 
 ## Completed — implementado y verificado
 
@@ -244,13 +254,11 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 
 | Abierta | Referencia |
 |---|---|
-| Propagación del JWT a través de FastAPI | ADR-012 ◐ |
 | Hosting del backend en producción | ADR-011 ⏳ |
 | Confirmación de email en producción | ADR-019 (solo DEV decidido) |
 | Leaked password protection / plan de producción | sin ADR |
 | Entorno local Supabase con Docker | ADR-018 (a reconsiderar) |
 | Librería de componentes UI / design system | **sin ADR todavía** |
-| Roles más allá de `owner` | ADR-015 ◐ |
 | Políticas de MFA / email en producción | sin ADR |
 | Procesamiento en segundo plano | ADR-016 ⏳ |
 | Proveedor LLM inicial | ADR-013 ⏳ |
@@ -279,10 +287,16 @@ Knowledge Base · RAG · AI Agent · payments · Hacienda
 
 ## Next Action
 
-**Day 3 — Data Model / Invoice Foundation**
+**Day 3 — Data Model / Invoice Foundation · Checkpoint A — Architecture & Baseline Gate**
 
-Pendiente antes de comenzar:
-- Commit y push de los Checkpoints E, F, G y las correcciones posteriores a Codex
+Completado en este checkpoint:
+- Baseline verificado contra Git
+- [ADR-012](DECISIONS.md#adr-012) y [ADR-015](DECISIONS.md#adr-015) formalizados como
+  aceptados
+- Inconsistencias documentales corregidas contra el estado real del repositorio
+
+Siguiente: diseñar el checkpoint que aborde el modelo de datos de comprobantes. Sigue
+sin existir código fiscal, ni FastAPI, ni migraciones de invoices.
 
 Las limitaciones diferidas siguen documentadas más arriba y **no bloquean** el Día 3.
 

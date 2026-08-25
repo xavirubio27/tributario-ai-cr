@@ -126,26 +126,15 @@ implementación.
 
 ## Estado del repositorio
 
-**Day 2 — Infrastructure & Tenancy.**
+**Día 2 completado.** Existen tenancy con RLS, autenticación y UI de empresa. No existe
+todavía ningún dato fiscal: ni facturas, ni XML, ni Tax Engine, ni FastAPI, ni IA.
 
-| Componente | Estado |
-|---|---|
-| Documentación y reglas | ✅ |
-| Esquema de tenancy (`companies`, `company_memberships`) | ✅ migraciones aplicadas |
-| Row Level Security | ✅ activa, aislamiento probado (11/11 tests) |
-| **Next.js foundation** | ✅ **implementada** |
-| **Auth** | ⬜ **no implementada** |
-| **Company UI** | ⬜ **no implementada** |
-| Backend FastAPI · Tax Engine · Parser XML · KB/RAG · AI Agent · CI | ⬜ no iniciados |
+**La fotografía vigente está en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)** — es el
+punto de entrada de toda sesión. Este documento no la duplica, para no volver a quedar
+obsoleto.
 
 **Supabase:** proyecto de **DESARROLLO** conectado. Migraciones en `supabase/migrations/`,
 aplicadas con `supabase db push`. Config como código con `supabase config push`
 (ver Regla 15). Entorno local con Docker diferido (ADR-018).
 
-**Frontend:** Next.js 16 (App Router, `src/`, Tailwind 4, TypeScript). Clientes Supabase
-preparados en `src/lib/supabase/{client,server}.ts`. Sesión y `proxy.ts` pendientes.
-
-Verifica antes de asumir que algo existe.
-
-**Siguiente hito:** signup / login / sesión, y creación y listado de empresa desde la
-interfaz. Después, la ingesta de XML.
+Verifica contra Git, tests y migraciones antes de asumir que algo existe (Regla 16).

@@ -34,10 +34,10 @@
 | [ADR-009](#adr-009) | Knowledge Base compartida vs. datos fiscales aislados | ✅ |
 | [ADR-010](#adr-010) | `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma | ✅ |
 | [ADR-011](#adr-011) | Hosting del backend FastAPI | ⏳ |
-| [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ◐ |
+| [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ✅ |
 | [ADR-013](#adr-013) | Proveedor LLM inicial | ⏳ |
 | [ADR-014](#adr-014) | Estrategia de embeddings | ⏳ |
-| [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ◐ |
+| [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ✅ |
 | [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | ⏳ |
 | [ADR-017](#adr-017) | Frontera entre datos de identidad/tenancy y datos fiscales | ✅ |
 | [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
@@ -367,7 +367,12 @@ envejecer bien si el equipo crece.
 ---
 ---
 
-# DECISIONES PENDIENTES
+# DECISIONES ABIERTAS AL CIERRE DEL DÍA 1 — ADR-011 a ADR-016
+
+> Las secciones de este archivo agrupan las decisiones por **el momento en que se
+> registraron**, no por su estado actual. Algunas de las que aquí se abrieron ya se han
+> cerrado desde entonces. **El estado vigente de cada decisión es el de su propio campo
+> `Estado` y el del índice.**
 
 <a id="adr-011"></a>
 ## ADR-011 — Hosting del backend FastAPI
@@ -402,42 +407,124 @@ Abierta. No bloquea la Fase 0.
 <a id="adr-012"></a>
 ## ADR-012 — Mecanismo de propagación de identidad hacia RLS
 
-**Estado:** ◐ Parcialmente resuelta (Día 2) · **Resto a cerrar en:** fase de FastAPI · **Criticidad: alta**
-
-### Resuelto (Día 2)
-
-Para el **acceso directo del frontend a Supabase** en esta fase: el cliente propaga el
-JWT del usuario mediante cookies gestionadas por `@supabase/ssr`, y PostgreSQL evalúa
-las políticas sobre `auth.uid()` de forma nativa. No interviene `service_role`.
-
-### Sigue abierto
-
-La propagación del JWT **hacia FastAPI** y desde FastAPI hasta la conexión de
-PostgreSQL. Es la parte crítica y no se ha abordado. Sigue condicionando el diseño del
-acceso a datos fiscales.
+**Estado:** ✅ Aceptada (Día 3) · **Criticidad: máxima** · **Sustituye a:** la resolución
+parcial del Día 2
 
 ### Contexto
 
-**ADR-002** establece *qué* debe ocurrir: las operaciones en contexto de usuario
-preservan su identidad y su tenant, y RLS es el mecanismo de aislamiento. Queda abierto
-el *cómo* técnico: de qué forma el backend FastAPI propaga la identidad del usuario
-hasta la conexión con PostgreSQL para que RLS actúe sobre ella.
+[ADR-002](#adr-002) establece *qué* debe ocurrir: las operaciones en contexto de usuario
+preservan su identidad y su tenant, y RLS es el mecanismo de aislamiento. El Día 2
+resolvió el caso del acceso directo del frontend a Supabase —el cliente propaga el JWT
+por cookies y PostgreSQL evalúa `auth.uid()` de forma nativa—, pero eso solo cubre datos
+de identidad y tenancy ([ADR-017](#adr-017)).
 
-### Por qué importa
+Los **datos fiscales** irán por FastAPI ([ADR-001](#adr-001)), y ahí la identidad debe
+recorrer un camino más largo. Faltaba cerrar la propiedad de seguridad de ese camino.
 
-Es la decisión de la que depende que el aislamiento multiempresa sea real. Condiciona
-el diseño del esquema, la capa de repositorio, el pooling de conexiones y el
-rendimiento. Descubrirla en la Fase 4 sería muy costoso.
+### Decisión — arquitectura aprobada
 
-### Qué falta
+```
+User
+  ↓
+Supabase Auth JWT
+  ↓
+Next.js
+  ↓
+FastAPI
+  ↓
+JWT verification
+  ↓
+PostgreSQL backend role
+  ↓
+transaction-scoped user identity
+  ↓
+RLS
+  ↓
+company_memberships
+```
 
-Evaluar los mecanismos disponibles, sus implicaciones sobre el pooling de conexiones y
-su comportamiento bajo carga. Definir además cómo se identifican y auditan los caminos
-privilegiados excepcionales previstos en ADR-002.
+**Reglas obligatorias**
 
-### Situación actual
+1. FastAPI es el camino normal de acceso a los **datos fiscales del contribuyente**.
+2. FastAPI **valida el JWT** emitido por Supabase Auth antes de confiar en la identidad.
+3. FastAPI accede a PostgreSQL con un **rol backend dedicado y de mínimo privilegio**,
+   que **no** tiene `BYPASSRLS`, **no** es `service_role` y **no** puede convertirse en
+   credencial accesible desde el frontend.
+4. La identidad del usuario autenticado se propaga hasta PostgreSQL de forma que las
+   políticas RLS puedan evaluarla.
 
-Abierta. **Debe cerrarse antes de definir el esquema de base de datos.**
+### Requisito crítico — alcance transaccional
+
+La identidad debe tener **alcance de transacción**, nunca quedar como estado persistente
+de una conexión reutilizable. La arquitectura debe impedir conceptualmente este fallo:
+
+```
+transacción de User A
+conexión devuelta al pool
+transacción de User B
+la conexión conserva accidentalmente la identidad de User A
+```
+
+Cada operación establece su propio contexto de identidad, y ese contexto **desaparece al
+terminar la transacción**. Con conexiones agrupadas, un contexto que sobreviva al
+`COMMIT` es una fuga de tenant silenciosa: no falla, devuelve datos de otro
+contribuyente.
+
+### Defensa en profundidad — dos barreras
+
+| Barrera | Responsabilidad |
+|---|---|
+| **FastAPI** | Autenticación · autorización · validación · auditoría y trazabilidad de aplicación |
+| **PostgreSQL RLS** | Vuelve a comprobar tenant, membership y rol |
+
+**Nunca depender únicamente de un filtro `WHERE company_id = ...`.** Un filtro olvidado
+es un fallo silencioso; una política RLS ausente es un fallo detectable con tests.
+
+### Frontera frontend/backend
+
+Las futuras tablas fiscales **no** deben quedar disponibles como camino alternativo:
+
+```
+✗  Frontend → Supabase Data API → datos fiscales
+✓  Frontend → FastAPI → PostgreSQL/RLS
+```
+
+Esto preserva [ADR-001](#adr-001). La frontera de [ADR-017](#adr-017) sigue vigente:
+`companies` y `company_memberships` son identidad y tenancy, y pueden seguir usando
+Supabase directamente bajo RLS.
+
+### `service_role`
+
+Queda reservado para futuros procesos administrativos o internos excepcionales que sean
+exclusivamente server-side, claramente separados, controlados y auditables. **Nunca será
+el mecanismo normal para operaciones fiscales en contexto de usuario**, en coherencia
+con [ADR-002](#adr-002).
+
+### Lo que esta decisión NO cierra
+
+Deliberadamente **no** se decide aquí, y deberá verificarse al implementar la foundation
+de FastAPI:
+
+librería Python de PostgreSQL · ORM · SQLAlchemy sí/no · driver concreto · Supavisor
+frente a conexión directa · transaction pooler frente a session pooler · hosting de
+FastAPI ([ADR-011](#adr-011)) · infraestructura de background jobs ([ADR-016](#adr-016)) ·
+estructura exacta del contexto en PostgreSQL · SQL concreto de las futuras políticas
+fiscales.
+
+Lo que queda cerrado es la **propiedad de seguridad**:
+
+> identidad verificada · rol backend sin `BYPASSRLS` · contexto de alcance transaccional ·
+> RLS como segunda barrera.
+
+Cualquier implementación que preserve esas cuatro condiciones satisface este ADR.
+
+### Consecuencias
+
+- Ninguna elección técnica posterior puede sacrificar el alcance transaccional de la
+  identidad: es criterio de aceptación, no preferencia.
+- El rol backend deberá crearse mediante migración versionada, con sus `GRANT` mínimos.
+- La verificación de que la identidad no sobrevive a la transacción tendrá que ser
+  **probada**, no supuesta —igual que el aislamiento A/B del Día 2.
 
 ---
 
@@ -498,38 +585,63 @@ Abierta. No bloquea fases anteriores a la 5.
 <a id="adr-015"></a>
 ## ADR-015 — Modelo de permisos usuario–empresa
 
-**Estado:** ◐ Parcialmente resuelta (Día 2)
-
-### Resuelto (Día 2)
-
-Relación N:M mediante `public.company_memberships` (`user_id`, `company_id`, `role`),
-con un único rol `owner`. `role` se modela como `text` + `CHECK` en lugar de `enum`
-para que ampliarlo sea DDL corriente.
-
-### Sigue abierto
-
-Roles adicionales, permisos diferenciados por rol y el caso del contador externo con
-acceso de solo lectura.
+**Estado:** ✅ Aceptada (Día 3) · **Sustituye a:** la resolución parcial del Día 2
 
 ### Contexto
 
-Un usuario puede tener acceso a una o varias empresas. Queda por definir el modelo de
-relación y si existirán roles diferenciados dentro de una empresa (por ejemplo,
-propietario frente a contador externo con acceso de solo lectura).
+Un usuario puede acceder a varias empresas, y el usuario secundario del producto
+—contadores y despachos que gestionan múltiples clientes— hace que ese caso sea real
+desde el principio, no una hipótesis futura. El Día 2 dejó la relación N:M funcionando
+con un único rol `owner`; faltaba decidir el conjunto de roles y dónde reside la verdad
+sobre la pertenencia.
 
-### Por qué importa
+### Decisión
 
-El usuario secundario del producto — contadores y despachos que gestionan múltiples
-clientes — hace que el caso multiempresa por usuario sea real desde el principio, no
-una hipótesis futura. Condiciona el esquema, RLS y la interfaz.
+**Fuente de verdad.** `public.company_memberships` es la fuente de verdad para
+determinar si un usuario pertenece a una empresa y qué rol tiene dentro de ella. Un
+usuario puede tener **un rol distinto en cada empresa**. Se mantiene el modelo N:M
+`user ↔ company` ya existente.
 
-### Qué falta
+**Roles iniciales.** El producto inicial tendrá exactamente tres:
 
-Definir el modelo de relación, los roles y su interacción con las políticas RLS.
+| Rol | Puede | No puede |
+|---|---|---|
+| `owner` | Operar los datos fiscales · realizar las acciones administrativas de empresa que correspondan · administrar memberships cuando exista esa funcionalidad | — |
+| `editor` | Operar los datos fiscales necesarios para usar el producto | Administrar propiedad ni memberships sensibles |
+| `viewer` | Consultar datos fiscales y resultados | Modificar datos fiscales ni memberships |
 
-### Situación actual
+**El JWT no es fuente autoritativa de membresía ni de rol.** El JWT identifica al
+usuario; la membresía y el rol vigentes se consultan **desde la base de datos** en cada
+operación.
 
-Abierta. **Debe cerrarse junto con ADR-012**, antes de definir el esquema.
+### Por qué el rol no vive en el JWT
+
+Un token es una fotografía firmada en el momento de su emisión. Si el rol viajara
+dentro, revocar un acceso o degradar a `viewer` no surtiría efecto hasta que el token
+expirase, y quien conservara un token anterior seguiría operando con el rol antiguo.
+Consultar `company_memberships` en cada operación hace que un cambio de rol sea
+inmediato y que exista un único lugar donde mirar. El coste —una consulta más— es
+precisamente lo que ADR-002 ya exige para evaluar RLS.
+
+### Fuera de alcance (no implementar todavía)
+
+RBAC granular · permisos individuales tipo `invoice.read` / `invoice.write` · roles
+personalizados · sistema de invitaciones · UI de administración de miembros.
+
+### Consecuencias
+
+- El `CHECK` actual de `role` admite solo `'owner'`; ampliarlo a los tres roles será una
+  migración futura. **No se diseña en este checkpoint.**
+- Las políticas RLS de las futuras tablas fiscales podrán discriminar por rol
+  consultando `company_memberships`, no leyendo claims del token.
+- Modelar `role` como `text` + `CHECK` en lugar de `enum` (Día 2) resulta acertado:
+  ampliarlo es DDL corriente.
+
+### Relación con otras decisiones
+
+Complementa [ADR-002](#adr-002) —RLS como mecanismo de aislamiento— y
+[ADR-017](#adr-017): `company_memberships` sigue siendo dato de identidad y tenancy, no
+dato fiscal. Es la fuente que consultará el mecanismo de [ADR-012](#adr-012).
 
 ---
 
