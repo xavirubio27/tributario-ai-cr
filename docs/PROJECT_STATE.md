@@ -15,7 +15,8 @@ Day 2 — COMPLETED  (sign-off final de Codex obtenido, commiteado y publicado)
 
 Day 3 — Data Model / Invoice Foundation
 Checkpoint A — Architecture & Baseline Gate — COMPLETED
-Next: Checkpoint B — por diseñar
+Checkpoint B — FastAPI + Identity/RLS Foundation — COMPLETED
+Next: Checkpoint C — por diseñar
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -43,7 +44,7 @@ Este campo identifica el último commit que contiene **implementación o checkpo
 estable**. Deliberadamente **no** referencia el commit documental que actualiza este
 propio archivo: hacerlo generaría una autorreferencia infinita.
 
-**Working tree: limpio.** El Día 2 completo —Checkpoints E, F, G y las correcciones
+**Working tree:** El Día 2 completo —Checkpoints E, F, G y las correcciones
 posteriores a Codex— está commiteado y publicado. `HEAD == origin/main == 22875b1`,
 sin commits por delante ni por detrás.
 
@@ -125,6 +126,17 @@ Future core         Tax Data Layer · Tax Engine · Knowledge Base · AI Agent
 - **Leaked password protection pendiente para producción**: requiere plan Pro; el
   proyecto DEV está en Free
 
+## Backend State
+
+```
+FastAPI          0.141.1     Endpoint      GET /diagnostics/identity (diagnóstico)
+psycopg          3.3.4       Conexión      session pooler, sslmode=require
+pyjwt            2.13.0      JWT           ES256 vía JWKS público
+Python           3.12.8      Rol DB        app_backend (NOBYPASSRLS, NOINHERIT)
+```
+
+Sin datos fiscales: no hay `invoices`, ni parser, ni Tax Engine.
+
 ## Database State
 
 **Tables**
@@ -143,7 +155,11 @@ Future core         Tax Data Layer · Tax Engine · Knowledge Base · AI Agent
 20260822230621_create_company_rpc
 20260823212422_enforce_least_privilege_on_tenancy_tables
 20260823213730_split_create_company_into_private_impl
+20260825041622_create_app_backend_role
+20260828212056_enforce_app_backend_memberships
 ```
+
+**7 migraciones**, todas sincronizadas local/remoto.
 
 **Environment:** Supabase alojado, **DEVELOPMENT**. Nunca producción.
 Cambios de esquema **solo** por migración (`supabase db push`).
@@ -184,7 +200,37 @@ declarados: `[UNIT]` validación pura importada del propio código de la aplicac
 análisis del código fuente (sin INSERT directo, sin `service_role`, sin filtro por
 `user_id` en la consulta). Los detectores llevan autotest.
 
-**Total: 32/32 PASS** — RLS 11 · Auth 11 · Company 10.
+**Total verificado: 147/147 PASS** — backend 115 + regresión Día 2 32.
+
+**Backend: 115/115 PASS** — `backend/tests/`, pytest. `0 failed`, `0 skipped`.
+Cinco áreas: verificación de JWT (27, incluidos ES256-only y rechazo de RS256/HS256),
+guardas de configuración (validación positiva del rol, TLS, marcadores), rol de base de
+datos y verificación en runtime, privilegios efectivos medidos con `has_*_privilege`, e
+identidad transaccional y RLS por HTTP.
+
+**Regresión Día 2: 32/32 PASS** — RLS 11 · Auth 11 · Company 10.
+
+Propiedades demostradas contra la base de datos real:
+- JWT de Supabase verificado con **ES256 únicamente**, vía JWKS público; RS256 y HS256
+  rechazados con test
+- Rol de login validado de forma **positiva**: solo `app_backend` es admisible
+- Verificación en runtime al abrir el pool: si la sesión real no cumple, el backend no
+  arranca
+- `app_backend`: `rolsuper=false`, `rolbypassrls=false`, `rolinherit=false`,
+  memberships exactas `{authenticated}`, sin alcance a `service_role`, `postgres` ni
+  `supabase_admin`
+- Privilegios efectivos: no alcanza las tablas de tenancy, ni los schemas `auth` y
+  `private`, ni las funciones sensibles, sin asumir `authenticated`. Conserva `USAGE`
+  sobre `public` vía `PUBLIC`, que no se revoca por sus efectos colaterales
+- TLS activo en el tramo cliente→pooler (`pgconn.ssl_in_use`); `pg_stat_ssl` describe el
+  tramo interno de Supavisor y no es el instrumento aplicable
+- Identidad presente dentro de la transacción; **cleanup verificado tras `COMMIT` y
+  tras `ROLLBACK` sobre la misma sesión**, demostrada con marca de sesión
+  (`set_config(..., false)`) en lugar de `pg_backend_pid()`, que no representa la
+  conexión de cliente a través del pooler
+- **Sin fuga A→B sobre sesión reutilizada**; A→A permitido, B→A bloqueado, B→B permitido
+- TLS obligatorio (`sslmode=require`), cifrado confirmado con `pgconn.ssl_in_use`
+- Flujo HTTP `JWT → FastAPI → PostgreSQL → RLS` probado de extremo a extremo
 
 **Verificación final del Día 2:**
 
@@ -264,6 +310,20 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
 
+## 🔴 BLOCKING BEFORE FIRST FISCAL TABLE
+
+> FastAPI asume `authenticated` dentro de la transacción para aprovechar RLS.
+> `authenticated` es también un rol utilizado por la Supabase Data API. Antes de
+> introducir cualquier tabla fiscal debe establecerse una frontera mecánica que permita
+> `FastAPI → fiscal data` **sin** habilitar `Frontend → Supabase Data API → fiscal data`.
+
+Conceder a `authenticated` privilegios sobre datos fiscales en un schema expuesto los
+haría alcanzables desde el navegador, incumpliendo [ADR-001](DECISIONS.md#adr-001) y
+[ADR-012](DECISIONS.md#adr-012).
+
+**No bloquea el cierre de Checkpoint B** —el mecanismo de tenancy está demostrado sobre
+tablas de identidad, no fiscales—. La solución **no está elegida todavía**.
+
 ## Pendientes registrados (diferidos conscientemente)
 
 | Pendiente | Motivo |
@@ -287,16 +347,13 @@ Knowledge Base · RAG · AI Agent · payments · Hacienda
 
 ## Next Action
 
-**Day 3 — Data Model / Invoice Foundation · Checkpoint A — Architecture & Baseline Gate**
+**Checkpoint C — por diseñar**
 
-Completado en este checkpoint:
-- Baseline verificado contra Git
-- [ADR-012](DECISIONS.md#adr-012) y [ADR-015](DECISIONS.md#adr-015) formalizados como
-  aceptados
-- Inconsistencias documentales corregidas contra el estado real del repositorio
+Checkpoint B cerrado: [ADR-012](DECISIONS.md#adr-012) demostrado técnicamente, con
+auditoría externa en 0 CRITICAL / 0 HIGH / 0 MEDIUM.
 
-Siguiente: diseñar el checkpoint que aborde el modelo de datos de comprobantes. Sigue
-sin existir código fiscal, ni FastAPI, ni migraciones de invoices.
+Antes de la primera tabla fiscal debe resolverse el gate registrado más arriba. Sigue
+sin existir código fiscal, ni tablas de comprobantes, ni parser XML, ni Tax Engine.
 
 Las limitaciones diferidas siguen documentadas más arriba y **no bloquean** el Día 3.
 

@@ -1,0 +1,26 @@
+[project]
+name = "tributario-ai-cr-backend"
+version = "0.1.0"
+description = "FastAPI backend — identity and RLS foundation (ADR-012)"
+requires-python = ">=3.12"
+
+# Dependencias deliberadamente minimas. Cada una resuelve un problema concreto
+# de este checkpoint; ver backend/README.md para la justificacion.
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "psycopg[binary,pool]==3.3.4",
+    "pyjwt[crypto]==2.13.0",
+    "python-dotenv==1.2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Las suites comparten el proyecto Supabase de DESARROLLO: sin paralelismo.
+addopts = "-p no:randomly"

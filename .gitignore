@@ -65,6 +65,9 @@ pnpm-debug.log*
 # -----------------------------------------------------------------------------
 __pycache__/
 *.py[cod]
+# Dependencias Python instaladas con `pip --target` (venv no puede crearse
+# porque la ruta del repositorio contiene ':'). Ver backend/README.md.
+.pydeps/
 *$py.class
 *.so
 .Python
