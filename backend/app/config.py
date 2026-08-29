@@ -29,10 +29,6 @@ class Settings:
     jwt_issuer: str
     jwt_audience: str = "authenticated"
 
-    # Rol que el backend asume dentro de cada transacción. Debe coincidir con el
-    # rol al que apuntan las políticas RLS del Día 2 (`TO authenticated`).
-    db_role: str = "authenticated"
-
 
 # ÚNICO rol de login aprobado para el backend (ADR-012).
 #

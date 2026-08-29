@@ -17,7 +17,12 @@ Day 3 — Data Model / Invoice Foundation
 Checkpoint A — Architecture & Baseline Gate — COMPLETED
 Checkpoint B — FastAPI + Identity/RLS Foundation — COMPLETED
 Checkpoint C — Authorization Roles Foundation — COMPLETED
-Next: resolver el gate fiscal antes de la primera tabla de comprobantes
+Checkpoint D — Fiscal Data Access Boundary — COMPLETED
+  Phase D0 — Architecture Contract & Preflight — COMPLETED
+  Phase D1 — Boundary Implementation & Proof — COMPLETED
+    · auditoría #1: FAIL/OPEN — 3 MEDIUM + 2 LOW, corregidos
+    · reauditoría: 0 CRITICAL / 0 HIGH / 0 MEDIUM / 1 LOW documental — PASS
+Next: diseño del primer modelo fiscal. El gate fiscal está CERRADO.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -45,8 +50,9 @@ Este campo identifica el último commit que contiene **implementación o checkpo
 estable**. Deliberadamente **no** referencia el commit documental que actualiza este
 propio archivo: hacerlo generaría una autorreferencia infinita.
 
-**Working tree:** contiene el Checkpoint C (roles de autorización) y las correcciones
-posteriores a su auditoría, listos para commit.
+**Working tree:** contiene D0 (ADR-020) y D1 (la frontera fiscal ya implementada y
+aplicada), pendientes ambos de revisión y commit. D1 sí incluye cambio de esquema:
+la migración `20260829183152` está **aplicada en la base de datos de desarrollo**.
 
 En `91596df`, `HEAD == origin/main` sin commits por delante ni por detrás.
 
@@ -194,9 +200,10 @@ Sin datos fiscales: no hay `invoices`, ni parser, ni Tax Engine.
 20260825041622_create_app_backend_role
 20260828212056_enforce_app_backend_memberships
 20260829001056_extend_membership_roles
+20260829183152_establish_fiscal_data_boundary
 ```
 
-**8 migraciones**, todas sincronizadas local/remoto.
+**9 migraciones**, todas sincronizadas local/remoto (9 local == 9 remoto).
 
 **Environment:** Supabase alojado, **DEVELOPMENT**. Nunca producción.
 Cambios de esquema **solo** por migración (`supabase db push`).
@@ -237,13 +244,28 @@ declarados: `[UNIT]` validación pura importada del propio código de la aplicac
 análisis del código fuente (sin INSERT directo, sin `service_role`, sin filtro por
 `user_id` en la consulta). Los detectores llevan autotest.
 
-**Total verificado: 197/197 PASS** — backend 165 + regresión Día 2 32.
+**Total verificado: 233/233 PASS** — backend 201 + regresión Día 2 32.
+Códigos de salida reales capturados sin tubería: `EXIT_PYTEST=0`, `EXIT_VITEST=0`,
+`EXIT_ESLINT=0`, `EXIT_FRONT_TYPECHECK=0`, `EXIT_TESTS_TYPECHECK=0`, `EXIT_BUILD=0`.
 
-**Backend: 165/165 PASS** — `backend/tests/`, pytest. `0 failed`, `0 skipped`.
-Seis áreas: verificación de JWT (ES256-only, rechazo de RS256/HS256), guardas de
+**Backend: 201/201 PASS** — `backend/tests/`, pytest. `0 failed`, `0 skipped`.
+Siete áreas: verificación de JWT (ES256-only, rechazo de RS256/HS256), guardas de
 configuración (validación positiva del rol, TLS, marcadores), rol de base de datos y
 verificación en runtime, privilegios efectivos medidos con `has_*_privilege`, identidad
-transaccional y RLS por HTTP, y **roles de autorización (22)**.
+transaccional y RLS por HTTP, roles de autorización (22), y **frontera fiscal (36)**.
+
+**Frontera fiscal: 36/36 PASS** — `backend/tests/test_fiscal_boundary.py`. Se prueba
+sobre una tabla canario efímera, `fiscal.boundary_probe`, creada y destruida por el
+propio fichero: el gate sigue abierto y no existe todavía ninguna tabla fiscal real.
+La comprobación de residuo (`tablas=0`, `funciones=0`) es una **aserción automatizada
+dentro del teardown**, no un comando manual posterior.
+
+**Inestabilidad ambiental observada** (no es un defecto del proyecto): el Auth de
+Supabase en desarrollo alterna entre respuestas de ~0,3 s y episodios en los que agota
+120 s. Cuando ocurre, la creación de usuarios de fixture produce **ERROR**, nunca `skip`
+ni `PASS` — comprobado. El timeout se mantiene en 120 s: con el servicio sano la
+latencia medida es de 0,27–19 s, muy por debajo, y la suite solo hace 2 signups frente
+a un límite de `sign_in_sign_ups = 30` por 5 min, así que no es límite de tasa.
 
 **Regresión Día 2: 32/32 PASS** — RLS 11 · Auth 11 · Company 10.
 
@@ -347,7 +369,10 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
 
-## 🔴 BLOCKING BEFORE FIRST FISCAL TABLE
+## ✅ Fiscal Data Access Boundary Gate — PASSED / CLOSED
+
+Registrado hasta ahora como `🔴 BLOCKING BEFORE FIRST FISCAL TABLE`. **Cerrado**
+tras la reauditoría independiente de la fase D1.
 
 > FastAPI asume `authenticated` dentro de la transacción para aprovechar RLS.
 > `authenticated` es también un rol utilizado por la Supabase Data API. Antes de
@@ -359,7 +384,76 @@ haría alcanzables desde el navegador, incumpliendo [ADR-001](DECISIONS.md#adr-0
 [ADR-012](DECISIONS.md#adr-012).
 
 **No bloquea el cierre de Checkpoint B** —el mecanismo de tenancy está demostrado sobre
-tablas de identidad, no fiscales—. La solución **no está elegida todavía**.
+tablas de identidad, no fiscales—.
+
+**Arquitectura decidida en la fase D0:** [ADR-020](DECISIONS.md#adr-020) — schema
+`fiscal` no expuesto por la Data API, rol de ejecución `fiscal_backend` sin `BYPASSRLS`,
+`authenticated` sin privilegios fiscales, y RLS obligatoria como tercera capa.
+
+**Mecanismo implementado en la fase D1** (migración `20260829183152`, aplicada) y
+demostrado con 36 tests sobre una tabla canario efímera. La Data API responde
+`PGRST106` al schema `fiscal`, no `200 []`.
+
+**GATE CERRADO.** La reauditoría independiente cerró en 0 CRITICAL / 0 HIGH /
+0 MEDIUM. La frontera queda demostrada, no supuesta:
+
+```
+Frontend / Supabase Data API   → fiscal   ❌  (PGRST106, no 200 [])
+authenticated                  → fiscal   ❌  (sin USAGE sobre el schema)
+app_backend sin SET ROLE       → fiscal   ❌  (membresía sin herencia)
+
+FastAPI / fiscal_backend / User A → Company A  ✅
+                                  → Company B  ❌
+FastAPI / fiscal_backend / User B → Company B  ✅
+                                  → Company A  ❌
+```
+
+Cerrar este gate **autoriza a comenzar el diseño del primer modelo fiscal**. No
+significa que exista ninguna tabla fiscal de producto: `invoices`, `invoice_lines`,
+`source_documents` y `tax_profiles` siguen sin existir, y el schema `fiscal` está
+vacío. Tampoco levanta las demás condiciones del proyecto: cada tabla fiscal se
+diseñará por objeto, con sus propios privilegios y sus propias políticas.
+
+### Evidencia de cierre
+
+| Propiedad | Verificado |
+|---|---|
+| Schema `fiscal` creado, no expuesto por la Data API | `schemas = ["public","graphql_public"]` |
+| `Accept-Profile: fiscal` con JWT real de usuario | **`PGRST106`** (no `200 []`) |
+| `authenticated` → fiscal | sin `USAGE`; rechazo `42501` |
+| `app_backend` → fiscal sin `SET ROLE` | sin privilegio ambiental; rechazo `42501` |
+| `fiscal_backend` | NOLOGIN · NOBYPASSRLS · NOINHERIT · NOREPLICATION · sin contraseña |
+| `app_backend` asume `fiscal_backend` | solo con `SET` explícito (`inherit_option=false`) |
+| Roles de la Data API (`anon`, `authenticated`, `service_role`, `authenticator`) | sin ruta `SET` hacia `fiscal_backend` |
+| Cierre efectivo de `SET ROLE` (no superusuarios) | exactamente `{app_backend}` |
+| `fiscal_backend` → schema `auth` | sin `USAGE`; políticas vía helpers privados |
+| Frontera de membresía | `private.is_company_member()` (`SECURITY DEFINER`) |
+| SELECT RLS A/B | completo, ambos sentidos |
+| INSERT RLS A/B | completo; rechazo por `WITH CHECK`, no por grants |
+| COMMIT / ROLLBACK | rol e identidad descartados; escritura abortada no persiste |
+| Misma sesión reutilizada, A→B→A→B | sin fuga de identidad ni de filas |
+| Canario efímero | sin residuo (aserción automatizada en el teardown) |
+| Suites | backend 201 + Día 2 32 = **233/233 PASS** |
+| Checkpoints B y C | sin regresión |
+
+**Norma de autorización fiscal** (registrada en [ADR-020](DECISIONS.md#adr-020)): las
+políticas RLS fiscales se apoyan en helpers privados aprobados —`private.is_company_member(...)`—
+y `fiscal_backend` **no** recibe `USAGE` directo sobre el schema `auth`. La auditoría
+confirmó esta restricción como correcta y se mantiene explícitamente. La identidad del
+usuario sigue disponible en `request.jwt.claims`; lo que no está es el atajo `auth.uid()`.
+Cubierto por `test_fiscal_backend_no_alcanza_el_schema_auth`.
+
+**Relación inversa de `fiscal_backend`** (hallazgo de la auditoría, corregido): los
+miembros reales son `app_backend` (`set_option=true`) y `postgres` (`admin_option=true`,
+`set_option=false`). El segundo es comportamiento sistémico de PostgreSQL 16+ —quien crea
+un rol recibe pertenencia automática— y figura igual en `anon`, `authenticated`,
+`service_role` y `app_backend`. **No puede asumir el rol**: comprobado ejecutándolo,
+devuelve `42501 permission denied to set role`. El cierre transitivo de `SET ROLE`,
+excluyendo superusuarios, es exactamente `{app_backend}`. El único superusuario del
+proyecto es `supabase_admin`.
+
+**El gate SIGUE ABIERTO.** Se retirará cuando la fase D1 esté implementada, probada,
+auditada y commiteada. Hoy solo existe el contrato, no la frontera.
 
 ## Pendientes registrados (diferidos conscientemente)
 
@@ -384,14 +478,15 @@ Knowledge Base · RAG · AI Agent · payments · Hacienda
 
 ## Next Action
 
-**Resolver el gate fiscal**, registrado más arriba como
-`BLOCKING BEFORE FIRST FISCAL TABLE`.
+**Diseño del primer modelo fiscal.** El gate fiscal está cerrado y la frontera
+demostrada (233/233 PASS), así que el modelo de datos fiscales ya puede diseñarse.
 
-Es la próxima decisión arquitectónica: permitir `FastAPI → fiscal data` **sin** habilitar
-`Frontend → Supabase Data API → fiscal data`. Debe cerrarse **antes** de crear la primera
-tabla de comprobantes.
+Todavía no existe ninguna tabla fiscal de producto, y la primera no se crea sin su
+propio análisis previo: qué campos, qué privilegios por objeto, qué políticas RLS
+—apoyadas en helpers privados aprobados, nunca en `auth.uid()` directo— y qué
+trazabilidad hacia el documento origen.
 
-Checkpoints A, B y C del Día 3 cerrados, los tres con auditoría externa en
+Checkpoints A, B, C y D del Día 3 cerrados, los cuatro con auditoría externa en
 0 CRITICAL / 0 HIGH / 0 MEDIUM. Sigue sin existir código fiscal, ni tablas de
 comprobantes, ni parser XML, ni Tax Engine.
 

@@ -109,7 +109,11 @@ def _create_user(base_url: str, apikey: str, label: str, settings=None) -> TestU
     email = f"be-{label}-{run_id}@example.com"
     password = f"PwBe-{run_id}-x9"
 
-    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+    # Timeout de RED para la preparación, no un límite de seguridad. El proyecto
+    # Supabase de desarrollo responde a veces en decenas de segundos y con 30 s la
+    # creación del usuario expiraba antes de terminar, marcando ERROR en fixture
+    # todos los tests que dependen de una identidad real.
+    with httpx.Client(base_url=base_url, timeout=120.0) as client:
         signup = client.post(
             "/auth/v1/signup",
             headers={"apikey": apikey, "Content-Type": "application/json"},

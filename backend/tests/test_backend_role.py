@@ -56,11 +56,19 @@ def test_role_can_login(role_row):
 
 
 def test_role_memberships_are_minimal(pool, settings):
-    """Solo `authenticated`. Nunca `service_role` ni `anon`."""
+    """Exactamente `authenticated` y `fiscal_backend`, y sin herencia.
+
+    ADR-020 añadió `fiscal_backend` a las pertenencias de `app_backend`. La
+    aserción se amplía, pero NO se debilita: además del conjunto exacto se exige
+    ahora que ninguna pertenencia se herede automáticamente. Una pertenencia con
+    `inherit_option=true` daría a toda conexión del pool los privilegios del rol
+    fiscal sin haberlos pedido, que es justo lo que la frontera evita.
+    """
     with anonymous_transaction(pool, settings) as conn:
         rows = conn.execute(
             """
-            select m.rolname as member_of
+            select m.rolname as member_of,
+                   am.inherit_option, am.set_option, am.admin_option
             from pg_auth_members am
             join pg_roles r on r.oid = am.member
             join pg_roles m on m.oid = am.roleid
@@ -69,9 +77,14 @@ def test_role_memberships_are_minimal(pool, settings):
             (ROLE,),
         ).fetchall()
     memberships = {r["member_of"] for r in rows}
-    assert memberships == {"authenticated"}
+    assert memberships == {"authenticated", "fiscal_backend"}
     assert "service_role" not in memberships
     assert "anon" not in memberships
+
+    for row in rows:
+        assert row["inherit_option"] is False, f"{row['member_of']} se hereda sin pedirlo."
+        assert row["set_option"] is True, f"{row['member_of']} no se puede asumir con SET ROLE."
+        assert row["admin_option"] is False, f"{ROLE} puede conceder {row['member_of']} a otros."
 
 
 def test_role_cannot_reach_service_role(pool, settings):

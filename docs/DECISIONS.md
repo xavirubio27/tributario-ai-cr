@@ -42,6 +42,7 @@
 | [ADR-017](#adr-017) | Frontera entre datos de identidad/tenancy y datos fiscales | ✅ |
 | [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
 | [ADR-019](#adr-019) | Confirmación de email desactivada solo en desarrollo | ✅ |
+| [ADR-020](#adr-020) | Frontera de acceso a datos fiscales: schema `fiscal` y rol de ejecución | ✅ |
 
 ---
 ---
@@ -805,3 +806,185 @@ identidad.
 
 En la misma configuración se elevó `minimum_password_length` de 6 a 8: el sistema
 procesará información tributaria sensible.
+
+
+---
+---
+
+# DECISIONES ACEPTADAS — DÍA 3
+
+<a id="adr-020"></a>
+## ADR-020 — Frontera de acceso a datos fiscales
+
+**Estado:** ✅ Aceptada (Día 3) · **Criticidad: máxima** · **Relacionada con:**
+[ADR-001](#adr-001) · [ADR-002](#adr-002) · [ADR-012](#adr-012) · [ADR-017](#adr-017)
+
+### Contexto
+
+FastAPI se conecta como `app_backend` y, para operar datos de tenancy, asume
+`authenticated` dentro de la transacción. Funciona para `public.companies` y
+`public.company_memberships`, que son datos de identidad ([ADR-017](#adr-017)).
+
+Pero **`authenticated` es también el rol con el que la Supabase Data API atiende a los
+usuarios autenticados**. Si una tabla fiscal futura recibiera privilegios para
+`authenticated` en un schema expuesto, aparecería un camino alternativo:
+
+```
+Frontend → Supabase Data API → datos fiscales
+```
+
+Eso incumpliría [ADR-001](#adr-001) aunque RLS siguiera aislando entre tenants: el
+aislamiento entre contribuyentes se mantendría, pero la regla de que los datos fiscales
+pasan por la capa de aplicación quedaría rota.
+
+### Decisión
+
+**Separación de schemas.**
+
+| Schema | Contenido | Data API |
+|---|---|---|
+| `public` | Identidad, tenancy y autorización: `companies`, `company_memberships` | Expuesto, bajo RLS ([ADR-017](#adr-017)) |
+| `fiscal` | Datos fiscales del contribuyente | **NO expuesto** |
+
+`fiscal` **no se añade** a los schemas expuestos por PostgREST. Los objetos fiscales
+vivirán ahí salvo decisión arquitectónica posterior explícita.
+
+**`authenticated` no obtiene acceso fiscal.** Ni `USAGE` sobre `fiscal`, ni `SELECT`,
+`INSERT`, `UPDATE` o `DELETE` sobre sus objetos. No se convierte en rol de ejecución de
+datos fiscales.
+
+**Nuevo rol `fiscal_backend`** — rol de ejecución de FastAPI para datos fiscales:
+
+```
+NOLOGIN · NOSUPERUSER · NOBYPASSRLS · NOCREATEDB · NOCREATEROLE
+```
+
+Recibe únicamente los privilegios mínimos necesarios sobre `fiscal`, y **ninguno por
+anticipación** sobre objetos que aún no existen.
+
+**`app_backend` sigue siendo el único rol de login del backend.** Podrá asumir
+explícitamente ambos roles de ejecución, sin heredar sus privilegios:
+
+```
+app_backend  (LOGIN, NOINHERIT)
+├── authenticated     ← tenancy
+└── fiscal_backend    ← datos fiscales
+```
+
+En PostgreSQL 16+ la membresía se declara con `WITH INHERIT FALSE, SET TRUE`: permite
+`SET ROLE` y niega la herencia. Sin `ADMIN`, que por defecto es `FALSE`.
+
+### La identidad no cambia
+
+ADR-020 **no** altera el origen de la identidad, que sigue siendo
+[ADR-012](#adr-012):
+
+```
+Supabase JWT → JwtVerifier → AuthenticatedUser ligada al subject
+             → request.jwt.claims de alcance transaccional
+```
+
+Nunca del frontend, ni de `user_id`, `company_id` o `role` de la petición, ni de claims
+de rol personalizados. **El rol de ejecución fiscal no sustituye al usuario:**
+
+```
+dentro de la transacción fiscal        tras COMMIT / ROLLBACK
+  session_user  = app_backend            current_user       = app_backend
+  current_user  = fiscal_backend         request.jwt.claims = NULL
+  auth.uid()    = usuario del JWT
+```
+
+### RLS sigue siendo obligatoria
+
+`fiscal_backend` **no** tendrá `BYPASSRLS`, y toda tabla fiscal futura tendrá RLS. Que
+`fiscal` no esté expuesto **no sustituye** a RLS: son capas distintas.
+
+```
+frontera de red/API   +   privilegios de PostgreSQL   +   RLS
+```
+
+Un fallo en cualquiera de las tres no debe bastar para exponer datos de otro
+contribuyente.
+
+### `service_role`
+
+Reafirma [ADR-002](#adr-002): **no participa en el camino normal de datos fiscales.**
+Las operaciones administrativas excepcionales seguirán exigiendo caminos separados,
+exclusivamente server-side y auditables.
+
+### Selección del rol de ejecución
+
+El rol de ejecución **jamás procede de la petición**. Es una decisión estática del
+código: el llamante elige entre operar tenancy o datos fiscales, no elige un nombre de
+rol de PostgreSQL. Aceptar un rol desde el request reintroduciría por otra vía el
+problema de identidad que [ADR-012](#adr-012) cerró.
+
+### Autorización dentro del schema fiscal — norma
+
+> **Las políticas RLS fiscales deben apoyarse en helpers privados de autorización
+> aprobados, como `private.is_company_member(...)`. El rol de ejecución
+> `fiscal_backend` no recibe acceso directo al schema `auth`.**
+
+`fiscal_backend` **no** tiene `USAGE` sobre `auth`, de modo que `auth.uid()` no es
+invocable desde una transacción fiscal. No es un descuido: es la norma.
+
+Esto no priva de identidad al rol fiscal. La identidad del usuario viaja en
+`request.jwt.claims`, que es exactamente de donde `auth.uid()` la lee, y el helper
+`private.is_company_member()` es `SECURITY DEFINER`: resuelve la pertenencia sin que
+quien la consulta necesite privilegios sobre `auth` ni sobre
+`public.company_memberships`.
+
+La consecuencia operativa es que la autorización fiscal queda concentrada en un
+conjunto pequeño de helpers auditables, en lugar de repetirse como expresiones sueltas
+sobre `auth.uid()` en cada política. Una política fiscal escrita con `auth.uid()`
+directo fallará en voz alta, y eso es deliberado.
+
+### Pertenencia administrativa ≠ capacidad de `SET ROLE`
+
+Son cosas distintas y confundirlas rompe la verificación de la frontera.
+
+Un rol puede figurar como **miembro** de `fiscal_backend` sin poder **asumirlo**. Lo
+que decide si puede asumirlo es `set_option` en `pg_auth_members`, no la existencia de
+la fila. La propiedad relevante es, por tanto, el **cierre efectivo de las cadenas de
+pertenencia siguiendo `set_option = true` en cada salto**, excluidos los superusuarios,
+que alcanzan cualquier rol por definición.
+
+`pg_has_role(rol, 'fiscal_backend', 'MEMBER')` **no sirve** como oráculo: devuelve
+cierto para roles que no pueden ejecutar `SET ROLE`. Comprobado ejecutándolo ---
+`postgres` figura como miembro con `ADMIN`, y al intentar `SET ROLE fiscal_backend`
+recibe `42501: permission denied to set role`.
+
+### Gate --- cerrado
+
+La frontera fue implementada en la fase D1 (migración `20260829183152`) y auditada de
+forma independiente hasta `0 CRITICAL / 0 HIGH / 0 MEDIUM`. El gate
+`BLOCKING BEFORE FIRST FISCAL TABLE` queda **cerrado**: autoriza a **diseñar** el primer
+modelo fiscal. No crea ninguna tabla fiscal por sí mismo, y cada tabla futura llevará su
+propio diseño de privilegios y políticas.
+
+### Consecuencias
+
+- La guarda runtime que hoy exige membresías exactas `{authenticated}` pasará a
+  `{authenticated, fiscal_backend}`; la migración que lo verifica y sus tests deberán
+  actualizarse en el mismo cambio.
+- Las políticas RLS fiscales que reutilicen `private.is_company_member()` requerirán
+  conceder a `fiscal_backend` `USAGE` sobre `private` y `EXECUTE` sobre esa función:
+  hoy solo `authenticated` los tiene.
+- La frontera debe **probarse**, no suponerse: que `fiscal` no esté expuesto y que
+  `authenticated` no lo alcance son afirmaciones verificables con tests.
+- La frontera se verifica **en los dos sentidos**. No basta con que `app_backend` sea
+  miembro de `fiscal_backend`: hay que comprobar además que **nadie más** puede
+  asumirlo. El oráculo correcto es el cierre transitivo de `set_option` en
+  `pg_auth_members`, **no** `pg_has_role(..., 'MEMBER')` --- que devuelve cierto para
+  roles que no pueden ejecutar `SET ROLE` y produciría un falso positivo.
+- `postgres` figura como miembro de `fiscal_backend` con `ADMIN` y `SET FALSE`. Es
+  comportamiento sistémico de PostgreSQL 16+ --- quien crea un rol recibe pertenencia
+  automática sobre él --- presente igual en `anon`, `authenticated`, `service_role` y
+  `app_backend`. No permite asumir el rol y **no se retira**: dejaría el rol sin
+  administrador.
+
+### Requisito previo (histórico)
+
+Esta decisión fue el **requisito previo a la primera tabla fiscal**: ninguna se creaba
+hasta que la frontera estuviera implementada, probada y auditada. Cumplido en la fase
+D1 --- ver «Gate --- cerrado» más arriba.
