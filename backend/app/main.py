@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.auth import AuthenticatedUser, AuthError, JwtVerifier, extract_bearer_token
+from app.authorization import list_company_memberships
 from app.config import get_settings
 from app.db import create_pool, current_identity, user_transaction
 
@@ -65,6 +66,13 @@ class CompanyRef(BaseModel):
     name: str
 
 
+class MembershipRef(BaseModel):
+    """Pertenencia resuelta por la base de datos, nunca por el cliente."""
+
+    company_id: str
+    role: str
+
+
 class IdentityResponse(BaseModel):
     """Lo que PostgreSQL ve, no lo que el cliente afirma."""
 
@@ -72,6 +80,7 @@ class IdentityResponse(BaseModel):
     db_user_id: str | None
     db_role: str
     companies: list[CompanyRef]
+    memberships: list[MembershipRef]
 
 
 @app.get("/health")
@@ -90,19 +99,30 @@ def diagnostics_identity(
     `companies` no se filtra en la aplicación: se emite un SELECT sin cláusula de
     tenant y es RLS quien decide qué filas existen para este usuario. Esa es
     justamente la propiedad que este endpoint demuestra.
+
+    `memberships` se resuelve consultando `public.company_memberships` (ADR-015).
+    El endpoint NO acepta `role` ni `company_id` del cliente: no existe parámetro
+    para ello, así que no hay forma de que el navegador se auto-declare `owner`.
     """
     settings = request.app.state.settings
     pool = request.app.state.pool
 
-    with user_transaction(pool, settings, user.id) as conn:
+    # UNA sola transacción por request. La identidad se establece aquí, desde la
+    # `AuthenticatedUser` verificada, y los helpers reciben la conexión ya
+    # contextualizada: no pueden redefinirla ni suplantar a nadie.
+    with user_transaction(pool, settings, user) as conn:
         identity = current_identity(conn)
         rows = conn.execute(
             "select id::text as id, name from public.companies order by created_at desc"
         ).fetchall()
+        memberships = list_company_memberships(conn)
 
     return IdentityResponse(
         token_user_id=user.id,
         db_user_id=identity["user_id"],
         db_role=identity["db_role"],
         companies=[CompanyRef(id=r["id"], name=r["name"]) for r in rows],
+        memberships=[
+            MembershipRef(company_id=m.company_id, role=m.role.value) for m in memberships
+        ],
     )

@@ -24,7 +24,7 @@ def _backend_pid(conn) -> int:
 
 
 def test_identity_is_visible_inside_transaction(pool, settings, user_a):
-    with user_transaction(pool, settings, user_a.id) as conn:
+    with user_transaction(pool, settings, user_a.identity) as conn:
         identity = current_identity(conn)
     assert identity["user_id"] == user_a.id
     assert identity["db_role"] == "authenticated"
@@ -33,7 +33,7 @@ def test_identity_is_visible_inside_transaction(pool, settings, user_a):
 
 def test_identity_disappears_after_commit(pool, settings, user_a):
     """Tras cerrar la transacción, una nueva sin identidad no ve ninguna."""
-    with user_transaction(pool, settings, user_a.id) as conn:
+    with user_transaction(pool, settings, user_a.identity) as conn:
         assert current_identity(conn)["user_id"] == user_a.id
 
     with anonymous_transaction(pool, settings) as conn:
@@ -70,7 +70,7 @@ def test_identity_disappears_after_rollback(single_connection_pool, settings, us
 
     # ── Transacción con identidad, abortada con ROLLBACK ──
     with pytest.raises(Boom):
-        with user_transaction(single_connection_pool, settings, user_a.id) as conn:
+        with user_transaction(single_connection_pool, settings, user_a.identity) as conn:
             row = conn.execute(
                 """
                 select nullif(current_setting('app.rollback_probe', true), '') as probe,
@@ -126,7 +126,7 @@ def test_no_identity_leak_on_reused_session(single_connection_pool, settings, us
         conn.execute("select set_config('app.leak_probe', %s, false)", (marker,))
 
     # ── Transacción de User A ──
-    with user_transaction(single_connection_pool, settings, user_a.id) as conn:
+    with user_transaction(single_connection_pool, settings, user_a.identity) as conn:
         row = conn.execute(
             """
             select nullif(current_setting('app.leak_probe', true), '') as probe,
@@ -153,7 +153,7 @@ def test_no_identity_leak_on_reused_session(single_connection_pool, settings, us
     assert row["role"] == "app_backend", "El rol asumido SOBREVIVIÓ a la transacción"
 
     # ── Transacción de User B sobre LA MISMA sesión ──
-    with user_transaction(single_connection_pool, settings, user_b.id) as conn:
+    with user_transaction(single_connection_pool, settings, user_b.identity) as conn:
         row = conn.execute(
             """
             select nullif(current_setting('app.leak_probe', true), '') as probe,
@@ -179,7 +179,7 @@ def test_many_alternating_transactions_never_cross_identities(pool, settings, us
     pids: set[int] = set()
 
     for user in expected:
-        with user_transaction(pool, settings, user.id) as conn:
+        with user_transaction(pool, settings, user.identity) as conn:
             pids.add(_backend_pid(conn))
             identity = current_identity(conn)
             rows = conn.execute("select id::text as id from public.companies").fetchall()
@@ -200,7 +200,7 @@ def test_set_local_is_used_not_persistent_set(pool, settings, user_a):
     Si el código usara `set_config(..., false)` o `SET ROLE` sin `LOCAL`, el valor
     sobreviviría al COMMIT y este test fallaría.
     """
-    with user_transaction(pool, settings, user_a.id) as conn:
+    with user_transaction(pool, settings, user_a.identity) as conn:
         pid = _backend_pid(conn)
         assert current_identity(conn)["raw_claims"] is not None
 

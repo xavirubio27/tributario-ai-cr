@@ -22,8 +22,10 @@ QUÉ NO SE CONFÍA DEL TOKEN
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 import uuid
-from dataclasses import dataclass
 
 import jwt
 from jwt import PyJWKClient
@@ -43,16 +45,112 @@ from app.config import Settings
 ALLOWED_JWT_ALGORITHMS = ("ES256",)
 
 
-@dataclass(frozen=True)
-class AuthenticatedUser:
-    """Identidad verificada. Es lo único que el backend acepta como usuario."""
-
-    id: str
-    email: str | None
-
-
 class AuthError(Exception):
     """El token no pudo verificarse. El mensaje es seguro para el cliente."""
+
+
+# Clave privada del proceso. Se genera al importar el módulo: vive solo en
+# memoria, no es configuración, no se persiste, no se expone y nunca se imprime.
+# Su única función es hacer que la evidencia emitida por el verificador quede
+# LIGADA a un subject concreto.
+_PROCESS_KEY = secrets.token_bytes(32)
+
+
+def _bind_subject(subject: str) -> bytes:
+    """Evidencia ligada a un subject concreto.
+
+    Un HMAC sobre el `sub` ya verificado. Como la clave solo existe dentro del
+    proceso, la evidencia no puede fabricarse desde fuera; y como depende del
+    subject, la evidencia de A **no vale** para B.
+    """
+    return hmac.new(_PROCESS_KEY, subject.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _proof_matches(subject: str, proof: object) -> bool:
+    """True si `proof` es la evidencia correspondiente exactamente a `subject`."""
+    if not isinstance(proof, bytes):
+        return False
+    return hmac.compare_digest(proof, _bind_subject(subject))
+
+
+class AuthenticatedUser:
+    """Identidad verificada, inmutable y ligada a su subject.
+
+    POR QUÉ NO ES UN `dataclass`
+
+        Lo era, con una prueba que consistía en un sentinel global. Ese diseño
+        demostraba "alguna identidad se creó por el camino autorizado", no "este
+        UUID fue el subject que verificó el JWT". La evidencia era TRANSFERIBLE:
+
+            dataclasses.replace(usuario_a, id=B)     -> identidad B "válida"
+            AuthenticatedUser(id=B, _proof=usuario_a._proof)  -> también
+
+        Ahora la evidencia es un HMAC sobre el propio subject, así que la de A no
+        vale para B. Y al no ser un dataclass, `dataclasses.replace` ni siquiera
+        es aplicable.
+
+    ALCANCE DE LA BARRERA
+
+        Protege frente al uso NORMAL de Python: constructor público,
+        `dataclasses.replace`, copia con cambio de `id`, reutilización de una
+        prueba ajena, o pasar un `str`/`UUID` directamente.
+
+        No pretende resistir código deliberadamente hostil dentro del proceso
+        (`object.__setattr__`, monkeypatching, lectura de `_PROCESS_KEY`). Quien
+        ejecuta código arbitrario en el backend ya controla el backend.
+    """
+
+    __slots__ = ("_id", "_email", "_proof")
+
+    def __init__(self, *, id: str, email: str | None = None, proof: object = None) -> None:
+        if not isinstance(id, str) or not id:
+            raise AuthError("Identidad inválida.")
+        if not _proof_matches(id, proof):
+            raise AuthError(
+                "AuthenticatedUser solo puede obtenerse verificando un JWT cuyo "
+                "`sub` sea exactamente este identificador. La evidencia de otro "
+                "usuario no es reutilizable."
+            )
+        object.__setattr__(self, "_id", id)
+        object.__setattr__(self, "_email", email)
+        object.__setattr__(self, "_proof", proof)
+
+    # ── Inmutabilidad ─────────────────────────────────────────────────────────
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("AuthenticatedUser es inmutable.")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("AuthenticatedUser es inmutable.")
+
+    # ── Lectura ───────────────────────────────────────────────────────────────
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def email(self) -> str | None:
+        return self._email
+
+    def has_valid_binding(self) -> bool:
+        """True si la evidencia sigue correspondiendo a este `id`.
+
+        `user_transaction` lo comprueba antes de usar la identidad: si alguien
+        alterase el `id` por una vía fuera de la API normal, la evidencia dejaría
+        de corresponder y la transacción fallaría cerrada.
+        """
+        return _proof_matches(self._id, self._proof)
+
+    def __repr__(self) -> str:
+        # Nunca revela la evidencia.
+        return f"AuthenticatedUser(id={self._id!r})"
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, AuthenticatedUser) and other._id == self._id
+
+    def __hash__(self) -> int:
+        return hash(self._id)
 
 
 class JwtVerifier:
@@ -100,7 +198,13 @@ class JwtVerifier:
             raise AuthError("Token inválido.") from exc
 
         email = claims.get("email")
-        return AuthenticatedUser(id=subject, email=email if isinstance(email, str) else None)
+        # La evidencia se deriva del `sub` YA VERIFICADO, después de comprobar
+        # firma, algoritmo, issuer, audience y expiración.
+        return AuthenticatedUser(
+            id=subject,
+            email=email if isinstance(email, str) else None,
+            proof=_bind_subject(subject),
+        )
 
 
 def extract_bearer_token(authorization_header: str | None) -> str:

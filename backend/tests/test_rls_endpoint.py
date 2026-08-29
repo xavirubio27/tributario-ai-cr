@@ -123,3 +123,61 @@ def test_same_endpoint_returns_different_data_per_user(client, user_a, user_b):
     assert a["db_user_id"] != b["db_user_id"]
     assert user_a.company_id in ids_a and user_a.company_id not in ids_b
     assert user_b.company_id in ids_b and user_b.company_id not in ids_a
+
+
+# ── Autoridad del rol: no puede declararse desde el cliente ───────────────────
+
+def test_endpoint_accepts_no_role_or_company_parameters():
+    """Comprobación estructural: el endpoint no tiene por dónde recibir un rol.
+
+    Si no existe parámetro, no existe fuente de autoridad falsificable.
+    """
+    import inspect
+
+    from app.main import diagnostics_identity
+
+    params = set(inspect.signature(diagnostics_identity).parameters)
+    assert "role" not in params
+    assert "company_id" not in params
+    assert "user_id" not in params
+    assert params == {"request", "user"}
+
+
+def test_client_supplied_role_is_ignored(client, user_b, seed_role):
+    """Enviar `role=owner` por query, cabecera y cuerpo no cambia nada.
+
+    El usuario es `viewer` en su empresa; la respuesta debe seguir diciendo
+    `viewer` pese a todos los intentos de auto-declararse `owner`.
+    """
+    seed_role(user_b.company_id, user_b.id, "viewer")
+    try:
+        response = client.get(
+            "/diagnostics/identity",
+            params={"role": "owner", "company_id": user_b.company_id, "user_id": user_b.id},
+            headers={
+                "Authorization": f"Bearer {user_b.token}",
+                "X-Role": "owner",
+                "X-User-Id": "00000000-0000-0000-0000-000000000000",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+
+        # La identidad sigue siendo la del token.
+        assert body["db_user_id"] == user_b.id
+
+        roles = {m["company_id"]: m["role"] for m in body["memberships"]}
+        assert roles[user_b.company_id] == "viewer", "El rol enviado por el cliente prevaleció"
+        assert "owner" not in roles.values()
+    finally:
+        seed_role(user_b.company_id, user_b.id, "owner")
+
+
+def test_memberships_reflect_database_role(client, user_a):
+    """El rol devuelto por HTTP procede de `company_memberships`."""
+    response = client.get(
+        "/diagnostics/identity", headers={"Authorization": f"Bearer {user_a.token}"}
+    )
+    assert response.status_code == 200
+    roles = {m["company_id"]: m["role"] for m in response.json()["memberships"]}
+    assert roles[user_a.company_id] == "owner"

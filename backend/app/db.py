@@ -39,6 +39,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from app.auth import AuthenticatedUser
 from app.config import BACKEND_DB_ROLE, Settings
 
 # `SET LOCAL ROLE` no admite parámetros, así que el nombre del rol se valida
@@ -160,16 +161,47 @@ def create_pool(settings: Settings) -> ConnectionPool:
 
 @contextmanager
 def user_transaction(
-    pool: ConnectionPool, settings: Settings, user_id: str
+    pool: ConnectionPool, settings: Settings, user: AuthenticatedUser
 ) -> Iterator[Connection]:
-    """Abre una transacción que actúa bajo la identidad del usuario indicado.
+    """Abre una transacción bajo la identidad de un usuario YA VERIFICADO.
+
+    CONTRATO — solo identidades verificadas
+
+        Acepta `AuthenticatedUser`, no un `str`. Un UUID llegado por query string,
+        cabecera o cuerpo de la petición NO satisface este contrato, y una
+        `AuthenticatedUser` solo puede emitirla `JwtVerifier.verify()`.
+
+        Antes aceptaba un `str`: bastaba con que un llamante pasara el UUID de
+        otro usuario para que `auth.uid()` pasara a ser ese otro. La corrección no
+        depende de que nadie se equivoque, sino de que el tipo no lo permita.
+
+        La identidad se establece UNA sola vez, en la frontera autenticada del
+        request. Los repositorios y helpers reciben la conexión ya contextualizada
+        y no pueden redefinirla.
 
     Al salir del bloque la transacción termina y la identidad deja de existir.
     """
+    # 1. El tipo: un str, un UUID, un dict o None no satisfacen el contrato.
+    if not isinstance(user, AuthenticatedUser):
+        raise DatabaseError(
+            "user_transaction exige una AuthenticatedUser verificada, "
+            f"no {type(user).__name__}."
+        )
+
+    # 2. La evidencia: debe corresponder EXACTAMENTE a este `id`.
+    #
+    #    Comprobación redundante por diseño. El constructor ya la exige, pero si
+    #    alguien alterase el `id` por una vía ajena a la API normal, aquí se
+    #    detecta ANTES de ejecutar SQL con esa identidad. Falla cerrada.
+    if not user.has_valid_binding():
+        raise DatabaseError(
+            "La evidencia de identidad no corresponde al identificador. "
+            "No se establece contexto de usuario."
+        )
     if settings.db_role not in _ALLOWED_DB_ROLES:
         raise DatabaseError(f"Rol de base de datos no permitido: {settings.db_role!r}")
 
-    claims = json.dumps({"sub": user_id, "role": settings.db_role})
+    claims = json.dumps({"sub": user.id, "role": settings.db_role})
 
     with pool.connection() as conn:
         with conn.transaction():

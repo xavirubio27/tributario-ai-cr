@@ -105,7 +105,7 @@ def test_effective_role_inside_transaction_is_authenticated(pool, settings, user
     """Dentro de la transacción de usuario el rol efectivo es `authenticated`."""
     from app.db import user_transaction
 
-    with user_transaction(pool, settings, user_a.id) as conn:
+    with user_transaction(pool, settings, user_a.identity) as conn:
         row = conn.execute(
             "select current_user::text as effective, session_user::text as login_role"
         ).fetchone()

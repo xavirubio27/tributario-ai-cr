@@ -16,7 +16,8 @@ Day 2 — COMPLETED  (sign-off final de Codex obtenido, commiteado y publicado)
 Day 3 — Data Model / Invoice Foundation
 Checkpoint A — Architecture & Baseline Gate — COMPLETED
 Checkpoint B — FastAPI + Identity/RLS Foundation — COMPLETED
-Next: Checkpoint C — por diseñar
+Checkpoint C — Authorization Roles Foundation — COMPLETED
+Next: resolver el gate fiscal antes de la primera tabla de comprobantes
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -37,19 +38,21 @@ Roadmap: **Fase 1 — Infrastructure / Auth / Company** (ver [ROADMAP.md](../ROA
 ## Last Substantive Checkpoint Commit
 
 ```
-22875b1 — feat: complete day 2 auth tenancy and security hardening   (2026-08-24)
+91596df — feat: establish backend identity and rls foundation   (2026-08-28)
 ```
 
 Este campo identifica el último commit que contiene **implementación o checkpoint
 estable**. Deliberadamente **no** referencia el commit documental que actualiza este
 propio archivo: hacerlo generaría una autorreferencia infinita.
 
-**Working tree:** El Día 2 completo —Checkpoints E, F, G y las correcciones
-posteriores a Codex— está commiteado y publicado. `HEAD == origin/main == 22875b1`,
-sin commits por delante ni por detrás.
+**Working tree:** contiene el Checkpoint C (roles de autorización) y las correcciones
+posteriores a su auditoría, listos para commit.
+
+En `91596df`, `HEAD == origin/main` sin commits por delante ni por detrás.
 
 Historial:
 ```
+91596df  feat: establish backend identity and rls foundation        (2026-08-28)
 22875b1  feat: complete day 2 auth tenancy and security hardening   (2026-08-24)
 ebf3be4  docs: update project state after checkpoint                (2026-08-23)
 85c3556  feat: establish secure tenancy and Next.js foundation      (2026-08-23)
@@ -66,7 +69,7 @@ ebf3be4  docs: update project state after checkpoint                (2026-08-23)
 ✅ least privilege
 ✅ private schema security pattern
 ✅ create_company wrapper/implementation pattern
-✅ 5 migrations synchronized local/remote
+✅ 8 migrations synchronized local/remote
 ✅ RLS A/B isolation tests — 11/11 PASS
 ✅ Next.js foundation
 ✅ TypeScript
@@ -126,6 +129,39 @@ Future core         Tax Data Layer · Tax Engine · Knowledge Base · AI Agent
 - **Leaked password protection pendiente para producción**: requiere plan Pro; el
   proyecto DEV está en Free
 
+## Authorization State — Checkpoint C (COMPLETED)
+
+Auditoría externa: 0 CRITICAL · 0 HIGH · 0 MEDIUM.
+
+
+**Roles del MVP:** `owner` · `editor` · `viewer` — `company_memberships.role` con
+`text` + `CHECK`, sin enum (ADR-015).
+
+**Fuente de verdad: `public.company_memberships`.** El JWT identifica al usuario y nada
+más. El rol se consulta en la base de datos en cada operación; no se lee de claims, ni
+del frontend, ni de la petición. Verificado: el endpoint no tiene parámetro de rol, y
+enviar `role=owner` o `user_id=<otro>` por query, cabecera o cuerpo no altera nada.
+
+**La identidad solo puede nacer de un JWT verificado, y está ligada a su subject.**
+`AuthenticatedUser` es un objeto inmutable con `__slots__`, no un dataclass: su evidencia
+es un HMAC sobre el `sub` ya verificado, con una clave privada del proceso. La prueba de
+A **no vale** para B, `dataclasses.replace` no es aplicable y el objeto no es mutable.
+`user_transaction` exige el tipo **y** revalida la ligadura antes de establecer
+`request.jwt.claims`: si no corresponde, falla cerrada sin ejecutar SQL.
+
+Los helpers de autorización reciben la **conexión ya contextualizada** y no aceptan
+identidad por parámetro, de modo que no existe interfaz por la que suplantar a otro
+usuario. Suplantación por query, cabeceras **y cuerpo** probada: la identidad sigue
+siendo la del token.
+
+**Sin RBAC granular**: no hay matriz de permisos, ni acciones tipo `invoice.*`, ni roles
+personalizados, ni administración de miembros. Un usuario puede tener roles distintos en
+empresas distintas. Sin membresía no hay rol por defecto: es `None`.
+
+**La aplicación no puede escribir memberships** (`42501`): un `viewer` no puede
+convertirse en `owner`. Las membresías `editor`/`viewer` de los tests se siembran fuera
+de la aplicación, por la CLI.
+
 ## Backend State
 
 ```
@@ -148,7 +184,7 @@ Sin datos fiscales: no hay `invoices`, ni parser, ni Tax Engine.
 - `private.create_company_impl` (definer, no expuesta)
 - `private.is_company_member` (definer, no expuesta)
 
-**Migrations** — 5, sincronizadas local/remoto:
+**Migrations** — 8, sincronizadas local/remoto:
 ```
 20260822230619_create_tenancy_tables
 20260822230620_create_private_schema_and_rls
@@ -157,9 +193,10 @@ Sin datos fiscales: no hay `invoices`, ni parser, ni Tax Engine.
 20260823213730_split_create_company_into_private_impl
 20260825041622_create_app_backend_role
 20260828212056_enforce_app_backend_memberships
+20260829001056_extend_membership_roles
 ```
 
-**7 migraciones**, todas sincronizadas local/remoto.
+**8 migraciones**, todas sincronizadas local/remoto.
 
 **Environment:** Supabase alojado, **DEVELOPMENT**. Nunca producción.
 Cambios de esquema **solo** por migración (`supabase db push`).
@@ -200,13 +237,13 @@ declarados: `[UNIT]` validación pura importada del propio código de la aplicac
 análisis del código fuente (sin INSERT directo, sin `service_role`, sin filtro por
 `user_id` en la consulta). Los detectores llevan autotest.
 
-**Total verificado: 147/147 PASS** — backend 115 + regresión Día 2 32.
+**Total verificado: 197/197 PASS** — backend 165 + regresión Día 2 32.
 
-**Backend: 115/115 PASS** — `backend/tests/`, pytest. `0 failed`, `0 skipped`.
-Cinco áreas: verificación de JWT (27, incluidos ES256-only y rechazo de RS256/HS256),
-guardas de configuración (validación positiva del rol, TLS, marcadores), rol de base de
-datos y verificación en runtime, privilegios efectivos medidos con `has_*_privilege`, e
-identidad transaccional y RLS por HTTP.
+**Backend: 165/165 PASS** — `backend/tests/`, pytest. `0 failed`, `0 skipped`.
+Seis áreas: verificación de JWT (ES256-only, rechazo de RS256/HS256), guardas de
+configuración (validación positiva del rol, TLS, marcadores), rol de base de datos y
+verificación en runtime, privilegios efectivos medidos con `has_*_privilege`, identidad
+transaccional y RLS por HTTP, y **roles de autorización (22)**.
 
 **Regresión Día 2: 32/32 PASS** — RLS 11 · Auth 11 · Company 10.
 
@@ -347,13 +384,16 @@ Knowledge Base · RAG · AI Agent · payments · Hacienda
 
 ## Next Action
 
-**Checkpoint C — por diseñar**
+**Resolver el gate fiscal**, registrado más arriba como
+`BLOCKING BEFORE FIRST FISCAL TABLE`.
 
-Checkpoint B cerrado: [ADR-012](DECISIONS.md#adr-012) demostrado técnicamente, con
-auditoría externa en 0 CRITICAL / 0 HIGH / 0 MEDIUM.
+Es la próxima decisión arquitectónica: permitir `FastAPI → fiscal data` **sin** habilitar
+`Frontend → Supabase Data API → fiscal data`. Debe cerrarse **antes** de crear la primera
+tabla de comprobantes.
 
-Antes de la primera tabla fiscal debe resolverse el gate registrado más arriba. Sigue
-sin existir código fiscal, ni tablas de comprobantes, ni parser XML, ni Tax Engine.
+Checkpoints A, B y C del Día 3 cerrados, los tres con auditoría externa en
+0 CRITICAL / 0 HIGH / 0 MEDIUM. Sigue sin existir código fiscal, ni tablas de
+comprobantes, ni parser XML, ni Tax Engine.
 
 Las limitaciones diferidas siguen documentadas más arriba y **no bloquean** el Día 3.
 
