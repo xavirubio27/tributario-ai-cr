@@ -43,6 +43,12 @@
 | [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
 | [ADR-019](#adr-019) | Confirmación de email desactivada solo en desarrollo | ✅ |
 | [ADR-020](#adr-020) | Frontera de acceso a datos fiscales: schema `fiscal` y rol de ejecución | ✅ |
+| [ADR-021](#adr-021) | Autoridad de las fuentes oficiales de comprobantes electrónicos | ✅ |
+| [ADR-022](#adr-022) | Preservación del XML original como artefacto inmutable | ✅ |
+| [ADR-023](#adr-023) | `reported_*` frente a `computed_*` | ✅ |
+| [ADR-024](#adr-024) | `DocumentParty` como instantánea histórica del comprobante | ✅ |
+| [ADR-025](#adr-025) | Núcleo MVP: Factura, Nota de Crédito y Nota de Débito | ✅ |
+| [ADR-026](#adr-026) | `schema_version` ≠ revisión del *ruleset* | ✅ |
 
 ---
 ---
@@ -988,3 +994,287 @@ propio diseño de privilegios y políticas.
 Esta decisión fue el **requisito previo a la primera tabla fiscal**: ninguna se creaba
 hasta que la frontera estuviera implementada, probada y auditada. Cumplido en la fase
 D1 --- ver «Gate --- cerrado» más arriba.
+
+
+---
+
+<a id="adr-021"></a>
+## ADR-021 — Autoridad de las fuentes oficiales de comprobantes electrónicos
+
+**Estado:** ✅ Aceptada (Día 3, fase E0) · **Criticidad: alta**
+
+### Contexto
+
+Existe abundante material de terceros sobre facturación electrónica costarricense:
+librerías, artículos, repositorios y documentación de proveedores de facturación. Casi
+todo es más cómodo de leer que los documentos oficiales, y casi todo está desactualizado,
+simplificado o directamente equivocado en algún detalle.
+
+Un error de dominio tomado de una fuente secundaria no se manifiesta como un fallo: se
+manifiesta como una cifra fiscal incorrecta que nadie detecta.
+
+### Decisión
+
+- La **estructura** de los comprobantes la fijan los **XSD oficiales** publicados por el
+  Ministerio de Hacienda para la versión aplicable.
+- La **semántica** —significado de códigos, composición de la clave, formatos, notas
+  condicionales— la fijan los **Anexos y Estructuras** oficiales y las resoluciones de
+  la Dirección General de Tributación.
+- Las fuentes secundarias sirven **solo para contraste técnico**. Nunca como autoridad
+  fiscal, y nunca como justificación de un campo o una regla.
+- Toda afirmación de dominio se registra con su fuente, versión y fecha.
+- Lo que las fuentes oficiales no resuelvan se declara **hueco abierto**. No se rellena
+  con un valor plausible.
+
+### Consecuencias
+
+- Los XSD y documentos se descargan y analizan, no se parafrasean de memoria.
+- El inventario vive en [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md), con matriz de fuentes.
+- Cuando Hacienda publique una versión nueva, la revisión consiste en volver a extraer
+  desde el origen, no en aplicar un *diff* narrado por terceros.
+- Coste asumido: leer XSD y PDF normativos es más lento que copiar un modelo ajeno.
+
+---
+
+<a id="adr-022"></a>
+## ADR-022 — Preservación del XML original como artefacto inmutable
+
+**Estado:** ✅ Aceptada (Día 3, fase E0) · **Criticidad: alta**
+
+### Contexto
+
+Normalizar un comprobante a un modelo relacional es interpretarlo. Toda interpretación
+puede estar equivocada, y la nuestra evolucionará.
+
+### Decisión
+
+El XML original se conserva **íntegro e inmutable**, junto a una huella criptográfica y
+metadatos de procedencia, aunque sus campos se normalicen por separado.
+
+### Consecuencias
+
+- **Valor probatorio:** el documento es el XML, no nuestra lectura de él.
+- **Reprocesable:** al corregir el parser se puede reinterpretar el histórico. Sin el
+  original, un error de interpretación sería permanente.
+- **Permite dejar información fuera del modelo relacional** sin perderla: lo que hoy no
+  justifica una estructura sigue estando en el original.
+- **Preserva la verificabilidad de la firma.** XAdES/XML-DSig firma sobre una forma
+  canónica del documento, no sobre los bytes literales, así que existen
+  transformaciones que una firma sí tolera. Pero determinar cuáles son seguras exige un
+  análisis que no hemos hecho, y equivocarse invalida la firma de forma irreversible.
+  Conservar el original elimina la pregunta: sea cual sea el método de verificación que
+  adoptemos, tendremos exactamente lo que se firmó.
+- Coste asumido: almacenamiento.
+
+**Sin decidir aún:** algoritmo de huella y mecanismo de almacenamiento. Se decidirán con
+los requisitos reales delante, no por costumbre.
+
+---
+
+<a id="adr-023"></a>
+## ADR-023 — `reported_*` frente a `computed_*`
+
+**Estado:** ✅ Aceptada (Día 3, fase E0) · **Criticidad: máxima**
+
+### Contexto
+
+El principio rector del proyecto es `LLM ≠ Tax Engine`. Existe un segundo límite igual
+de importante y más fácil de borrar por accidente: lo que **el comprobante declara** no
+es lo que **nosotros calculamos**.
+
+### Decisión
+
+```
+reported_*   valor tomado literalmente del comprobante
+computed_*   valor calculado por nuestro Tax Engine
+```
+
+- Ninguno sobrescribe al otro. Coexisten.
+- Un `computed_*` **nunca** se presenta como si lo hubiera reportado el emisor o Hacienda.
+- Que difieran es **información**, no un error a ocultar.
+
+### Consecuencias
+
+- Detectar una discrepancia entre lo declarado y lo calculado es una de las cosas más
+  valiosas que el producto puede hacer. Un modelo que sobrescribiera lo reportado la
+  haría imposible.
+- Refuerza [ADR-022](#adr-022): el origen de todo `reported_*` es el XML conservado.
+- Coste asumido: más columnas y más disciplina de nombrado.
+
+---
+
+<a id="adr-024"></a>
+## ADR-024 — `DocumentParty` como instantánea histórica del comprobante
+
+**Estado:** ✅ Aceptada (Día 3, fase E0)
+
+### Contexto
+
+Un comprobante declara quién era el emisor y quién el receptor **en el momento de
+emitirse**. Si esos datos fueran una clave foránea a un catálogo mutable de empresas,
+actualizar ese catálogo reescribiría el pasado.
+
+### Decisión
+
+`DocumentParty` representa la **instantánea histórica** de lo que el comprobante decía
+sobre emisor y receptor en el momento de emitirse. **No depende, como autoridad, de una
+entidad maestra mutable.**
+
+Si en el futuro existe un catálogo de contrapartes, será un índice construido **sobre**
+las instantáneas —útil para agregar y buscar— y nunca la fuente de verdad sobre lo que
+un comprobante contenía.
+
+### Consecuencias
+
+- Una factura de 2026 sigue mostrando en 2027 exactamente lo que contenía.
+- La identificación (`Tipo` + `Numero`) permite agregar por contribuyente sin que el
+  catálogo se convierta en autoridad sobre el pasado.
+- Si más adelante hace falta una entidad de contraparte, se construye **sobre** las
+  instantáneas, nunca sustituyéndolas.
+- Coste asumido: repetición de datos de parte entre comprobantes.
+
+---
+
+<a id="adr-025"></a>
+## ADR-025 — Núcleo MVP: Factura, Nota de Crédito y Nota de Débito
+
+**Estado:** ✅ Aceptada (Día 3, fase E0) · **alcance deliberadamente acotado**
+
+### Contexto
+
+Los siete comprobantes emitibles de la v4.4 comparten esqueleto. Analizados los XSD,
+Nota de Crédito y Nota de Débito son estructuralmente Factura Electrónica más dos
+campos, sin ausencias.
+
+### Decisión
+
+El **núcleo del MVP** son tres tipos de comprobante:
+
+```
+Factura Electrónica
+Nota de Crédito Electrónica
+Nota de Débito Electrónica
+```
+
+**Lo que esta decisión NO establece.** No declara que todos los tipos de comprobante
+vayan a compartir una única tabla o un modelo definitivo. La evidencia estructural
+(§3.1 de FISCAL_DOMAIN) muestra que los siete emitibles comparten esqueleto, y eso
+*sugiere* un modelo unificado con discriminador — pero el Recibo Electrónico de Pago
+tiene 57 nodos frente a 180, y esa diferencia se evaluará cuando toque incorporarlo, no
+ahora. El diseño físico se decide por objeto, en su momento.
+
+### Justificación
+
+1. Una factura sin sus notas **miente sobre el importe**: una nota de crédito modifica o
+   anula una factura ya emitida.
+2. El **coste marginal es casi nulo**: mismo esqueleto, dos campos más.
+3. Obliga a **acertar con las relaciones documentales desde el día uno**, porque las
+   notas exigen `InformacionReferencia`.
+
+Orden posterior **orientativo**, no decidido: Tiquete → Factura de Compra y de
+Exportación → Recibo Electrónico de Pago. Los mensajes de Hacienda y del receptor van
+aparte: tienen su propio ciclo de vida y se relacionan solo por la clave.
+
+La revisión 2026 refuerza el núcleo elegido: los códigos de referencia `13`, `14` y `15`
+—y su regla de imputación al periodo contable— existen precisamente para notas de
+crédito y débito. Sin ellas, esa semántica no tendría dónde aplicarse.
+
+
+---
+
+<a id="adr-026"></a>
+## ADR-026 — `schema_version` ≠ revisión del *ruleset*
+
+**Estado:** ✅ Aceptada (Día 3, fase E0)
+
+### Contexto
+
+Se comprobó con datos, no por conjetura, contra ambas revisiones del documento oficial:
+
+```
+versión del esquema      4.4          sin cambio
+XSD publicados           9 idénticos  byte a byte, Last-Modified 09-sep-2025
+revisión del documento   22/04/2026   Bitácora de Ajustes, 99 páginas
+elementos XML añadidos   NINGUNO      verificado comparando ambos documentos
+catálogos ampliados      nota 9: 12 → 17 códigos · nota 10: 18 → 20 códigos
+```
+
+Hacienda actualizó la semántica y los catálogos —nuevos códigos de referencia,
+identificaciones alfanuméricas, excepciones de teléfono, notas técnicas aclaradas— **sin
+cambiar la versión `4.4` ni un solo byte de los esquemas**.
+
+La comprobación más clara: `IdentificacionType/Numero` ya era `xs:string maxLength="20"`,
+de modo que admitir cédulas alfanuméricas **no requiere tocar el XSD**. El cambio es
+puramente de significado.
+
+Consecuencia: un comprobante emitido en octubre de 2025 y otro en diciembre de 2026
+declaran ambos `version="4.4"` y están sujetos a reglas distintas.
+
+### Propuesta
+
+Registrar por documento ingerido **dos ejes independientes**:
+
+| Eje | Qué es | Procedencia |
+|---|---|---|
+| `schema_version` | **Versión estructural**, determinada mecánicamente por el tipo de documento, el namespace y el esquema aplicable | Determinable a partir del propio documento. `version="4.4"` es un atributo del **XSD**, no un campo de la instancia XML |
+| `spec_revision` | Revisión del documento técnico (*ruleset*) aplicable | **No está en el XML, y la fecha no la determina.** Ver abajo |
+
+`spec_revision` es una propiedad **del documento ingerido**, no una constante global del
+sistema.
+
+No se afirma que exista un campo literal de versión dentro del XML: lo que existe es una
+**determinación mecánica** a partir del namespace del elemento raíz, que codifica a la
+vez el tipo de documento y la versión estructural.
+
+La propiedad que importa se mantiene intacta:
+
+```
+schema_version  ≠  ruleset / spec_revision
+```
+
+### La fecha de emisión NO determina el *ruleset*
+
+Entre el **22 de abril** y el **1 de noviembre de 2026** la adopción de los cambios es
+**anticipada y opcional**. Durante ese periodo conviven, para fechas idénticas:
+
+```
+v4.4 + ruleset anterior
+v4.4 + ruleset 2026
+```
+
+Dos comprobantes emitidos el mismo día pueden estar sujetos a catálogos distintos, según
+si su emisor ya adoptó los cambios. Una regla «fecha ≥ 01/11/2026 → ruleset 2026»
+clasificaría mal todo el periodo de transición.
+
+La identificación de la revisión requerirá un mecanismo futuro que pondere:
+
+- el **contenido efectivo del documento** — un código `13`–`17` en nota 9, o `19`–`20`
+  en nota 10, solo es posible bajo el ruleset 2026;
+- la **semántica presente** y qué reglas son consistentes con los valores observados;
+- la **compatibilidad de reglas** — qué ruleset explica el documento sin contradicción;
+- la **fecha como señal, no como autoridad**.
+
+**Este ADR no diseña ese algoritmo.** Fija que `spec_revision` es un valor **inferido y
+registrado por documento, junto a la evidencia que lo sustenta**, nunca una función de
+la fecha ni una constante del sistema.
+
+### Consecuencias
+
+- Los catálogos se validan contra la revisión aplicable a cada documento, no contra una
+  lista fija. Un `CHECK` con los doce códigos de referencia actuales rechazaría
+  comprobantes válidos a partir del 1 de noviembre de 2026.
+- Un código como el `13` solo es interpretable bajo la revisión que lo introdujo.
+- Al reprocesar el histórico no se aplican reglas de 2026 a documentos de 2025.
+- Refuerza [ADR-021](#adr-021): obliga a fechar cada afirmación de dominio, no solo a
+  versionarla.
+- Se registran huella y `Last-Modified` de cada archivo oficial analizado, porque el
+  documento técnico **no lleva dentro** su propio número de revisión.
+- Las versiones anteriores del esquema no desaparecen: la propia v4.4 admite v4.3 y
+  anteriores para notas de crédito y débito que ajusten comprobantes de su vigencia. El
+  sistema debe aceptar más de una `schema_version`.
+- Coste asumido: `spec_revision` hay que **inferirla**, con la evidencia que la sustenta,
+  y mantener un calendario de revisiones. Es trabajo real y recurrente. La alternativa
+  —suponer que `4.4` significa siempre lo mismo— produce interpretaciones silenciosamente
+  erróneas del histórico, que es peor. Y no es hipotético: la regla de efecto contable
+  por código de referencia (nota 9, revisión 2026) cambia a qué periodo fiscal se imputa
+  un ajuste.

@@ -22,7 +22,13 @@ Checkpoint D — Fiscal Data Access Boundary — COMPLETED
   Phase D1 — Boundary Implementation & Proof — COMPLETED
     · auditoría #1: FAIL/OPEN — 3 MEDIUM + 2 LOW, corregidos
     · reauditoría: 0 CRITICAL / 0 HIGH / 0 MEDIUM / 1 LOW documental — PASS
-Next: diseño del primer modelo fiscal. El gate fiscal está CERRADO.
+Checkpoint E — CR Electronic Invoice Domain Foundation
+  Phase E0 — Official Source Baseline & Domain Inventory — COMPLETED
+    · E0-R1: fuentes revalidadas · H-1 y H-2 cerrados
+    · E0-R2: base semántica = Anexos 99 págs (Bitácora 22/04/2026)
+             H-5 y H-8 cerrados · ADR-021…026 aceptadas
+    · revisión arquitectónica: PASS
+Next: fase E1 — diseño del esquema fiscal. Sin tablas fiscales creadas.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -369,6 +375,103 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
 
+## Checkpoint E — Fase E0 · COMPLETED
+
+Revisión arquitectónica: **PASS**. Fase de investigación y documentación únicamente;
+ningún cambio de código, esquema ni configuración.
+
+### Línea base oficial
+
+```
+Official structural baseline
+  Comprobantes Electrónicos v4.4
+  9 XSD oficiales · sin cambios estructurales
+
+Official semantic baseline
+  ANEXOS_Y_ESTRUCTURAS_V4.4.pdf
+  99 páginas · Bitácora de Ajustes al 22/04/2026
+  sha256 6e093226b29b38c5c8de825f70c1b1cb8ed81e2f4a6eb0b3ff52708fc1eb2769
+```
+
+**Fechas — dos cosas distintas, deliberadamente separadas:**
+
+| Fecha | Qué es |
+|---|---|
+| **01/09/2025** | Entrada en vigor **general de la v4.4** |
+| 22/04/2026 | Publicación de la **revisión semántica 2026**, con adopción anticipada permitida |
+| 01/11/2026 | Obligatoriedad de esa revisión |
+
+La fecha de 2026 **no** es la entrada en vigor de la v4.4.
+
+### Incidencia I-1
+
+```
+ATV y hacienda.go.cr pueden servir revisiones distintas
+bajo el mismo nombre de fichero.
+```
+
+Regla resultante, aplicable a toda futura actualización de fuentes:
+
+```
+identidad de una fuente oficial
+  = URL/ubicación  +  huella criptográfica / evidencia de revisión
+```
+
+El nombre del fichero **no basta**.
+
+### Invariante de dominio registrado
+
+```
+El periodo fiscal/contable NO debe inferirse únicamente
+de la fecha de emisión del documento.
+```
+
+Requisito pendiente para el Tax Engine, no algoritmo implementado. La semántica de las
+referencias puede imputar efectos a periodos distintos ([FISCAL_DOMAIN](FISCAL_DOMAIN.md) §9.2, §13.2.bis).
+**No se ha definido ningún `fiscal_period` ni se ha creado nada en la base de datos.**
+
+### Dominio fiscal inicial
+
+```
+Factura Electrónica  +  Nota de Crédito  +  Nota de Débito
+```
+
+Razón: una factura no puede interpretarse correctamente sin considerar los documentos que
+la ajustan. **No implementado todavía.**
+
+| | |
+|---|---|
+| Versión oficial vigente verificada | **4.4** — no existe 4.5 ni posterior |
+| Obligatoriedad de la v4.4 | **1 de setiembre de 2025** |
+| Norma original | `MH-DGT-RES-0027-2024` (13-nov-2024) — fijaba 1-jun-2025 |
+| Modificación posterior del plazo | `MH-DGT-RES-0001-2025` |
+| Revisión del documento técnico | **Bitácora de Ajustes al 22/04/2026** (99 págs, `sha256 6e093226…`) |
+| Calendario de la revisión 2026 | disponible 22-abr-2026 · uso anticipado permitido · **obligatoria 1-nov-2026** |
+| XSD oficiales descargados y analizados | **9 / 9** — re-descargados: **9 idénticos, 0 distintos**. La revisión 2026 **no añade elementos** |
+| Documentos oficiales descargados | 5 PDF (Anexos 99 · Anexos 98 · Resolución 9 · Reglamento 28 · Generalidades 20) |
+| Inventario de Factura Electrónica | **181 nodos** (incluida la referencia a la firma) — **67 MVP normalizado · 57 normalizar después · 57 solo crudo**. `raw-only` **no** significa descartado: todo se conserva en el XML original |
+| Catálogos de referencia | nota 9: 12 → **17 códigos** · nota 10: 18 → **20 códigos** |
+| Huecos abiertos | 4 — H-3, H-4, H-6, H-7. **Cerrados: H-1, H-2, H-5, H-8.** Registrada la incidencia técnica I-1 |
+| Documento producido | [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md) |
+| Cambios en código | **ninguno** |
+| Tablas fiscales creadas | **0** |
+
+**Dos ubicaciones oficiales, dos revisiones (incidencia I-1).** `hacienda.go.cr` sirve
+la revisión vigente de 99 páginas; la ruta de ATV sigue sirviendo la de 98, con **el
+mismo nombre de archivo**. Hacienda sí publica la actualización: lo que falla es asumir
+una única URL canónica. Regla operativa: fijar la ubicación **y** contrastar la huella.
+
+**Hallazgo de fondo de E0-R2.** La revisión 2026 establece que el **código de referencia
+determina el periodo contable** de un ajuste: `01`, `02`, `06` y `12` imputan al periodo
+de la nota; `13` y `14`, al del comprobante original. El periodo fiscal de un ajuste
+**no se deduce de su fecha**. Detalle en [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md) §9.2.
+
+**Fiscal Gate = PASSED / CLOSED**, pero **no se ha creado ninguna tabla fiscal de
+producto**: `invoices`, `invoice_lines`, `source_documents` y `tax_profiles` siguen sin
+existir, y el schema `fiscal` está vacío.
+
+---
+
 ## ✅ Fiscal Data Access Boundary Gate — PASSED / CLOSED
 
 Registrado hasta ahora como `🔴 BLOCKING BEFORE FIRST FISCAL TABLE`. **Cerrado**
@@ -470,21 +573,33 @@ auditada y commiteada. Hoy solo existe el contrato, no la frontera.
 ## Current Constraints — NO construir todavía, hasta que toque en el roadmap
 
 ```
-XML · invoices · FastAPI · Tax Engine · IVA
-Knowledge Base · RAG · AI Agent · payments · Hacienda
+invoices · invoice_lines · source_documents · tax_profiles
+parser XML · Tax Engine · IVA
+Knowledge Base · RAG · AI Agent · payments · API de Hacienda
 ```
+
+> **NO crear tablas fiscales hasta cerrar el modelo conceptual y verificar las fuentes
+> oficiales de Hacienda.** El gate de la frontera fiscal está cerrado, pero eso autoriza
+> a *diseñar*, no a crear tablas.
+
+`FastAPI` figuraba en esta lista desde el Día 1 y ya no corresponde: existe y quedó
+cerrado en el Checkpoint B del Día 3. Se retira por obsoleta, no por levantarla.
 
 ---
 
 ## Next Action
 
-**Diseño del primer modelo fiscal.** El gate fiscal está cerrado y la frontera
-demostrada (233/233 PASS), así que el modelo de datos fiscales ya puede diseñarse.
+**Revisión de la fase E0.** El inventario del dominio está hecho y documentado en
+[FISCAL_DOMAIN.md](FISCAL_DOMAIN.md); falta aprobación antes de pasar a diseño de
+esquema.
 
-Todavía no existe ninguna tabla fiscal de producto, y la primera no se crea sin su
-propio análisis previo: qué campos, qué privilegios por objeto, qué políticas RLS
-—apoyadas en helpers privados aprobados, nunca en `auth.uid()` directo— y qué
-trazabilidad hacia el documento origen.
+E0 fue exclusivamente investigación y documentación. **Ningún cambio en `backend/`,
+`frontend/` ni `supabase/migrations/`.** Sigue sin existir ninguna tabla fiscal.
+
+Decisiones conceptuales cerradas: [ADR-021](DECISIONS.md#adr-021) …
+[ADR-026](DECISIONS.md#adr-026), las seis aceptadas. Ninguna fija esquema físico:
+[ADR-025](DECISIONS.md#adr-025) acota el núcleo MVP sin declarar que todos los tipos
+compartan una única tabla.
 
 Checkpoints A, B, C y D del Día 3 cerrados, los cuatro con auditoría externa en
 0 CRITICAL / 0 HIGH / 0 MEDIUM. Sigue sin existir código fiscal, ni tablas de
