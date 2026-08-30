@@ -54,6 +54,13 @@
 | [ADR-029](#adr-029) | Códigos externos sin clave foránea obligatoria | ✅ |
 | [ADR-030](#adr-030) | Tres capas de validación | ✅ |
 | [ADR-031](#adr-031) | Duplicados: artefacto frente a documento lógico | ✅ |
+| [ADR-032](#adr-032) | Claves foráneas compuestas para seguridad de tenant | ✅ |
+| [ADR-033](#adr-033) | Mapeo decimal exacto y forma sin valor en catálogos | ✅ |
+| [ADR-034](#adr-034) | Representación física de fecha y hora | ✅ |
+| [ADR-035](#adr-035) | Unicidad lógica y visibilidad del conflicto | ✅ |
+| [ADR-036](#adr-036) | Inmutabilidad, borrado y ausencia de `DELETE` | ✅ |
+| [ADR-037](#adr-037) | Almacenamiento y huella del artefacto de origen | ✅ |
+| [ADR-038](#adr-038) | Autorización de escritura fiscal | ✅ |
 
 ---
 ---
@@ -1071,8 +1078,10 @@ metadatos de procedencia, aunque sus campos se normalicen por separado.
   adoptemos, tendremos exactamente lo que se firmó.
 - Coste asumido: almacenamiento.
 
-**Sin decidir aún:** algoritmo de huella y mecanismo de almacenamiento. Se decidirán con
-los requisitos reales delante, no por costumbre.
+**Sin decidir cuando se aceptó este ADR (fase E0):** algoritmo de huella y mecanismo de
+almacenamiento. **Decididos después en el diseño físico de E2** ([ADR-037](#adr-037)):
+`raw_xml BYTEA` y `content_sha256 BYTEA` con SHA-256 de los bytes originales exactos, en
+PostgreSQL. Se decidieron con los requisitos reales delante, como aquí se pedía.
 
 ---
 
@@ -1501,10 +1510,18 @@ De ahí que un `ElectronicDocument` pueda tener **1..N** `SourceDocument`, y que
 `SourceDocument` normalice a **0..1** `ElectronicDocument`.
 
 **Sobre el conflicto.** La `Clave` es identidad oficial fuerte, pero coincidir en ella no
-autoriza a ignorar que el contenido difiere. Dos XML divergentes con la misma clave sólo
-admiten explicaciones preocupantes —documento manipulado, fallo del sistema emisor,
+autoriza a ignorar que el contenido difiere. Dos documentos divergentes con la misma clave
+sólo admiten explicaciones preocupantes —documento manipulado, fallo del sistema emisor,
 confusión entre entornos— y todas exigen que alguien mire. Fusionarlos silenciosamente
 escogería una versión al azar y destruiría la evidencia de la discrepancia.
+
+> **Precisión de E2, sin cambiar el significado de este ADR.** «Contenido divergente»
+> significa **contenido fiscal autoritativo divergente**, no simplemente una huella de
+> bytes distinta. Dos serializaciones del mismo comprobante pueden diferir en bytes
+> —espaciado, orden de atributos, codificación, envoltura de firma— sin diferir en un solo
+> dato fiscal. Una huella distinta es una **observación sobre artefactos**; el conflicto es
+> una **conclusión sobre el documento**, y pasar de una a otra exige comparar el contenido
+> reportado. Detalle en [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §15.1.
 
 **Sobre los dos tenants.** No existe un `ElectronicDocument` global compartido entre
 empresas. **La identidad lógica dentro del SaaS es de ámbito de tenant, aunque la `Clave`
@@ -1518,3 +1535,446 @@ nuestro registro identifica *lo que esa empresa tiene*.
 - Dos empresas distintas sí tienen cada una su `ElectronicDocument` del mismo
   comprobante: es lo correcto, para una es venta y para otra compra.
 - No fija ninguna restricción de unicidad concreta: eso es E2.
+
+
+---
+
+<a id="adr-032"></a>
+## ADR-032 — Claves foráneas compuestas para seguridad de tenant
+
+**Estado:** ✅ Aceptada (Día 3, fase E2) · **Criticidad: máxima**
+
+### Contexto
+
+[ADR-027](#adr-027) fijó que toda entidad fiscal hija pertenece al mismo tenant que su
+padre. Llevar `company_id` en cada tabla es necesario para que RLS decida sobre una
+columna propia, pero **por sí solo permite** que una fila declare un tenant y apunte a un
+padre de otro. Una línea de la empresa A colgando de una factura de la empresa B es una
+fuga entre contribuyentes.
+
+### Decisión
+
+**Cada tabla fiscal lleva `company_id`** para que RLS decida sobre una columna propia. Y
+cada hija referencia a su padre con una **clave foránea compuesta**:
+
+```sql
+foreign key (company_id, parent_id) references parent (company_id, id)
+```
+
+**`UNIQUE (company_id, id)` sólo en las tablas que son destino de una FK compuesta**, no en
+las siete:
+
+| Tabla | ¿Destino de FK compuesta? | ¿`UNIQUE (company_id, id)`? |
+|---|---|---|
+| `electronic_documents` | Sí — desde `source_documents`, `document_parties`, `document_lines` y **dos veces** desde `document_references` | ✅ **Sí** |
+| `document_lines` | Sí — desde `line_discounts` y `line_taxes` | ✅ **Sí** |
+| `source_documents` · `document_parties` · `line_discounts` · `line_taxes` · `document_references` | No | ❌ **No** |
+
+En una tabla que nadie referencia, `UNIQUE (company_id, id)` es redundante —`id` ya es
+único por ser PK— y sólo añade un índice que mantener en cada escritura. **No se sacrifica
+seguridad**: el aislamiento lo impone la FK compuesta de la **hija**, no el índice de la
+hoja.
+
+**Los dos enlaces opcionales** acotan la acción de borrado a la columna nullable, porque
+`company_id` es `NOT NULL` y un `SET NULL` sin columnas intentaría anularla:
+
+```sql
+foreign key (company_id, electronic_document_id)
+    references fiscal.electronic_documents (company_id, id)
+    on delete set null (electronic_document_id)
+
+foreign key (company_id, resolved_document_id)
+    references fiscal.electronic_documents (company_id, id)
+    on delete set null (resolved_document_id)
+```
+
+### Consecuencias
+
+- El cruce entre tenants pasa a ser **imposible en el motor**: la pareja no existiría en
+  el índice del padre. No depende de FastAPI, ni de RLS, ni de una revisión de código.
+- Coste: un índice único adicional por tabla y una columna redundante por hija. Para datos
+  fiscales el intercambio es evidente.
+- **A verificar en la implementación:** con `MATCH SIMPLE` (por defecto) la FK compuesta no
+  se comprueba si alguna columna es `NULL`, que es justo lo que necesitan los enlaces
+  opcionales. Es comportamiento documentado, pero debe probarse en E3, no asumirse.
+
+---
+
+<a id="adr-033"></a>
+## ADR-033 — Mapeo decimal exacto y forma sin valor en catálogos
+
+**Estado:** ✅ Aceptada (Día 3, fase E2)
+
+### Decisión
+
+**Decimales exactos**, verificados contra el motor:
+
+| Tipo XSD | PostgreSQL |
+|---|---|
+| `DecimalDineroType` (18,5) | `numeric(18,5)` |
+| `Cantidad` (16,3) | `numeric(16,3)` |
+| `Tarifa` (4,2) | `numeric(4,2)` |
+| `FactorCalculoIVA` (5,4) | `numeric(5,4)` |
+| `Proporcion` (10,5) | `numeric(10,5)` |
+| `PorcentajeOC` (9,5) | `numeric(9,5)` |
+
+Nunca `float`, `real` ni `double precision`.
+
+**Códigos de catálogo oficiales: se valida la forma, nunca el valor.**
+
+```sql
+check (tax_code   ~ '^[0-9]{2}$')     -- longitud, no lista de valores
+check (cabys_code ~ '^[0-9]{13}$')
+```
+
+### Justificación
+
+`numeric(18,5)` almacena exactamente `9999999999999.99999` —el máximo del XSD— y desborda
+con un dígito más. Comprobado contra la base de datos.
+
+Sobre los catálogos, la evidencia es directa: el XSD publicado enumera **12** códigos de
+referencia y **19** tipos de documento referenciado, mientras los Anexos vigentes definen
+**17** y **20**. Un `CHECK IN (...)` copiado del XSD **rechazaría hoy comprobantes
+válidos**. Es [ADR-029](#adr-029) llevado al motor.
+
+`document_type`, `direction`, `role` y los estados internos **sí** llevan `CHECK` de valor:
+son vocabulario nuestro, no catálogo de Hacienda.
+
+### Consecuencias
+
+- PostgreSQL **redondea en silencio** los decimales excedentes en lugar de rechazarlos. El
+  XSD ya lo prohíbe, así que la captura corresponde a la capa 1; conviene no confiar en que
+  el tipo protege solo.
+- Un código inválido de catálogo pasa la base de datos y lo detecta la capa 2.
+
+---
+
+<a id="adr-034"></a>
+## ADR-034 — Representación física de fecha y hora
+
+**Estado:** ✅ Aceptada (Día 3, fase E2)
+
+### Decisión
+
+**Las dos fechas fiscales se almacenan en tres columnas cada una.** Seis columnas en total.
+
+`FechaEmision` → `fiscal.electronic_documents`:
+
+```sql
+issued_at                timestamptz  not null,  -- el instante
+issued_at_offset_minutes smallint     not null,  -- el desplazamiento declarado
+issued_at_raw            text         not null   -- el valor literal del XML
+    check (issued_at_offset_minutes between -840 and 840)
+```
+
+`FechaEmisionIR` → `fiscal.document_references`:
+
+```sql
+reported_reference_date            timestamptz not null,  -- el instante
+reported_reference_offset_minutes  smallint    not null,  -- el desplazamiento declarado
+reported_reference_date_raw        text        not null   -- el valor literal del XML
+    check (reported_reference_offset_minutes between -840 and 840)
+```
+
+Cada tríada preserva, respectivamente:
+
+```
+instante  ·  desplazamiento reportado en la fuente  ·  representación literal exacta
+```
+
+**Rango `−840 .. +840`**, no `±1440`: XML Schema limita el desplazamiento de `xs:dateTime`
+a `−14:00 .. +14:00`. Un rango mayor admitiría valores que el propio esquema rechaza.
+
+**Las tres columnas de `FechaEmisionIR` son `NOT NULL`** para toda fila existente de
+`document_references`, sin `CHECK` de coherencia entre ellas. El XSD declara
+`FechaEmisionIR [1..1]` y los Anexos v4.4 le asignan condición **`1`** —obligatorio— en los
+siete tipos de comprobante. La opcionalidad vive en el nodo `InformacionReferencia [0..10]`
+y se representa por **ausencia de fila**, no por columnas nulas.
+
+### Justificación
+
+Un `timestamptz` solo pierde el desplazamiento, que es **información fiscal**: determina
+el día local del emisor, que puede diferir del día UTC. El literal permite demostrar qué
+decía exactamente el documento y reprocesarlo si nuestra interpretación cambia.
+
+**La fecha de referencia no es menos fiscal por referirse a otro documento.** Al contrario:
+el código `13` de la nota 10 —«facturación mes vencido»— exige indicar ahí **el periodo
+fiscal al que pertenece el ingreso**, no la fecha real. Es justamente el campo donde el
+valor literal importa.
+
+**No se codifica la zona horaria de Costa Rica en ninguna parte**: el desplazamiento se
+toma del documento, y se almacena como desplazamiento reportado, no como zona IANA.
+
+### Consecuencias
+
+- Seis columnas para dos campos lógicos. Coste bajo para auditoría literal y reproceso.
+- Un campo lógico puede mapear a más de una columna física sin contradicción: los 48
+  campos con valor del inventario producen **52 columnas físicas** (48 − 2 + 6). Las
+  columnas auxiliares **no son nodos XML nuevos**.
+- Ninguna de las dos fechas pierde instante, desplazamiento ni literal.
+
+---
+
+<a id="adr-035"></a>
+## ADR-035 — Unicidad lógica y visibilidad del conflicto
+
+**Estado:** ✅ Aceptada (Día 3, fase E2)
+
+### Decisión
+
+```sql
+unique (company_id, clave)     -- nunca unique (clave) global
+```
+
+Y **prohibición explícita** de `INSERT ... ON CONFLICT DO UPDATE` sobre
+`electronic_documents`.
+
+### Justificación
+
+Una unicidad global sería incorrecta dos veces: contradice que emisor y receptor puedan
+ser ambos clientes del SaaS ([ADR-031](#adr-031)), y **filtraría entre tenants** —un error
+de unicidad revelaría a la empresa A que la B ya tiene ese comprobante—.
+
+La restricción por tenant impide el duplicado **y hace visible el conflicto**: un segundo
+XML con la misma clave produce `23505`, y ahí la aplicación recupera el documento existente
+del mismo tenant y compara la evidencia.
+
+**Una huella distinta no basta para concluir conflicto.** Señala artefactos divergentes,
+que es una observación sobre bytes; clasificar el caso como conflicto de integridad exige
+comparar el contenido fiscal reportado ([ADR-037](#adr-037), §15.1 del modelo físico). La
+única conclusión automática admisible es **no fusionar en silencio**.
+
+`ON CONFLICT DO UPDATE` convertiría ese conflicto en una sobrescritura silenciosa,
+escogiendo una versión al azar y destruyendo la evidencia de la discrepancia.
+
+### Consecuencias
+
+- La ingesta debe manejar `23505` explícitamente en lugar de delegar en el motor.
+- **No se impone `UNIQUE` sobre la huella del artefacto**: conservar ambos artefactos es
+  precisamente lo que ADR-031 describe. La deduplicación es una consulta previa, apoyada
+  en un índice **no único**.
+
+---
+
+<a id="adr-036"></a>
+## ADR-036 — Inmutabilidad, borrado y ausencia de `DELETE`
+
+**Estado:** ✅ Aceptada (Día 3, fase E2)
+
+### Decisión
+
+**Borrado:**
+
+| Relación | Comportamiento |
+|---|---|
+| Cualquier tabla fiscal → `public.companies` | `ON DELETE RESTRICT` |
+| Dentro del agregado del documento | `ON DELETE CASCADE` |
+| `source_documents.electronic_document_id` | `ON DELETE SET NULL (electronic_document_id)` |
+| `document_references.resolved_document_id` | `ON DELETE SET NULL (resolved_document_id)` |
+
+**Privilegios:** `fiscal_backend` **no recibe `DELETE`** en el MVP, y **tampoco `UPDATE` a
+nivel de tabla**: sólo `GRANT UPDATE (columnas)` sobre la lista explícita de metadatos
+mutables. Conceder la tabla y revocar columnas después **no funciona** — el privilegio de
+tabla sigue autorizando la columna—. Matriz completa en
+[FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §26.3: 15 columnas mutables en 3 de
+las 7 tablas; `document_parties`, `document_lines`, `line_discounts` y `line_taxes` no
+reciben ningún `UPDATE`.
+
+**Inmutabilidad:** los hechos de origen —artefacto, campos `reported_*`, instantáneas de
+partes, líneas, impuestos y descuentos— no cambian. Sí cambian los metadatos de
+interpretación: estado de parseo, enlace al documento, revisión de *ruleset*, `direction` y
+`resolved_document_id`.
+
+`updated_at` sólo en `source_documents` y `electronic_documents`.
+
+### Justificación
+
+`RESTRICT` en la frontera de empresa impide destruir evidencia tributaria como efecto
+colateral. `CASCADE` dentro del agregado es correcto porque una línea sin su factura no
+significa nada. Los dos `SET NULL` **acotados a la columna nullable** protegen datos de
+origen que deben sobrevivir a la desaparición de aquello a lo que apuntan; sin acotar,
+intentarían anular también `company_id`, que es `NOT NULL`, y el borrado fallaría.
+
+Lo que realmente protege los documentos no es el `CASCADE`, sino **no conceder `DELETE`**:
+ningún flujo del MVP necesita borrar un comprobante.
+
+### Consecuencias
+
+- Un borrado legítimo será un camino administrativo explícito y auditable, no un privilegio
+  permanente. Misma lógica que [ADR-002](#adr-002) aplica a `service_role`.
+- Sin *triggers* de inmutabilidad: la protección viene de no conceder `UPDATE` sobre las
+  columnas que no deben cambiar.
+
+
+---
+
+<a id="adr-037"></a>
+## ADR-037 — Almacenamiento y huella del artefacto de origen
+
+**Estado:** ✅ Aceptada (Día 3, fase E2) · **Cierra H-6 para el MVP**
+
+### Contexto
+
+[ADR-022](#adr-022) exige conservar el XML original íntegro. Dónde vive y cómo se
+identifica quedó abierto como **H-6**.
+
+### Decisión
+
+```sql
+raw_xml        bytea not null,
+content_sha256 bytea not null
+    check (octet_length(content_sha256) = 32)
+    check (content_sha256 = pg_catalog.sha256(raw_xml))
+```
+
+Función **nativa calificada**: `pg_catalog.sha256`. No `pgcrypto`, no `digest()`, sin
+ampliar `USAGE` sobre `extensions`.
+
+**`bytea` dentro de PostgreSQL**, no `xml`, no `text`, no almacenamiento de objetos en el
+MVP.
+
+**`content_sha256`**: SHA-256 sobre los **bytes originales exactos**, 32 bytes crudos.
+
+```
+misma huella     →  señal criptográficamente muy fuerte de equivalencia de bytes
+huella distinta  ↛  semántica fiscal distinta
+```
+
+No es una **prueba matemática** de identidad: dos secuencias distintas con la misma huella
+son teóricamente posibles, aunque nadie sepa construirlas. Cuando haga falta certeza y
+ambos artefactos estén disponibles, la comparación directa `raw_xml = raw_xml` la da; la
+huella evita leer los bytes en el caso común.
+
+Y en el otro sentido: **misma `Clave` con huellas distintas señala artefactos divergentes,
+que requieren evaluación — no es automáticamente un conflicto de integridad**
+([ADR-031](#adr-031), §15.1 del modelo físico).
+
+No es la firma electrónica, ni validación XAdES, ni huella canónica, ni huella del
+documento normalizado, **ni prueba de equivalencia lógica entre comprobantes**. Es huella
+de contenido para integridad y para señalar artefactos idénticos. **No se diseña
+canonicalización propia** ni ninguna «huella canónica del XML».
+
+**Sin `UNIQUE`.** Los mismos bytes pueden corresponder a dos eventos de ingesta
+legítimos, con procedencia y momento distintos. Índice **no único** sobre
+`(company_id, content_sha256)` para consultar equivalencia antes de insertar. Dos
+`SourceDocument` idénticos **no se colapsan automáticamente**.
+
+**Inmutabilidad.** `raw_xml` y `content_sha256` son hechos de origen: no se actualizan
+tras el `INSERT`. Un artefacto incorrecto se registra como **otro** `SourceDocument`; los
+bytes históricos no se reescriben.
+
+### Justificación
+
+`bytea` y no `xml`: el tipo `xml` valida y puede normalizar, así que rechazaría al
+insertar precisamente el artefacto mal formado que hay que conservar para investigar, y
+cualquier normalización rompería la huella. `text` fuerza una codificación y puede alterar
+bytes. `bytea` no interpreta nada.
+
+Dentro de PostgreSQL y no en Storage: **atomicidad real** —artefacto y metadatos en la
+misma transacción, sin objetos huérfanos— y **una sola frontera** de aislamiento, la ya
+auditada en el Checkpoint D, en lugar de una segunda superficie de acceso.
+
+Sobre dónde calcular la huella, se verificó en DEV en lugar de suponerlo: `pgcrypto` está
+instalado, pero `fiscal_backend` **no tiene `USAGE` sobre el schema `extensions`** —la
+llamada devuelve `42501`—, así que usarlo exigiría ampliar la frontera fiscal por una
+función de hash. Innecesario: **`sha256(bytea)` es nativa de `pg_catalog`**, alcanzable
+por el rol, `IMMUTABLE`, y produce el mismo valor que pgcrypto y que `shasum -a 256`.
+
+Por eso el hash se **calcula en FastAPI y se verifica en la base de datos**: una huella
+que no corresponda a los bytes no se puede guardar, sin depender de que el código acierte
+siempre. Una única definición canónica, comprobada en los dos lados.
+
+### Consecuencias
+
+- **H-6 cerrado para el MVP.** Resuelve **almacenamiento e integridad del artefacto**; no
+  resuelve la **equivalencia lógica entre documentos**, que pertenece a la deduplicación y
+  a la validación semántica ([ADR-031](#adr-031), §15.1 del modelo físico). La
+  escalabilidad no es bloqueante.
+- Migrar en el futuro a almacenamiento de objetos sigue siendo posible, y deberá preservar
+  bytes exactos, huella, procedencia, tenant, inmutabilidad y rastro de auditoría. **No se
+  añade ahora ninguna abstracción de almacenamiento** para un futuro hipotético.
+- El `CHECK` recalcula el hash en cada inserción. Despreciable frente al coste de escribir
+  el propio `bytea`, y compra una garantía que ninguna disciplina de código iguala.
+- La base de datos crece con los artefactos. Es el coste asumido a cambio de atomicidad y
+  de no duplicar la frontera de seguridad.
+
+
+---
+
+<a id="adr-038"></a>
+## ADR-038 — Autorización de escritura fiscal
+
+**Estado:** ✅ Aceptada (Día 3, fase E2) · **Criticidad: alta**
+
+### Contexto
+
+El diseño físico de E2 descubrió que `private.is_company_member(company_id)` —el único
+helper de autorización existente— demuestra **pertenencia, no rol**. Verificado leyendo su
+cuerpo: consulta `company_memberships` por `company_id` y `user_id`, sin mirar `role`.
+
+El proyecto tiene roles desde el Checkpoint C ([ADR-015](#adr-015)): `owner`, `editor`,
+`viewer`. Y en todo el proyecto **no existe ni una sola política RLS de escritura**.
+
+Si las políticas fiscales de escritura usaran ese helper como única autorización, **un
+`viewer` adquiriría capacidad de modificar datos fiscales por el mero hecho de ser
+miembro** — exactamente lo que los roles existen para impedir.
+
+### Decisión
+
+| Rol | Capacidad |
+|---|---|
+| `owner` | lectura + ingesta y escritura fiscal |
+| `editor` | lectura + ingesta y escritura fiscal |
+| `viewer` | **solo lectura** |
+
+**`DELETE`: ningún rol de aplicación en el MVP.**
+
+**Qué significa «capacidad de escritura».** No es la facultad de alterar a mano hechos
+fiscales reportados. Significa que FastAPI puede ejecutar, en nombre de un `owner` o un
+`editor`, los flujos autorizados de **ingestión, normalización, resolución de referencias
+y actualización de metadatos mutables**.
+
+```
+capacidad de escritura  ≠  poder modificar hechos reportados
+```
+
+Ni `owner` ni `editor` pueden reescribir `raw_xml`, `content_sha256`, la clave, el
+consecutivo, la fecha de emisión, los importes reportados, las instantáneas de las partes
+ni los hechos de origen de líneas e impuestos. Corregir un artefacto equivocado es
+registrar **otro** `SourceDocument`, no editar el existente.
+
+**Forma de las políticas:**
+
+```sql
+select  using      ( private.is_company_member(company_id) )
+insert  with check ( private.can_write_company(company_id) )
+update  using      ( private.can_write_company(company_id) )
+        with check ( private.can_write_company(company_id) )
+delete  -- sin política y sin privilegio en el MVP
+```
+
+`private.can_write_company` es **nombre conceptual**. Requerirá un helper privado
+`SECURITY DEFINER` nuevo, apoyado en `company_memberships` con `role IN ('owner','editor')`,
+siguiendo el patrón de [ADR-020](#adr-020): sin conceder a `fiscal_backend` acceso directo
+ni a `auth` ni a `company_memberships`.
+
+### Consecuencias
+
+- `UPDATE` exige **las dos cláusulas**. Con sólo `USING`, una actualización podría cambiar
+  `company_id` y mover la fila a otra empresa: la fila original era visible y nadie
+  comprobaría la de destino. Las FK compuestas ([ADR-032](#adr-032)) son defensa
+  estructural adicional.
+- Separa **operar el sistema** de **reescribir la evidencia**, que es la distinción que
+  sostiene [ADR-023](#adr-023) en el plano de los privilegios.
+- Sin `DELETE` en el flujo normal, los `ON DELETE` definidos siguen siendo necesarios para
+  coherencia referencial y para operaciones administrativas controladas, que se diseñarán
+  aparte.
+- El helper todavía no está escrito, pero **su contrato queda cerrado en esta fase**:
+  firma, volatilidad, `SECURITY DEFINER`, `search_path` vacío, fuente de autoridad,
+  identidad, regla de roles y ACL. Detalle en
+  [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §25.5 y §25.6.
+
+```
+CONTRATO DE DISEÑO  =  CERRADO EN E2
+IMPLEMENTACIÓN      =  E3
+```

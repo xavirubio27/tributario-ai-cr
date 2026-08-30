@@ -1019,7 +1019,11 @@ declara «Bitácora de Ajustes al 22/04/2026» y «Rige a partir del 01 de setie
 2025». La revisión anterior no lo hacía, lo que justifica seguir registrando huella y
 `Last-Modified` de cada archivo (§2.1) para poder fechar copias antiguas.
 
-**H-6 — Algoritmo de huella y almacenamiento del XML.** Deliberadamente sin decidir.
+**~~H-6~~ — Algoritmo de huella y almacenamiento del XML.** Deliberadamente sin decidir **en
+E0 y E1**; era una decisión física y estas fases eran de inventario y modelo lógico.
+**CERRADO PARA EL MVP en el diseño de E2**: `raw_xml BYTEA` + `content_sha256 BYTEA`,
+SHA-256 de los bytes originales exactos, almacenado en PostgreSQL. Ver
+[FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §8.
 
 **~~H-7~~ — CERRADO.** `ProveedorSistemas` queda **`raw-only` inicialmente**. Es metadata
 técnica del sistema emisor: no interviene en ningún cálculo tributario, no es parte de la

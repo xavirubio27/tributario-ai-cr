@@ -29,7 +29,8 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
              H-5 y H-8 cerrados · ADR-021…026 aceptadas
     · revisión arquitectónica: PASS
   Phase E1 — Logical Fiscal Model Design — COMPLETED
-Next: fase E2 — diseño físico del esquema. NO INICIADA.
+  Phase E2 — PostgreSQL Fiscal Schema Design — COMPLETED
+Next: fase E3 — primera migración fiscal. NO INICIADA.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -376,6 +377,177 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
 
+## Checkpoint E — Fase E2 · COMPLETED
+
+**Auditoría final de Codex: `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0` — PASS.**
+Diseño físico únicamente: **0 migraciones, 0 SQL ejecutado, 0 tablas, 0 cambios de
+código.**
+
+### Línea base física
+
+```
+7  tablas fiscales de producto DISEÑADAS
+0  tablas fiscales de producto IMPLEMENTADAS
+
+fiscal.source_documents      fiscal.line_discounts
+fiscal.electronic_documents  fiscal.line_taxes
+fiscal.document_parties      fiscal.document_references
+fiscal.document_lines
+```
+
+```
+48  campos lógicos con valor del MVP
+52  columnas físicas
+ 0  omitidos   ·   0 pérdida de información
+```
+
+```
+SourceDocument      →  0..1  ElectronicDocument
+ElectronicDocument  →  1..N  SourceDocuments
+```
+
+### Tenant
+
+```
+company_id en las siete tablas
+relaciones padre/hija por FK compuesta (company_id, parent_id)
+
+UNIQUE (company_id, id) SOLO en las tablas destino de FK compuesta:
+    electronic_documents   ·   document_lines
+```
+
+Las otras cinco **no** lo llevan: sería un índice redundante sin función.
+
+### Artefacto de origen
+
+```
+raw_xml         BYTEA NOT NULL
+content_sha256  BYTEA NOT NULL
+                CHECK octet_length = 32
+                CHECK = pg_catalog.sha256(raw_xml)
+```
+
+**H-6 → CLOSED FOR MVP.** Trazabilidad: al cerrar **E1 estaba OPEN** —diferido
+deliberadamente al diseño físico—; al cerrar **E2 queda CLOSED FOR MVP**. Almacenamiento
+de objetos podrá evaluarse después con métricas reales, sin cambiar el modelo lógico.
+
+### Autorización
+
+```
+owner   →  lectura + flujos fiscales de escritura autorizados
+editor   →  lectura + flujos fiscales de escritura autorizados
+viewer  →  solo lectura
+DELETE  →  sin camino normal de aplicación
+
+sin UPDATE a nivel de tabla · 15 columnas de metadato mutable en 3 de las 7 tablas
+```
+
+### Huecos
+
+```
+H-3  catálogos externos        OPEN   — no bloquea el primer esquema físico
+H-4  semántica condicional     OPEN   — no bloquea
+H-6  almacenamiento y huella   CLOSED FOR MVP
+```
+
+| | |
+|---|---|
+| Documento producido | [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) |
+| Tablas diseñadas | **7**, todas en el schema `fiscal` |
+| Cobertura de tipos | **48 / 48** campos con valor, ninguno sin decisión física |
+| ADR propuestas | ADR-032 … **ADR-038**, todas en **PROPOSED** |
+| Verificado contra la base real | `companies.id = uuid` · `is_company_member(uuid)→boolean` · límites de `numeric` |
+
+**Decisión estructural: claves foráneas compuestas.** Cada tabla lleva `company_id` para
+RLS, y cada hija referencia a su padre por `(company_id, parent_id)`. Hace **imposible en
+el motor** que una línea de la empresa A cuelgue de un documento de la empresa B, sin
+depender de FastAPI ni de RLS.
+
+`UNIQUE (company_id, id)` **sólo en las tablas que son destino de una FK compuesta** —
+`electronic_documents` y `document_lines`—, no en las siete. En una hoja que nadie
+referencia sería un índice redundante sin función.
+
+**Autorización de escritura cerrada como contrato** (ADR-038): helper privado
+`private.can_write_company(uuid)`, `STABLE`, `SECURITY DEFINER`, `SET search_path = ''`,
+con identidad de `auth.uid()` resuelta dentro y rol leído de `company_memberships` —nunca
+del llamante ni del JWT—. `EXECUTE` sólo para `fiscal_backend`. **Sin `UPDATE` a nivel de
+tabla**: 15 columnas mutables explícitas en 3 de las 7 tablas.
+
+**Hallazgo con evidencia.** El XSD publicado enumera 12 códigos de referencia y 19 tipos
+de documento referenciado; los Anexos vigentes definen 17 y 20. Un `CHECK` por valor
+copiado del XSD **rechazaría comprobantes válidos hoy**. Los catálogos oficiales validan
+**forma, nunca valor** — ADR-029 llevado al motor.
+
+**Advertencia verificada.** PostgreSQL redondea en silencio los decimales excedentes
+(`1.123456::numeric(18,5)` → `1.12346`) en lugar de rechazarlos. La captura corresponde a
+la capa 1 de validación; el tipo no protege solo.
+
+**H-6 CERRADO PARA EL MVP** — resuelve **almacenamiento e integridad del artefacto**, no
+la equivalencia lógica entre documentos. `raw_xml bytea` + `content_sha256 bytea` dentro de
+PostgreSQL: preserva bytes exactos, atomicidad con los metadatos, y reutiliza la frontera
+fiscal ya auditada en vez de abrir una segunda superficie con Storage. Migrar a
+almacenamiento de objetos queda como decisión futura con métricas reales, no como
+bloqueante.
+
+**Verificado en DEV, no supuesto:** `pgcrypto` 1.3 está instalado, pero `fiscal_backend`
+**no tiene `USAGE` sobre `extensions`** —la llamada a `digest` devuelve `42501`—. Usarlo
+exigiría ampliar la frontera fiscal. No hace falta: **`sha256(bytea)` es nativa de
+`pg_catalog`**, alcanzable por el rol, `IMMUTABLE`, y coincide con pgcrypto y con
+`shasum -a 256`. La huella se calcula en FastAPI y **se verifica en la base de datos** con
+`CHECK (content_sha256 = pg_catalog.sha256(raw_xml))` — comprobado: acepta la correcta,
+rechaza la incorrecta con `23514`.
+
+**Precisión sobre la huella.** Misma huella es una **señal criptográficamente muy fuerte**
+de equivalencia de bytes, no una prueba matemática; para certeza con ambos artefactos
+disponibles, la comparación directa `raw_xml = raw_xml`. Huella distinta **no** prueba
+semántica fiscal distinta: misma `Clave` con huellas divergentes señala **artefactos
+divergentes que requieren evaluación**, no automáticamente un conflicto de integridad.
+Clasificarlo como conflicto exige comparar el **contenido fiscal reportado**, no hashes.
+La única conclusión automática es *no fusionar en silencio*.
+
+**Comportamiento de las FK opcionales verificado** con tablas temporales en transacción
+revertida (PG 17.6): `ON DELETE SET NULL (columna)` aceptada; `NULL` permitido; destino
+del mismo tenant permitido; destino de **otro tenant rechazado (`23503`)**; el borrado
+anula sólo la columna opcional dejando `company_id` y la carga `bytea` intactos.
+
+### Autorización de escritura — contrato cerrado en E2
+
+E2 descubrió que `private.is_company_member` comprueba **pertenencia, no rol**, y que en
+todo el proyecto no existía ni una sola política de escritura: con sólo esa condición, un
+`viewer` podría modificar datos fiscales por ser miembro. **El contrato que faltaba queda
+cerrado en esta fase** ([ADR-038](DECISIONS.md#adr-038)):
+
+```
+owner   →  lectura + flujos fiscales de escritura autorizados
+editor  →  lectura + flujos fiscales de escritura autorizados
+viewer  →  solo lectura
+DELETE  →  sin camino normal de aplicación
+
+private.can_write_company(p_company_id uuid)
+    RETURNS boolean · LANGUAGE sql · STABLE
+    SECURITY DEFINER · SET search_path = ''
+
+autoridad  public.company_memberships
+identidad  auth.uid(), resuelta dentro del helper
+regla      company_id = p_company_id AND user_id = auth.uid()
+           AND role IN ('owner','editor')
+ACL        EXECUTE solo para fiscal_backend
+
+RLS  SELECT using(member) · INSERT with check(can_write)
+     UPDATE using(can_write) with check(can_write) · DELETE sin política
+```
+
+Sin `UPDATE` a nivel de tabla: sólo las 15 columnas de metadato mutable.
+`fiscal_backend` sigue **sin `USAGE` sobre `auth`** y **sin `SELECT` sobre
+`company_memberships`**.
+
+```
+CONTRATO DE DISEÑO  =  CERRADO EN E2
+IMPLEMENTACIÓN      =  E3
+```
+
+---
+
 ## Checkpoint E — Fase E1 · COMPLETED
 
 **Auditoría final de Codex: `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0` — PASS.**
@@ -561,7 +733,7 @@ la ajustan. **No implementado todavía.**
 | Documentos oficiales descargados | 5 PDF (Anexos 99 · Anexos 98 · Resolución 9 · Reglamento 28 · Generalidades 20) |
 | Inventario de Factura Electrónica | **181 nodos** (incluida la referencia a la firma). Reparto registrado en E0: 67 · 57 · 57 → **corregido en la reconciliación de E1 a 59 MVP · 64 después · 58 crudo** (errata de clasificación, §Fase E1). `raw-only` **no** significa descartado: todo se conserva en el XML original |
 | Catálogos de referencia | nota 9: 12 → **17 códigos** · nota 10: 18 → **20 códigos** |
-| Huecos abiertos | 3 — H-3, H-4, H-6. **Cerrados: H-1, H-2, H-5, H-7, H-8.** Registrada la incidencia técnica I-1 |
+| Huecos abiertos **al cerrar E0** | 3 — H-3, H-4, H-6. **Cerrados entonces: H-1, H-2, H-5, H-7, H-8.** Registrada la incidencia técnica I-1. *(H-6 quedó **CERRADO PARA EL MVP** en el diseño de E2 — ver la sección de la Fase E2.)* |
 | Documento producido | [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md) |
 | Cambios en código | **ninguno** |
 | Tablas fiscales creadas | **0** |

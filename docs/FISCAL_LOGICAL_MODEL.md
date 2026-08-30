@@ -89,8 +89,8 @@ duplicado o no haberse parseado todavía, y aun así debe existir como registro.
 ### Contenido conceptual
 | Concepto | Notas |
 |---|---|
-| XML original íntegro | Referencia al contenido; **no se decide aquí dónde vive** (H-6) |
-| Huella de integridad | Existencia decidida; **algoritmo sin decidir** (H-6) |
+| XML original íntegro | Referencia al contenido; **no se decidió en E1** dónde vive (H-6 — ver nota) |
+| Huella de integridad | Existencia decidida en E1; **algoritmo no decidido en E1** (H-6 — ver nota) |
 | `company_id` | Propietario de tenant |
 | Origen | Cómo llegó: carga manual, correo, API… catálogo interno, no oficial |
 | Tipo de documento detectado | Del namespace raíz (§9). **Opcional**: puede no determinarse |
@@ -101,10 +101,27 @@ duplicado o no haberse parseado todavía, y aun así debe existir como registro.
 | Momento de ingesta | Cuándo lo recibimos nosotros — distinto de `FechaEmision` |
 | Enlace al documento normalizado | Opcional: sólo existe tras un parseo correcto |
 
+> **Nota temporal sobre H-6.** Al cerrar E1, **H-6 estaba ABIERTO**: el almacenamiento y
+> el algoritmo de huella se difirieron deliberadamente a E2, porque son decisiones físicas
+> y esta fase es de modelo lógico. **Estado actual del proyecto, tras el diseño de E2:
+> H-6 está CERRADO PARA EL MVP.**
+>
+> ```
+> raw_xml         BYTEA
+> content_sha256  BYTEA
+> huella          SHA-256 de los bytes originales exactos
+> almacenamiento  PostgreSQL
+> ```
+>
+> Detalle en [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §8 y
+> [ADR-037](DECISIONS.md#adr-037). Las dos filas anteriores describen el estado **de E1**,
+> no el actual.
+
 ### Lo que explícitamente **no** representa
 - Ningún valor fiscal interpretado. Ni un total, ni un impuesto, ni una parte.
 - La revisión de *ruleset*: eso es interpretación, no artefacto (§9).
-- Decisiones de almacenamiento: no fija bucket, ruta ni algoritmo de huella.
+- Decisiones de almacenamiento: E1 no fija bucket, ruta ni algoritmo de huella — **E2 sí
+  las fijó** (ver nota anterior).
 
 ### 3.1 La versión no siempre es detectable
 
@@ -834,8 +851,8 @@ duplicaría ventas o compras en los informes, que es el daño concreto a evitar.
 
 | | Artefacto duplicado | Mismo documento lógico | **Conflicto** |
 |---|---|---|---|
-| Qué es | El mismo fichero recibido otra vez | El mismo comprobante por vías distintas | Misma clave, **contenido distinto** |
-| Condición | Misma empresa · misma huella | Misma empresa · misma `clave` · contenido equivalente | Misma empresa · misma `clave` · **XML divergente** |
+| Qué es | El mismo fichero recibido otra vez | El mismo comprobante por vías distintas | Misma clave, **contenido fiscal divergente** |
+| Condición | Misma empresa · misma huella | Misma empresa · misma `clave` · contenido equivalente | Misma empresa · misma `clave` · **contenido fiscal autoritativo divergente** |
 | Respuesta | Conservar ambos artefactos; **no** crear un segundo documento | Un `ElectronicDocument`, varios `SourceDocument` | **No fusionar.** Anomalía de integridad que requiere investigación |
 
 De ahí que un `ElectronicDocument` pueda tener **1..N** `SourceDocument` (§3.2).
@@ -851,9 +868,9 @@ Casos y comportamiento esperado:
 | Mismo comprobante por correo y por API | 2 `SourceDocument` → 1 `ElectronicDocument` |
 | Mismo comprobante, dos empresas | 2 `SourceDocument` → **2** `ElectronicDocument`, uno por tenant |
 | XML corrupto | 1 `SourceDocument` con estado `failed`, **0** `ElectronicDocument` |
-| **Misma clave, contenido distinto, misma empresa** | 2 `SourceDocument`; **conflicto marcado**, sin fusión silenciosa |
+| **Misma clave, contenido fiscal divergente, misma empresa** | 2 `SourceDocument`; **conflicto marcado**, sin fusión silenciosa |
 
-### 13.1 El conflicto: misma clave, contenido distinto
+### 13.1 El conflicto: misma clave, contenido fiscal divergente
 
 Es el caso que obliga a tratar la deduplicación con cuidado.
 
@@ -862,7 +879,8 @@ seguridad— y en condiciones normales dos XML con la misma clave deberían ser 
 documento. Pero **coincidir en la clave no autoriza a ignorar que el contenido difiere**.
 
 Si aparecen, para la misma empresa, dos artefactos con la misma `clave` y contenido
-divergente, sólo hay explicaciones preocupantes: un documento manipulado, un error grave
+divergente **en su contenido fiscal**, sólo hay explicaciones preocupantes: un documento
+manipulado, un error grave
 del sistema emisor, una colisión que no debería existir, o una confusión entre entornos
 de pruebas y producción. Todas exigen que alguien mire.
 
@@ -872,6 +890,11 @@ que `reported_*` frente a `computed_*` evita en otro plano.
 
 Comportamiento conceptual: ambos artefactos se conservan (`SourceDocument` es inmutable),
 la situación se marca como **anomalía de integridad**, y no se produce fusión automática.
+
+*(Precisión de E2: una **huella de bytes distinta no basta** para concluir conflicto. Dos
+serializaciones del mismo comprobante pueden diferir en bytes sin diferir en un dato
+fiscal. La huella señala artefactos divergentes; el conflicto exige comparar el contenido
+reportado. Ver [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §15.1.)*
 
 **No se diseña aquí ni el flujo de resolución ni ninguna tabla de conflictos**, ni se
 decide si el segundo documento se ingiere, se retiene o se rechaza. Se fija que el caso
@@ -1134,7 +1157,7 @@ Ciclo de vida propio (§15).
 |---|---|
 | Tipos, precisiones e índices de PostgreSQL | E2 |
 | Restricciones de unicidad concretas | E2 |
-| Algoritmo de huella y almacenamiento del XML | **H-6**, abierto |
+| Algoritmo de huella y almacenamiento del XML | **H-6** — abierto **al cerrar E1**; diferido deliberadamente a E2. **Estado actual: CERRADO PARA EL MVP** (`raw_xml BYTEA` + `content_sha256 BYTEA`, SHA-256 de los bytes exactos, en PostgreSQL). Ver [FISCAL_PHYSICAL_MODEL.md](FISCAL_PHYSICAL_MODEL.md) §8 |
 | Catálogos externos: CABYS, moneda, ubicación | **H-3**, abierto — §11 fija cómo se tratan sin resolverlos |
 | Semántica condicional completa | **H-4**, abierto — §19 recoge lo que afecta al MVP |
 | Algoritmo de detección del *ruleset* | Abierto por diseño (§9) |
