@@ -49,6 +49,11 @@
 | [ADR-024](#adr-024) | `DocumentParty` como instantánea histórica del comprobante | ✅ |
 | [ADR-025](#adr-025) | Núcleo MVP: Factura, Nota de Crédito y Nota de Débito | ✅ |
 | [ADR-026](#adr-026) | `schema_version` ≠ revisión del *ruleset* | ✅ |
+| [ADR-027](#adr-027) | Modelo lógico de entidades fiscales | ✅ |
+| [ADR-028](#adr-028) | Referencia reportada frente a relación resuelta | ✅ |
+| [ADR-029](#adr-029) | Códigos externos sin clave foránea obligatoria | ✅ |
+| [ADR-030](#adr-030) | Tres capas de validación | ✅ |
+| [ADR-031](#adr-031) | Duplicados: artefacto frente a documento lógico | ✅ |
 
 ---
 ---
@@ -1210,7 +1215,7 @@ puramente de significado.
 Consecuencia: un comprobante emitido en octubre de 2025 y otro en diciembre de 2026
 declaran ambos `version="4.4"` y están sujetos a reglas distintas.
 
-### Propuesta
+### Decisión
 
 Registrar por documento ingerido **dos ejes independientes**:
 
@@ -1278,3 +1283,238 @@ la fecha ni una constante del sistema.
   erróneas del histórico, que es peor. Y no es hipotético: la regla de efecto contable
   por código de referencia (nota 9, revisión 2026) cambia a qué periodo fiscal se imputa
   un ajuste.
+
+
+---
+
+<a id="adr-027"></a>
+## ADR-027 — Modelo lógico de entidades fiscales
+
+**Estado:** ✅ Aceptada (Día 3, fase E1) · **Criticidad: alta**
+
+### Contexto
+
+Los 67 campos clasificados MVP en E0 pueden materializarse como una serialización
+relacional literal del XSD —una columna por nodo— o como entidades del dominio. Lo
+primero es mecánico y produce un modelo que nadie puede consultar sin el XSD delante.
+
+### Decisión
+
+Siete entidades para el MVP: `SourceDocument`, `ElectronicDocument`, `DocumentParty`,
+`DocumentLine`, `LineDiscount`, `LineTax` y `DocumentReference`. Seis más quedan
+especificadas pero fuera del alcance.
+
+Detalle en [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md).
+
+Puntos que la propuesta fija:
+
+**Las siete entidades del MVP:** `SourceDocument`, `ElectronicDocument`,
+`DocumentParty`, `DocumentLine`, `LineDiscount`, `LineTax`, `DocumentReference`.
+
+- **`DocumentParty` es `1..2`**: `issuer` exactamente 1, `receiver` **0..1**. Verificado
+  contra los Anexos v4.4 (rev. 22/04/2026): el nodo `Receptor` tiene condición **1
+  (obligatorio) en Factura** y **2 (condicional) en Nota de Crédito y Nota de Débito**.
+  Un modelo común no puede exigirlo sin rechazar notas válidas; cuándo es obligatorio lo
+  decide la validación semántica ([ADR-030](#adr-030)).
+- **La detección de versión puede fallar.** `SourceDocument` distingue `detected`,
+  `unknown`, `unsupported` y `failed`, y `detected_schema_version` es opcional hasta
+  detectarse. Invariante: *no poder interpretar un artefacto nunca impide conservarlo*.
+- **Coherencia de tenant obligatoria.** Toda entidad fiscal hija pertenece al mismo
+  tenant que su padre, sin excepciones. El `company_id` procede del contexto autorizado,
+  nunca de la petición. Cómo garantizarlo mecánicamente lo decide E2.
+- **Artefacto y documento son entidades distintas**, ligadas por una relación de
+  normalización y procedencia —no de contención—, con cardinalidad por ambos extremos:
+
+  ```
+  SourceDocument      →  0..1  ElectronicDocument
+  ElectronicDocument  →  1..N  SourceDocuments
+  ```
+
+  Un artefacto puede no normalizarse nunca (`pending`, corrupto, `unknown`,
+  `unsupported`, `failed`); un documento puede proceder de varios artefactos. **La
+  dirección física de la clave foránea la decide E2**, no este ADR.
+- **`company_id` directo** en las entidades fiscales, separado de las instantáneas de
+  emisor y receptor: propiedad de tenant ≠ papel en el documento.
+- **`clave` única por empresa**, no globalmente: emisor y receptor pueden ser ambos
+  clientes del SaaS y ambos deben tener el comprobante.
+- **`direction`** derivada de comparar la identidad de la empresa con las instantáneas,
+  almacenada y recomputable, con `unknown` como estado legítimo.
+- **Descuentos e impuestos son colecciones**, nunca campos únicos.
+- **Importes reportados siempre positivos**: el signo lo aporta el tipo de documento y
+  la semántica de la referencia, no el almacenamiento.
+- **Ausencia ≠ cero**: ningún campo reportado opcional lleva valor por defecto.
+
+### Consecuencias
+
+- El modelo se consulta en términos del dominio, no del XSD.
+- Coste asumido: más entidades que columnas, y decisiones que habrá que revisar al
+  incorporar tipos de comprobante con estructuras distintas —el REP tiene 57 nodos frente
+  a 180—.
+- La cardinalidad permisiva del receptor traslada trabajo a la capa de validación
+  semántica. Es deliberado: el modelo común debe adoptar la cardinalidad **más
+  permisiva** del conjunto de tipos que soporta.
+
+---
+
+<a id="adr-028"></a>
+## ADR-028 — Referencia reportada frente a relación resuelta
+
+**Estado:** ✅ Aceptada (Día 3, fase E1)
+
+### Contexto
+
+`InformacionReferencia/Numero` es **opcional** en el XSD. Una nota de crédito puede
+referenciar un documento sin dar su número. Y el orden de llegada no es el orden lógico:
+al importar un histórico, una NC puede llegar antes que la factura que ajusta.
+
+### Decisión
+
+Separar en `DocumentReference` dos cosas:
+
+```
+reported_*              lo que el documento dice — inmutable
+resolved_document_id    el enlace interno, si lo encontramos — opcional
+```
+
+La resolución es **diferida, opcional y reintentable**, y nunca modifica los campos
+reportados.
+
+**Invariante de tenant:**
+
+```
+resolved_document_id  DEBE apuntar a un ElectronicDocument de la MISMA empresa.
+```
+
+La referencia **reportada** puede contener cualquier número oficial que traiga el XML —no
+lo restringimos, es lo que el documento dice—. La resolución **interna** no: aunque la
+`Clave` coincida, jamás puede conectar un documento de la empresa A con el de la empresa
+B. Sería una arista entre tenants dentro de nuestro modelo, atravesando la frontera de
+[ADR-020](#adr-020), y bastaría seguirla para leer datos de otro contribuyente.
+
+### Consecuencias
+
+- Se puede ingerir una NC antes que su factura sin rechazarla ni inventar un documento
+  vacío.
+- Una referencia sin resolver es **información legítima** —«apunta a algo que no
+  tenemos»— y no un error.
+- Coste asumido: hace falta un proceso de resolución posterior, y las consultas deben
+  contemplar que el enlace puede faltar.
+
+---
+
+<a id="adr-029"></a>
+## ADR-029 — Códigos externos sin clave foránea obligatoria
+
+**Estado:** ✅ Aceptada (Día 3, fase E1)
+
+### Contexto
+
+Los comprobantes traen códigos de catálogos externos: CABYS, unidad de medida, moneda,
+tipo de identificación, condición de venta, impuesto, tarifa, descuento y referencias.
+Esos catálogos cambian: la revisión 2026 amplió tres de ellos sin tocar el esquema.
+
+### Decisión
+
+```
+El código reportado por el comprobante es la verdad.
+El catálogo local es enriquecimiento opcional.
+```
+
+Ningún código externo lleva clave foránea obligatoria a un catálogo local.
+
+### Consecuencias
+
+- Un comprobante que Hacienda ya aceptó **nunca** se rechaza porque nuestro catálogo esté
+  desactualizado.
+- El enriquecimiento es una consulta, no una restricción: un código desconocido se
+  conserva y se muestra sin descripción.
+- Coste asumido: no hay integridad referencial sobre estos códigos; la validación de
+  catálogo pasa a ser una comprobación de dominio, no del motor.
+- Complementa [ADR-026](#adr-026): los catálogos son datos versionados por *ruleset*.
+
+---
+
+<a id="adr-030"></a>
+## ADR-030 — Tres capas de validación
+
+**Estado:** ✅ Aceptada (Día 3, fase E1)
+
+### Decisión
+
+```
+Capa 1 — XML / XSD              ¿es un comprobante bien formado y válido?
+Capa 2 — semántica del dominio  ¿es coherente como documento fiscal?
+Capa 3 — Tax Engine             ¿el tratamiento tributario es correcto?
+```
+
+### Consecuencias
+
+- **Un XML válido no implica un tratamiento tributario correcto.** Son preguntas
+  independientes; confundirlas llevaría a dar por bueno un comprobante sólo porque
+  Hacienda lo aceptó estructuralmente — y detectar esa diferencia es parte del valor del
+  producto.
+- Cada capa falla con un diagnóstico propio: un error de estructura y una discrepancia
+  tributaria no significan lo mismo para el usuario.
+- Refuerza el principio rector `LLM ≠ Tax Engine`: la capa 3 es determinista y
+  versionada, nunca razonamiento de un modelo.
+
+### Ejemplo concreto: el receptor
+
+```
+capa 1 / modelo lógico     receiver 0..1     ← permite Factura, NC y ND
+capa 2 / semántica         ¿debe existir?    ← según document_type y ruleset
+```
+
+El nodo `Receptor` es **obligatorio en Factura** y **condicional en NC y ND** (Anexos
+v4.4, rev. 22/04/2026). Si el modelo común lo exigiera, rechazaría notas válidas; si la
+validación no lo comprobara nunca, aceptaría facturas sin receptor.
+
+**Generalización:** no se codifican las condiciones de Hacienda mediante cardinalidades
+rígidas del modelo común. Un modelo compartido adopta la cardinalidad **más permisiva**
+del conjunto y delega la condición a la capa 2. Lo contrario obliga a un modelo por tipo
+de documento, o a rechazar documentos legítimos.
+
+---
+
+<a id="adr-031"></a>
+## ADR-031 — Duplicados: artefacto frente a documento lógico
+
+**Estado:** ✅ Aceptada (Día 3, fase E1)
+
+### Contexto
+
+Un mismo comprobante puede llegar dos veces, o por dos vías distintas. Tratar ambos casos
+con un único concepto de «duplicado» produciría ventas o compras contadas dos veces.
+
+### Decisión
+
+**Cuatro casos, no dos:**
+
+| Caso | Condición | Respuesta |
+|---|---|---|
+| **Artefacto duplicado** | Misma empresa · misma huella | Conservar ambos artefactos; un solo `ElectronicDocument` |
+| **Mismo documento lógico** | Misma empresa · misma `clave` · contenido equivalente | Un `ElectronicDocument`, varios `SourceDocument` |
+| **Conflicto de contenido** | Misma empresa · misma `clave` · **XML divergente** | **No fusionar.** Anomalía de integridad que requiere investigación |
+| **Misma clave, distinto tenant** | Empresas distintas · misma `clave` | **Dos** `ElectronicDocument`, uno por tenant |
+
+De ahí que un `ElectronicDocument` pueda tener **1..N** `SourceDocument`, y que un
+`SourceDocument` normalice a **0..1** `ElectronicDocument`.
+
+**Sobre el conflicto.** La `Clave` es identidad oficial fuerte, pero coincidir en ella no
+autoriza a ignorar que el contenido difiere. Dos XML divergentes con la misma clave sólo
+admiten explicaciones preocupantes —documento manipulado, fallo del sistema emisor,
+confusión entre entornos— y todas exigen que alguien mire. Fusionarlos silenciosamente
+escogería una versión al azar y destruiría la evidencia de la discrepancia.
+
+**Sobre los dos tenants.** No existe un `ElectronicDocument` global compartido entre
+empresas. **La identidad lógica dentro del SaaS es de ámbito de tenant, aunque la `Clave`
+sea oficial y globalmente única**: la clave identifica el comprobante ante Hacienda;
+nuestro registro identifica *lo que esa empresa tiene*.
+
+### Consecuencias
+
+- Los informes no duplican importes por recibir un documento dos veces.
+- Se conserva la traza de **cómo** llegó cada copia: origen y momento de ingesta propios.
+- Dos empresas distintas sí tienen cada una su `ElectronicDocument` del mismo
+  comprobante: es lo correcto, para una es venta y para otra compra.
+- No fija ninguna restricción de unicidad concreta: eso es E2.

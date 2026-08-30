@@ -28,7 +28,8 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
     · E0-R2: base semántica = Anexos 99 págs (Bitácora 22/04/2026)
              H-5 y H-8 cerrados · ADR-021…026 aceptadas
     · revisión arquitectónica: PASS
-Next: fase E1 — diseño del esquema fiscal. Sin tablas fiscales creadas.
+  Phase E1 — Logical Fiscal Model Design — COMPLETED
+Next: fase E2 — diseño físico del esquema. NO INICIADA.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -375,6 +376,115 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
 
+## Checkpoint E — Fase E1 · COMPLETED
+
+**Auditoría final de Codex: `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0` — PASS.**
+Diseño lógico únicamente: **0 SQL, 0 migraciones, 0 tablas, 0 cambios de código.**
+
+| | |
+|---|---|
+| Documento producido | [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md) |
+| Entidades del MVP | **7** — `SourceDocument`, `ElectronicDocument`, `DocumentParty`, `DocumentLine`, `LineDiscount`, `LineTax`, `DocumentReference` |
+| Entidades especificadas fuera del MVP | 6 |
+| Cobertura del mapeo | **67 / 67** auditados → 59 permanecen (48 con valor + 11 estructurales), 8 reclasificados. **0 perdidos** |
+| ADR propuestas | ADR-027 … ADR-031, todas en **PROPOSED** |
+| Errata de E0 hallada en E1 | **C-1** (7 campos huérfanos) · **C-2** (`ProveedorSistemas`) |
+| ADR aceptadas | ADR-027 … ADR-031 |
+
+### Línea base lógica canónica
+
+```
+181  nodos XML totales
+
+ 59  MVP normalized
+ 64  normalize later
+ 58  raw-only initially
+
+Mapeo MVP:
+ 59  mapeados  =  48 con valor  +  11 estructurales/contenedor
+  0  sin explicar  ·  0 perdidos
+```
+
+> **Nota histórica.** E0 clasificó originalmente **67 / 57 / 57**. La reconciliación del
+> mapeo de E1 lo corrigió a **59 / 64 / 58** —errata de clasificación, no pérdida de
+> información—. Trazabilidad campo por campo en
+> [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md) §12.3.
+
+### Relación artefacto ↔ documento
+
+```
+Para cada SourceDocument:      ElectronicDocument  =  0..1
+Para cada ElectronicDocument:  SourceDocuments     =  1..N
+```
+
+`ElectronicDocument` **no** es hijo obligatorio de `SourceDocument`: es una relación de
+normalización y procedencia. **La dirección física de la clave foránea queda para E2.**
+
+### Invariantes de tenant
+
+```
+toda entidad fiscal hija pertenece al mismo tenant que su padre
+SourceDocument.company_id == ElectronicDocument.company_id   (cuando hay asociación)
+DocumentReference.resolved_document_id  resuelve SOLO dentro del mismo tenant
+```
+
+### Invariantes de dominio vigentes
+
+```
+el XML original se conserva
+reported          ≠  computed
+ausente           ≠  cero
+importes reportados de NC/ND        no negativos
+periodo fiscal    ≠  necesariamente mes(fecha de emisión)
+schema_version    ≠  ruleset_revision
+company_id        ≠  instantánea de emisor/receptor
+DocumentParty      =  instantánea histórica de origen
+direction          =  metadato derivado del tenant
+no poder interpretar un artefacto NO impide conservarlo
+```
+
+**Correcciones aplicadas en la revisión de E1:**
+
+- **`DocumentParty` es `1..2`**, no `2..2`. Verificado contra los Anexos v4.4 (rev.
+  22/04/2026): el nodo `Receptor` tiene condición **1 (obligatorio) en Factura** y
+  **2 (condicional) en NC y ND**. `issuer` exactamente 1, `receiver` 0..1.
+- **La detección de versión puede fallar.** `SourceDocument` distingue `detected`,
+  `unknown`, `unsupported` y `failed`. Invariante: no poder interpretar un artefacto
+  nunca impide conservarlo.
+- **Coherencia de tenant** como invariante de dominio: toda entidad hija pertenece al
+  mismo tenant que su padre; `resolved_document_id` nunca cruza empresas.
+- **Cuarto caso de deduplicación**: misma clave con contenido divergente es un
+  **conflicto de integridad**, no un duplicado, y no se fusiona en silencio.
+
+**Errata de clasificación de E0, hallada durante E1.** Al mapear los 67 campos
+aparecieron dos inconsistencias verificables:
+
+- **C-1** — siete campos marcados `MVP normalizado` cuyo **contenedor** está en
+  «normalizar después» (`CodigoComercial`, `OtrosCargos`, `TotalDesgloseImpuesto`). Es
+  imposible normalizar un campo cuyo contenedor no se normaliza. Causa identificable: la
+  clasificación de E0 se hizo por nombre de hoja y estos siete colisionan con nombres MVP
+  legítimos de otras ramas.
+- **C-2** — `ProveedorSistemas` figura en la **categoría C** en la prosa de E0 §15 y como
+  **MVP** en la tabla del inventario. Ambas no pueden ser ciertas.
+
+```
+Línea base E0 aprobada     67 MVP · 57 después · 57 crudo
+Reconciliación de E1       59 MVP · 64 después · 58 crudo
+Total                      181  (sin cambio)
+```
+
+Es una **errata de clasificación**, no una pérdida de información: los 181 nodos siguen
+inventariados y el XML original los conserva todos. Lo incorrecto era la categoría de
+ocho de ellos. Tabla campo por campo en [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md) §12.3.
+**Los commits anteriores no se alteran**; la corrección queda registrada como errata
+fechada, y la clasificación canónica actualizada en [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md).
+
+**H-7 CERRADO** por C-2: `ProveedorSistemas` es metadata técnica del sistema emisor —no
+interviene en ningún cálculo, no es parte de la transacción, ninguna consulta del MVP lo
+necesita—, luego `raw-only` inicialmente, preservado en el XML y normalizable después.
+
+---
+
 ## Checkpoint E — Fase E0 · COMPLETED
 
 Revisión arquitectónica: **PASS**. Fase de investigación y documentación únicamente;
@@ -449,9 +559,9 @@ la ajustan. **No implementado todavía.**
 | Calendario de la revisión 2026 | disponible 22-abr-2026 · uso anticipado permitido · **obligatoria 1-nov-2026** |
 | XSD oficiales descargados y analizados | **9 / 9** — re-descargados: **9 idénticos, 0 distintos**. La revisión 2026 **no añade elementos** |
 | Documentos oficiales descargados | 5 PDF (Anexos 99 · Anexos 98 · Resolución 9 · Reglamento 28 · Generalidades 20) |
-| Inventario de Factura Electrónica | **181 nodos** (incluida la referencia a la firma) — **67 MVP normalizado · 57 normalizar después · 57 solo crudo**. `raw-only` **no** significa descartado: todo se conserva en el XML original |
+| Inventario de Factura Electrónica | **181 nodos** (incluida la referencia a la firma). Reparto registrado en E0: 67 · 57 · 57 → **corregido en la reconciliación de E1 a 59 MVP · 64 después · 58 crudo** (errata de clasificación, §Fase E1). `raw-only` **no** significa descartado: todo se conserva en el XML original |
 | Catálogos de referencia | nota 9: 12 → **17 códigos** · nota 10: 18 → **20 códigos** |
-| Huecos abiertos | 4 — H-3, H-4, H-6, H-7. **Cerrados: H-1, H-2, H-5, H-8.** Registrada la incidencia técnica I-1 |
+| Huecos abiertos | 3 — H-3, H-4, H-6. **Cerrados: H-1, H-2, H-5, H-7, H-8.** Registrada la incidencia técnica I-1 |
 | Documento producido | [FISCAL_DOMAIN.md](FISCAL_DOMAIN.md) |
 | Cambios en código | **ninguno** |
 | Tablas fiscales creadas | **0** |

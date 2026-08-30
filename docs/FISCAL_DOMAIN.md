@@ -672,7 +672,12 @@ Sin SQL. Entidades conceptuales, con responsabilidad y límites explícitos.
 - **Contiene:** `Clave`, `NumeroConsecutivo`, tipo, versión, fecha de emisión con su
   desplazamiento, moneda y tipo de cambio, y los totales `reported_*` del resumen.
 - **No contiene:** el XML; ni un solo valor calculado por nosotros.
-- **Relación:** pertenece a un `SourceDocument` y a una empresa.
+- **Relación:** representa la interpretación normalizada de **uno o más**
+  `SourceDocument` equivalentes pertenecientes al mismo tenant, y pertenece a una
+  empresa. Un `SourceDocument` puede no producir ningún `ElectronicDocument` si está
+  pendiente, es inválido, de versión desconocida o no soportada, o falla su
+  interpretación. Cardinalidades en
+  [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md) §3.2.
 
 ### `DocumentParty` — emisor y receptor **como instantánea**
 - **Contiene:** nombre, identificación, nombre comercial, ubicación, teléfono y correos
@@ -794,7 +799,8 @@ La ruta XML de cada campo es una propiedad **estable del tipo y la versión del
 documento**, no de cada fila: `FE v4.4 / ResumenFactura / TotalComprobante` es la misma
 para todas las facturas v4.4. Almacenar la ruta en cada fila sería redundancia masiva.
 La trazabilidad se resuelve mejor con un mapa versionado por tipo de documento —lo que
-este documento es— más el enlace de cada registro a su `SourceDocument`.
+este documento es— más el enlace de cada registro a los `SourceDocument` de los que
+procede.
 
 ### 13.4 Los catálogos son datos, no enumeraciones
 
@@ -845,18 +851,42 @@ impuesto asumido por el emisor de fábrica.
 `RegistroMedicamento`, `FormaFarmaceutica`, `Otros`/`OtroTexto`/`OtroContenido`,
 `ProveedorSistemas`, `Registrofiscal8707`, y `ds:Signature`.
 
+*(`ProveedorSistemas` figuraba como MVP en la tabla del inventario por errata; la
+categoría correcta es ésta. Ver §15.1 y FISCAL_LOGICAL_MODEL §12.2.)*
+
 **`raw-only` no significa descartado.** Ninguna información se pierde: el XML original
 la conserva íntegra (§13.2). La clasificación decide qué se normaliza a estructura
 relacional y cuándo, no qué se guarda. Todo lo de la categoría C sigue estando disponible
 y es recuperable en cualquier momento reprocesando el original.
 
-Reparto del inventario de Factura Electrónica (181 nodos, incluida la firma):
-**67 MVP · 57 después · 57 solo crudo**.
+### Clasificación canónica — tras la reconciliación de E1
+
+```
+59  MVP normalizado
+64  normalizar después
+58  solo crudo inicialmente
+───
+181 total
+```
+
+> **Nota histórica.** E0 registró originalmente **67 · 57 · 57**. Durante el mapeo lógico
+> de la fase E1 se detectó una **errata de clasificación** que afectaba a ocho nodos:
+> siete campos marcados MVP cuyo contenedor estaba en categoría B —imposible normalizar
+> un campo sin su contenedor—, y `ProveedorSistemas`, que la prosa de este documento
+> situaba en categoría C mientras la tabla lo marcaba MVP.
+>
+> El total de 181 no cambia y **ningún campo se pierde**: la errata afectaba a la
+> categoría asignada, no al inventario. Detalle campo por campo en
+> [FISCAL_LOGICAL_MODEL.md](FISCAL_LOGICAL_MODEL.md) §12.3. Los commits anteriores no se
+> alteran.
 
 **Revalidado contra la revisión de 99 páginas.** Dos comprobaciones independientes:
 
 1. **Extractor reejecutado** sobre los XSD re-descargados y reclasificación con los
-   mismos criterios: mismos 180 nodos, mismo reparto **67 · 57 · 57**.
+   mismos criterios: mismos 180 nodos, mismo reparto que E0 —**67 · 57 · 57** en aquel
+   momento—. *(Esos criterios resultaron tener un defecto, corregido después en la
+   reconciliación de E1: la clasificación canónica es **59 · 64 · 58**. Lo que esta
+   comprobación demuestra sigue siendo válido: la revisión 2026 no altera el inventario.)*
 2. **Contraste con el PDF vigente**: se extrajeron todos los identificadores con forma
    de etiqueta XML de ambas revisiones y se compararon. Los únicos tokens nuevos son
    `Ajustes` y `Tratamiento` —palabras de prosa—, **ninguno es un elemento del esquema**.
@@ -991,9 +1021,13 @@ declara «Bitácora de Ajustes al 22/04/2026» y «Rige a partir del 01 de setie
 
 **H-6 — Algoritmo de huella y almacenamiento del XML.** Deliberadamente sin decidir.
 
-**H-7 — `ProveedorSistemas`.** Campo obligatorio `[1..1]` que identifica al proveedor del
-sistema emisor. Al ingerir comprobantes de terceros simplemente se registra; su
-tratamiento cuando emitamos nosotros es una cuestión futura.
+**~~H-7~~ — CERRADO.** `ProveedorSistemas` queda **`raw-only` inicialmente**. Es metadata
+técnica del sistema emisor: no interviene en ningún cálculo tributario, no es parte de la
+transacción, y ninguna consulta del MVP lo necesita. Se conserva íntegro en el XML
+original y puede normalizarse más adelante reprocesando, si aparece una necesidad
+operativa o de auditoría. Ninguna fuente oficial exige lo contrario: el campo es
+obligatorio para el emisor del comprobante, lo que no determina qué normalizamos
+nosotros. Resuelto en la fase E1 (FISCAL_LOGICAL_MODEL §12.2).
 
 ---
 
@@ -1075,7 +1109,7 @@ Extraído programáticamente del XSD oficial. 181 filas.
 |---|---|---|---|---|
 | `FE` | FacturaElectronica | `(inline)` | `1..1` | raw-only inicial |
 | `FE/Clave` | Clave | `ClaveType` | `1..1` | **MVP normalizado** |
-| `FE/ProveedorSistemas` | ProveedorSistemas | `(vacío)` | `1..1` | **MVP normalizado** |
+| `FE/ProveedorSistemas` | ProveedorSistemas | `(vacío)` | `1..1` | raw-only inicial |
 | `FE/CodigoActividadEmisor` | CodigoActividadEmisor | `(vacío)` | `1..1` | **MVP normalizado** |
 | `FE/CodigoActividadReceptor` | CodigoActividadReceptor | `(vacío)` | `0..1` | **MVP normalizado** |
 | `FE/NumeroConsecutivo` | NumeroConsecutivo | `NumeroConsecutivoType` | `1..1` | **MVP normalizado** |
@@ -1122,8 +1156,8 @@ Extraído programáticamente del XSD oficial. 181 filas.
 | `FE/DetalleServicio/LineaDetalle/NumeroLinea` | NumeroLinea | `(vacío)` | `1..1` | **MVP normalizado** |
 | `FE/DetalleServicio/LineaDetalle/CodigoCABYS` | CodigoCABYS | `(vacío)` | `1..1` | **MVP normalizado** |
 | `FE/DetalleServicio/LineaDetalle/CodigoComercial` | CodigoComercial | `CodigoType` | `0..5` | normalizar después |
-| `FE/DetalleServicio/LineaDetalle/CodigoComercial/Tipo` | Tipo | `(vacío)` | `1..1` | **MVP normalizado** |
-| `FE/DetalleServicio/LineaDetalle/CodigoComercial/Codigo` | Codigo | `(vacío)` | `1..1` | **MVP normalizado** |
+| `FE/DetalleServicio/LineaDetalle/CodigoComercial/Tipo` | Tipo | `(vacío)` | `1..1` | normalizar después |
+| `FE/DetalleServicio/LineaDetalle/CodigoComercial/Codigo` | Codigo | `(vacío)` | `1..1` | normalizar después |
 | `FE/DetalleServicio/LineaDetalle/Cantidad` | Cantidad | `(vacío)` | `1..1` | **MVP normalizado** |
 | `FE/DetalleServicio/LineaDetalle/UnidadMedida` | UnidadMedida | `UnidadMedidaType` | `1..1` | **MVP normalizado** |
 | `FE/DetalleServicio/LineaDetalle/TipoTransaccion` | TipoTransaccion | `(vacío)` | `0..1` | normalizar después |
@@ -1204,10 +1238,10 @@ Extraído programáticamente del XSD oficial. 181 filas.
 | `FE/OtrosCargos/TipoDocumentoOC` | TipoDocumentoOC | `(vacío)` | `1..1` | normalizar después |
 | `FE/OtrosCargos/TipoDocumentoOTROS` | TipoDocumentoOTROS | `(vacío)` | `0..1` | raw-only inicial |
 | `FE/OtrosCargos/IdentificacionTercero` | IdentificacionTercero | `IdentificacionType` | `0..1` | normalizar después |
-| `FE/OtrosCargos/IdentificacionTercero/Tipo` | Tipo | `(vacío)` | `1..1` | **MVP normalizado** |
-| `FE/OtrosCargos/IdentificacionTercero/Numero` | Numero | `(vacío)` | `1..1` | **MVP normalizado** |
+| `FE/OtrosCargos/IdentificacionTercero/Tipo` | Tipo | `(vacío)` | `1..1` | normalizar después |
+| `FE/OtrosCargos/IdentificacionTercero/Numero` | Numero | `(vacío)` | `1..1` | normalizar después |
 | `FE/OtrosCargos/NombreTercero` | NombreTercero | `(vacío)` | `0..1` | normalizar después |
-| `FE/OtrosCargos/Detalle` | Detalle | `(vacío)` | `1..1` | **MVP normalizado** |
+| `FE/OtrosCargos/Detalle` | Detalle | `(vacío)` | `1..1` | normalizar después |
 | `FE/OtrosCargos/PorcentajeOC` | PorcentajeOC | `(vacío)` | `0..1` | normalizar después |
 | `FE/OtrosCargos/MontoCargo` | MontoCargo | `DecimalDineroType` | `1..1` | normalizar después |
 | `FE/ResumenFactura` | ResumenFactura | `(inline)` | `1..1` | **MVP normalizado** |
@@ -1230,8 +1264,8 @@ Extraído programáticamente del XSD oficial. 181 filas.
 | `FE/ResumenFactura/TotalDescuentos` | TotalDescuentos | `DecimalDineroType` | `0..1` | **MVP normalizado** |
 | `FE/ResumenFactura/TotalVentaNeta` | TotalVentaNeta | `DecimalDineroType` | `1..1` | **MVP normalizado** |
 | `FE/ResumenFactura/TotalDesgloseImpuesto` | TotalDesgloseImpuesto | `(inline)` | `0..1000` | normalizar después |
-| `FE/ResumenFactura/TotalDesgloseImpuesto/Codigo` | Codigo | `CodigoImpuestoType` | `1..1` | **MVP normalizado** |
-| `FE/ResumenFactura/TotalDesgloseImpuesto/CodigoTarifaIVA` | CodigoTarifaIVA | `CodigoTarifaIVAType` | `0..1` | **MVP normalizado** |
+| `FE/ResumenFactura/TotalDesgloseImpuesto/Codigo` | Codigo | `CodigoImpuestoType` | `1..1` | normalizar después |
+| `FE/ResumenFactura/TotalDesgloseImpuesto/CodigoTarifaIVA` | CodigoTarifaIVA | `CodigoTarifaIVAType` | `0..1` | normalizar después |
 | `FE/ResumenFactura/TotalDesgloseImpuesto/TotalMontoImpuesto` | TotalMontoImpuesto | `DecimalDineroType` | `1..1` | normalizar después |
 | `FE/ResumenFactura/TotalImpuesto` | TotalImpuesto | `DecimalDineroType` | `0..1` | **MVP normalizado** |
 | `FE/ResumenFactura/TotalImpAsumEmisorFabrica` | TotalImpAsumEmisorFabrica | `DecimalDineroType` | `0..1` | normalizar después |
