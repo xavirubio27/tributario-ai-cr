@@ -30,7 +30,8 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
     · revisión arquitectónica: PASS
   Phase E1 — Logical Fiscal Model Design — COMPLETED
   Phase E2 — PostgreSQL Fiscal Schema Design — COMPLETED
-Next: fase E3 — primera migración fiscal. NO INICIADA.
+  Phase E3 — First Fiscal Migration — COMPLETED
+Next: siguiente fase del Checkpoint E. NO INICIADA.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -376,6 +377,105 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Procesamiento en segundo plano | ADR-016 ⏳ |
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
+
+## Checkpoint E — Fase E3 · COMPLETED
+
+**Auditoría independiente de Codex: `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 1 no bloqueante ·
+INFORMATIONAL 1` — PASS.** Primera implementación física del dominio fiscal.
+
+| | |
+|---|---|
+| Migración | `20260830132124_create_fiscal_domain_tables.sql` (740 líneas) — **aplicada en DEV** |
+| Migraciones | **10 locales · 10 remotas**, versiones ordenadas idénticas |
+| Tablas fiscales de producto | **7** |
+| Filas tras la limpieza de tests | **0** |
+| Helper de escritura | `private.can_write_company(uuid)` |
+| Políticas RLS | **21** = 7 SELECT + 7 INSERT + 7 UPDATE · **0 de DELETE** |
+| Privilegios | `SELECT, INSERT` en las 7 · **0 UPDATE de tabla** · **15 columnas** con `UPDATE` |
+| Índices | 9, según el diseño aprobado |
+
+```
+fiscal.source_documents      fiscal.line_discounts
+fiscal.electronic_documents  fiscal.line_taxes
+fiscal.document_parties      fiscal.document_references
+fiscal.document_lines
+```
+
+Mapeo preservado: **48 campos lógicos con valor · 52 columnas físicas · 0 omitidos ·
+0 pérdida de información**.
+
+La migración lleva **13 comprobaciones de invariantes** en su propio cuerpo: si el estado
+resultante no es el que el diseño exige, la migración falla y revierte.
+
+### Integridad de tenant
+
+```
+toda fila fiscal está acotada por company_id
+padre/hija            FK compuestas tenant-safe
+asociación cruzada    RECHAZADA por PostgreSQL (23503)
+```
+
+**Topología de las FK directas a `public.companies`** — conclusión auditada:
+
+```
+FK directa:  source_documents · electronic_documents
+Hijas:       ancladas transitivamente por la FK compuesta obligatoria al padre
+Resultado:   SEGURO / NO ES UN DEFECTO
+```
+
+No se crean cinco FK redundantes.
+
+### Artefacto y autorización
+
+```
+raw_xml         BYTEA NOT NULL
+content_sha256  BYTEA NOT NULL
+                CHECK octet_length(content_sha256) = 32
+                CHECK content_sha256 = pg_catalog.sha256(raw_xml)
+índice          (company_id, content_sha256)  NO UNICO
+
+UNIQUE (company_id, clave)   ·   nunca UNIQUE (clave)
+clave        50 dígitos ASCII
+consecutivo  20 dígitos ASCII
+
+private.can_write_company(uuid)  STABLE · SECURITY DEFINER · search_path="" · owner postgres
+owner/editor → escritura fiscal autorizada    ·    viewer → solo lectura
+
+fiscal_backend: sin USAGE sobre auth · sin SELECT sobre company_memberships · NOBYPASSRLS
+```
+
+### Evidencia de seguridad comprobada
+
+A no ve a B ni B a A · `INSERT` cruzado rechazado por RLS · FK compuesta cruzada rechazada ·
+owner y editor escriben, viewer solo lee · hechos de origen no actualizables ·
+`DELETE` denegado · huella correcta aceptada e incorrecta rechazada · XML mal formado
+preservado · clave y consecutivo validados · offset ±840 aceptado y fuera de rango
+rechazado · `NULL` sigue `NULL` y el cero explícito sigue `0` · ambas FK opcionales
+funcionan · `SET NULL` anula solo la columna opcional dejando `company_id` y `raw_xml`
+intactos · sin fuga de identidad A→B en la misma sesión · **Data API sigue devolviendo
+`PGRST106`** al schema `fiscal`.
+
+### Nota de auditoría no bloqueante
+
+Las 13 comprobaciones internas de la migración podrían ser más exhaustivas como defensa en
+profundidad —no inspeccionan todas las expresiones de las políticas ni todos los roles, y
+una de ellas usa la representación textual del ACL—. **No es un defecto de esquema,
+seguridad, autorización, RLS ni ACL**: el estado real se comprobó por SQL estático,
+catálogo, ACL efectivas y tests de comportamiento. Queda como endurecimiento opcional para
+una pasada futura; no se modifica una migración ya aplicada por este motivo.
+
+### Topología de las FK a `public.companies` — resuelta en auditoría
+
+Durante la implementación se registró como posible desviación que la FK directa a
+`public.companies` existiera solo en las dos raíces y no en las siete. **La auditoría
+independiente lo evaluó y lo declaró SEGURO / NO ES UN DEFECTO**: las hijas quedan
+ancladas transitivamente por su FK compuesta obligatoria al padre, y `RESTRICT` en las
+raíces impide borrar una empresa con evidencia fiscal.
+
+Comprobado además de forma empírica: una fila hija con `company_id` inexistente **es
+rechazada** (`23503`). No se añaden cinco FK redundantes.
+
+---
 
 ## Checkpoint E — Fase E2 · COMPLETED
 

@@ -63,17 +63,20 @@ def probe_table(admin_sql, user_a, user_b):
         # Comprobación AUTOMATIZADA del teardown, no un comando manual posterior.
         # Si el drop fallara, esto rompe la suite en lugar de dejar residuo
         # silencioso en un schema fiscal que el gate mantiene vacío.
+        # Se comprueba que EL CANARIO desaparecio, no que el schema quede vacio:
+        # desde la fase E3 el schema `fiscal` contiene las siete tablas
+        # permanentes del producto, que deben seguir ahi.
         residuo = admin_sql(
             """
             select (select count(*) from information_schema.tables
-                     where table_schema = 'fiscal')                      as tablas,
+                     where table_schema = 'fiscal' and table_name = 'boundary_probe') as canario,
                    (select count(*) from pg_proc p
                      join pg_namespace n on n.oid = p.pronamespace
-                    where n.nspname = 'fiscal')                          as funciones
+                    where n.nspname = 'fiscal')                                       as funciones
             """
         )[0]
-        assert residuo["tablas"] == 0, f"Residuo: {residuo['tablas']} tabla(s) en `fiscal`."
-        assert residuo["funciones"] == 0, f"Residuo: {residuo['funciones']} función(es) en `fiscal`."
+        assert residuo["canario"] == 0, "El canario `fiscal.boundary_probe` sobrevivio al teardown."
+        assert residuo["funciones"] == 0, f"Residuo: {residuo['funciones']} funcion(es) en fiscal."
 
 
 @pytest.fixture
