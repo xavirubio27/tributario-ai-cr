@@ -1200,7 +1200,7 @@ precisamente porque su lugar no existe en el MVP, y eso es el hallazgo, no una o
 |---|---|---|---|---|---|
 | 1 | `FE/Clave` | ElectronicDocument | clave | Obligatorio | Clave natural oficial, 50 dígitos. Identidad natural (§6) |
 | 2 | `FE/ProveedorSistemas` | — | — | — | **Corrección propuesta C-2**: a `raw-only`. Ver §12 |
-| 3 | `FE/CodigoActividadEmisor` | ElectronicDocument | issuer_economic_activity_code | Obligatorio | Código de 6 dígitos. Se guarda como código (§11) |
+| 3 | `FE/CodigoActividadEmisor` | ElectronicDocument | issuer_economic_activity_code | Obligatorio | Código de **exactamente 6 caracteres** (el XSD no exige dígitos). Se guarda como código (§11) |
 | 4 | `FE/CodigoActividadReceptor` | ElectronicDocument | receiver_economic_activity_code | Opcional | Tri-estado: ausente ≠ vacío |
 | 5 | `FE/NumeroConsecutivo` | ElectronicDocument | consecutive_number | Obligatorio | 20 dígitos. Redundante con `clave[22:41]`: se conserva para verificación cruzada |
 | 6 | `FE/FechaEmision` | ElectronicDocument | issued_at + issued_at_offset + issued_at_raw | Obligatorio | Tres representaciones del mismo dato (§8) |

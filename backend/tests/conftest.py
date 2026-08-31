@@ -166,14 +166,79 @@ def _create_user(base_url: str, apikey: str, label: str, settings=None) -> TestU
     )
 
 
+# Tablas fiscales que llevan `company_id` y de las que se borra directamente.
+# Las hijas del agregado (`document_parties`, `document_lines`, `line_discounts`,
+# `line_taxes`, `document_references`) desaparecen por CASCADE al borrar el
+# documento, asi que no se enumeran: hacerlo duplicaria el borrado sin anadir
+# garantia.
+#
+# `source_documents` va PRIMERO: su enlace al documento normalizado es
+# ON DELETE SET NULL, de modo que borrar el documento antes solo dejaria el
+# artefacto huerfano en lugar de retirarlo.
+_FISCAL_ROOTS = ("source_documents", "electronic_documents")
+
+
+def _cleanup_user(user: "TestUser") -> None:
+    """Retira EXCLUSIVAMENTE lo que creo esta ejecucion, por UUID exacto.
+
+    Nunca se borra por prefijo de nombre ni sin predicado: un `delete` sin
+    ambito podria arrasar datos de otra ejecucion concurrente, de otro test o
+    de un desarrollador trabajando contra el mismo proyecto DEV.
+
+    El orden lo imponen las claves foraneas reales, no la intuicion:
+
+        filas fiscales de esa empresa   companies.id <- fiscal.* es RESTRICT
+                 |
+        la empresa                      la membership cae por CASCADE
+                 |
+        el usuario de Auth              companies.created_by es RESTRICT
+
+    Invertir cualquiera de los dos pasos hace fallar el borrado.
+    """
+    if user is None:
+        return
+    sentencias = [
+        f"delete from fiscal.{t} where company_id = '{user.company_id}'"
+        for t in _FISCAL_ROOTS
+    ]
+    # La membership cae por CASCADE al borrar la empresa; se deja explicito
+    # por si alguna vez se anadiera una membership adicional a mano.
+    sentencias += [
+        f"delete from public.company_memberships where company_id = '{user.company_id}'",
+        f"delete from public.companies where id = '{user.company_id}'",
+        f"delete from auth.users where id = '{user.id}'",
+    ]
+    for sql in sentencias:
+        try:
+            _admin_sql(sql)
+        except Exception as exc:  # noqa: BLE001 - el teardown nunca debe enmascarar el fallo del test
+            print(f"[teardown] no se pudo ejecutar {sql!r}: {exc}")
+
+
 @pytest.fixture(scope="session")
 def user_a(settings, publishable_key) -> TestUser:
-    return _create_user(settings.supabase_url, publishable_key, "a", settings)
+    user = _create_user(settings.supabase_url, publishable_key, "a", settings)
+    try:
+        yield user
+    finally:
+        # `finally` y no codigo tras el `yield` a secas: el teardown debe
+        # ejecutarse tambien cuando un test falla o lanza.
+        _cleanup_user(user)
 
 
 @pytest.fixture(scope="session")
 def user_b(settings, publishable_key) -> TestUser:
-    return _create_user(settings.supabase_url, publishable_key, "b", settings)
+    user = _create_user(settings.supabase_url, publishable_key, "b", settings)
+    try:
+        yield user
+    finally:
+        _cleanup_user(user)
+
+
+@pytest.fixture(scope="session")
+def cleanup_user():
+    """Expone el borrador acotado para tests que crean su propio usuario."""
+    return _cleanup_user
 
 
 @pytest.fixture(scope="session")

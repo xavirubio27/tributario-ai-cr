@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FacturaElectronica xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica">
+  <Clave>50601082600310161019803900001010004596121100000000</Clave>
+  <ProveedorSistemas>3101392473</ProveedorSistemas>
+  <CodigoActividadEmisor>6110.0</CodigoActividadEmisor>
+  <NumeroConsecutivo>03900001010004596121</NumeroConsecutivo>
+  <FechaEmision>2026-08-01T05:24:09-06:00</FechaEmision>
+  <Emisor>
+    <Nombre>LIBERTY TELECOMUNICACIONES DE COSTA RICA LY S.A.</Nombre>
+    <Identificacion>
+      <Tipo>02</Tipo>
+      <Numero>3101610198</Numero>
+    </Identificacion>
+    <Registrofiscal8707 />
+    <NombreComercial>Liberty</NombreComercial>
+    <Ubicacion>
+      <Provincia>1</Provincia>
+      <Canton>02</Canton>
+      <Distrito>03</Distrito>
+      <Barrio>Trejos Montealegre</Barrio>
+      <OtrasSenas>Centro Corp. El Cedral, SJ, CR 10203</OtrasSenas>
+    </Ubicacion>
+    <Telefono>
+      <CodigoPais>506</CodigoPais>
+      <NumTelefono>41009000</NumTelefono>
+    </Telefono>
+    <CorreoElectronico>factura.electronicacr@libertycr.com</CorreoElectronico>
+  </Emisor>
+  <Receptor>
+    <Nombre>XAVIER ALEJANDRO RUBIO AGUILAR</Nombre>
+    <Identificacion>
+      <Tipo>01</Tipo>
+      <Numero>801400232</Numero>
+    </Identificacion>
+  </Receptor>
+  <CondicionVenta>01</CondicionVenta>
+  <DetalleServicio>
+    <LineaDetalle>
+      <NumeroLinea>1</NumeroLinea>
+      <CodigoCABYS>9010002000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>01010999</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>Cargo por mora</Detalle>
+      <PrecioUnitario>1400.00</PrecioUnitario>
+      <MontoTotal>1400.00</MontoTotal>
+      <SubTotal>1400.00</SubTotal>
+      <BaseImponible>1400.00</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>182.00</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>182.00</ImpuestoNeto>
+      <MontoTotalLinea>1582.00</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>2</NumeroLinea>
+      <CodigoCABYS>8462200000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>01023237</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>NEXT TV FMC</Detalle>
+      <PrecioUnitario>1415.93</PrecioUnitario>
+      <MontoTotal>1415.93</MontoTotal>
+      <SubTotal>1415.93</SubTotal>
+      <BaseImponible>1415.93</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>184.07</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>184.07</ImpuestoNeto>
+      <MontoTotalLinea>1600.00</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>3</NumeroLinea>
+      <CodigoCABYS>8462200000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>01023549</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>BUNDLE PARAMOUNT+</Detalle>
+      <PrecioUnitario>0.89</PrecioUnitario>
+      <MontoTotal>0.89</MontoTotal>
+      <SubTotal>0.89</SubTotal>
+      <BaseImponible>0.89</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>0.12</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>0.12</ImpuestoNeto>
+      <MontoTotalLinea>1.01</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>4</NumeroLinea>
+      <CodigoCABYS>8462200000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>01023551</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>PACK ENTRETENIMIENTO</Detalle>
+      <PrecioUnitario>0.89</PrecioUnitario>
+      <MontoTotal>0.89</MontoTotal>
+      <SubTotal>0.89</SubTotal>
+      <BaseImponible>0.89</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>0.12</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>0.12</ImpuestoNeto>
+      <MontoTotalLinea>1.01</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>5</NumeroLinea>
+      <CodigoCABYS>7312500000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>02022299</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>EXTENSOR SERCOMM ESCRITORIO</Detalle>
+      <PrecioUnitario>2212.39</PrecioUnitario>
+      <MontoTotal>2212.39</MontoTotal>
+      <SubTotal>2212.39</SubTotal>
+      <BaseImponible>2212.39</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>287.61</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>287.61</ImpuestoNeto>
+      <MontoTotalLinea>2500.00</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>6</NumeroLinea>
+      <CodigoCABYS>8422200000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>02023533</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>500MBPS/500MBPS_FTTH_LY_2025_FMC</Detalle>
+      <PrecioUnitario>58210.99</PrecioUnitario>
+      <MontoTotal>58210.99</MontoTotal>
+      <Descuento>
+        <MontoDescuento>39100.09</MontoDescuento>
+        <CodigoDescuento>07</CodigoDescuento>
+      </Descuento>
+      <SubTotal>19110.90</SubTotal>
+      <BaseImponible>19110.90</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>2484.42</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>2484.42</ImpuestoNeto>
+      <MontoTotalLinea>21595.32</MontoTotalLinea>
+    </LineaDetalle>
+    <LineaDetalle>
+      <NumeroLinea>7</NumeroLinea>
+      <CodigoCABYS>8412000000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>03023234</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Os</UnidadMedida>
+      <Detalle>TELEFONÍA FTTH FMC</Detalle>
+      <PrecioUnitario>0.89</PrecioUnitario>
+      <MontoTotal>0.89</MontoTotal>
+      <SubTotal>0.89</SubTotal>
+      <BaseImponible>0.89</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13</Tarifa>
+        <Monto>0.12</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>0.12</ImpuestoNeto>
+      <MontoTotalLinea>1.01</MontoTotalLinea>
+    </LineaDetalle>
+  </DetalleServicio>
+  <OtrosCargos>
+    <TipoDocumentoOC>99</TipoDocumentoOC>
+    <TipoDocumentoOTROS>CARGO 911</TipoDocumentoOTROS>
+    <Detalle>CARGO 911 0.75%</Detalle>
+    <MontoCargo>143.34</MontoCargo>
+  </OtrosCargos>
+  <OtrosCargos>
+    <TipoDocumentoOC>99</TipoDocumentoOC>
+    <TipoDocumentoOTROS>CARGO CRUZ ROJA</TipoDocumentoOTROS>
+    <Detalle>CARGO CRUZ ROJA 1%</Detalle>
+    <MontoCargo>191.12</MontoCargo>
+  </OtrosCargos>
+  <ResumenFactura>
+    <CodigoTipoMoneda>
+      <CodigoMoneda>CRC</CodigoMoneda>
+      <TipoCambio>1</TipoCambio>
+    </CodigoTipoMoneda>
+    <TotalServGravados>63241.98</TotalServGravados>
+    <TotalGravado>63241.98</TotalGravado>
+    <TotalVenta>63241.98</TotalVenta>
+    <TotalDescuentos>39100.09</TotalDescuentos>
+    <TotalVentaNeta>24141.89</TotalVentaNeta>
+    <TotalDesgloseImpuesto>
+      <Codigo>01</Codigo>
+      <CodigoTarifaIVA>08</CodigoTarifaIVA>
+      <TotalMontoImpuesto>3138.46</TotalMontoImpuesto>
+    </TotalDesgloseImpuesto>
+    <TotalImpuesto>3138.46</TotalImpuesto>
+    <TotalOtrosCargos>334.46</TotalOtrosCargos>
+    <MedioPago>
+      <TipoMedioPago>01</TipoMedioPago>
+      <TotalMedioPago>27614.81</TotalMedioPago>
+    </MedioPago>
+    <TotalComprobante>27614.81</TotalComprobante>
+  </ResumenFactura>
+  <Otros>
+    <OtroTexto codigo="NumeroContrato">0001522667</OtroTexto>
+    <OtroTexto codigo="NumerosTelefono" />
+    <OtroTexto codigo="Observaciones" />
+    <OtroTexto codigo="RecargoMora">Si cancela posterior al día 20-08-2026, en su próxima factura se cobrará un recargo por mora del 5% y un cargo por reconexión del servicio de 2163 colones.</OtroTexto>
+    <OtroTexto codigo="FechaPeriodo">01 ago 2026 al 31 ago 2026</OtroTexto>
+    <OtroTexto codigo="Fecha_Vencimiento">20-08-2026</OtroTexto>
+    <OtroTexto codigo="NumeroIdentificacionImpresion">08-0140-0232</OtroTexto>
+    <OtroTexto codigo="DireccionImpresion">RIVERGRAM CALLE ARBOLEDA CASA NUMERO 11 CASA COLOR GRIS DOS PISOS</OtroTexto>
+    <OtroTexto codigo="RESUMEN_TELEVISION">1417.71</OtroTexto>
+    <OtroTexto codigo="RESUMEN_INTERNET">21323.29</OtroTexto>
+    <OtroTexto codigo="RESUMEN_TELEFONIA">0.89</OtroTexto>
+    <OtroTexto codigo="SUB TOTAL">61841.98</OtroTexto>
+    <OtroTexto codigo="OTROS COSTOS">1400.00</OtroTexto>
+    <OtroTexto codigo="id-convergente">96139</OtroTexto>
+    <OtroTexto codigo="NOMBRE_PLAN">TRIPLE PLAY 500MBPS</OtroTexto>
+    <OtroTexto codigo="Email_Receptor">XAVIER@PIXDEA.COM</OtroTexto>
+  </Otros>
+<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315" /><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" /><ds:Reference Id="Reference-241bcd3d-b1b3-4f49-9be5-b2aa96a49a3b" URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" /></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>hwsjZ6/rDBnDooNXyT+YTyjUz1/+AVgmU0VC/sDL+fE=</ds:DigestValue></ds:Reference><ds:Reference Id="ReferenceKeyInfo" URI="#KeyInfoId-Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>CqfgX4wM2Ud1OXswptdlbas+Za2iY6AftYh+apHghTI=</ds:DigestValue></ds:Reference><ds:Reference Type="http://uri.etsi.org/01903#SignedProperties" URI="#SignedProperties-Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>lwy/Khqr3IOl9JBUPPmdaOhTd1QY6QqnekUeut74GiU=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue Id="SignatureValue-70822e66-85b8-42af-8b0c-9e8cdba5d45c">qJ24k77HfeqJnEUcdMzFLyTXv1BPjxR7fz/px8pH5mJr4H+IT9h5PXHlxQxl2AN51UDLeZ+MrNyMA7gqXUneXygmC8JffRPow+3LhU1x10yccTgvyjhKAiGl0+kf423plG8FKYMdcwlKRkJbE5hgEzynBCZ9UZe/lNEVhu9lrlnw9HwgNAGgh0bxzeYX+gPnRoQvvXUx0M19bSwDRdxvNL88Vd4uJ+0p8hi622UZfmyd5zp+SVKQfSsD9z2qtqRYUKsTYW64k664gA7XJbWN45i5Cet2xmhv59U+Ok9X1sDr93Y9bpXwlmBlxbIKvy8KleZ65O3oQmepd5Sff2TeQw==</ds:SignatureValue><ds:KeyInfo Id="KeyInfoId-Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><ds:X509Data><ds:X509Certificate>MIIFPjCCAyagAwIBAgIGAZjPx7aoMA0GCSqGSIb3DQEBCwUAMFoxCzAJBgNVBAYTAkNSMR8wHQYDVQQKDBZNSU5JU1RFUklPIERFIEhBQ0lFTkRBMQwwCgYDVQQLDANER1QxHDAaBgNVBAMME0NBIFBFUlNPTkEgSlVSSURJQ0EwHhcNMjUwODIyMDMxNzA4WhcNMjkwODIxMDMxNzA4WjCBmDEZMBcGA1UEBRMQQ1BKLTMtMTAxLTYxMDE5ODELMAkGA1UEBhMCQ1IxGTAXBgNVBAoMEFBFUlNPTkEgSlVSSURJQ0ExDDAKBgNVBAsMA0NQSjFFMEMGA1UEAww8TElCRVJUWSBURUxFQ09NVU5JQ0FDSU9ORVMgREUgQ09TVEEgUklDQSBMWSBTT0NJRURBRCBBTk9OSU1BMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAveEYg03txqaY8YOI4ZRIUb7esrjSJTEfHI4rnIw3+BXOPMTlM6m46v4crwKdHdGBaTs924H+qvEDdpIBckzaPO8u6Y2HFp+0S3f9pxoBME55ypZA7hUe20zRt6gcy10J5IVGiQdjsHKko5bsRJPxB3SukJMF/gMNmdtCP+VzQMih/ZuMACYN5fqU7VrjCyv7WSBCYgd4yrsXuk9xIhB/IZPKyoRxmwe9C3bxb3zDnkpAdLu2kIURV2aX0CIL94vQuY+Kv7v++beRmhHtiy2hU5z0Y4/cpqgyGofeFiitcRKe6Mf9sySnY5b3OiGWgdzrJBSEoV46zspz0H0x1oOfvwIDAQABo4HKMIHHMB8GA1UdIwQYMBaAFDttV/XWfOmeEAIgQeO9GszPs06VMB0GA1UdDgQWBBS1rGgccJzJ9/A/T2ivtQWE2U12kTALBgNVHQ8EBAMCBsAwEwYDVR0lBAwwCgYIKwYBBQUHAwQwYwYIKwYBBQUHAQEEVzBVMFMGCCsGAQUFBzAChkdodHRwczovL3BraS5jb21wcm9iYW50ZXNlbGVjdHJvbmljb3MuZ28uY3IvcHJvZC9pbnRlcm1lZGlhdGUtcGotcGVtLmNydDANBgkqhkiG9w0BAQsFAAOCAgEAL2N+xjaCX8e94Ltl/ZMoVfm6b1+9BFNe6sR1qewo/dqAwtb7/0LWZC+dWDeikxZe8IvJ/oW4+mF3KTayoFuxgxhfjxMk2J7YRQd5Q0Iv4aXVA2q/wbU113kTELyreiizkpOVdL2Gx+58q6uHXzcLqyZuFzdIKh9VEhRbrE4AtZ63MwGAnpG7mldihr8aFBOJTFyixfPgR7Blc4kTIj+BWfY3iszwek0uZpScA4pHSx44GRWKssYmYXqFg0enEdn+2MW+MS2wSgJZGmPCa2Puo5hVLcakZAk2Cswh83bTQoNbeEY0N8P+OtWsxnQoSQfdW7agtNVYpEPpF4MpikaILBXo7DcAOwEO6tpSRcYMu9I8HL6ekyZuIOu0ctydyrJOrHqkMb83hxwrqx1O9JgQGeFENA2TkB3QfSz7jai4IwmhUFbnKo4QGwCX9kkSvZemS9W14dO7adyM9XaOgIuGF8YFOL4w+nhAHQcG/TsWpyG24ld8uiC+1eDfVwT+cGD7PT91lUsaoWV7TaO6k0CwXqj2b5whp7IJ2UeaUBdb59OXYo2h5NPzUlwFji+rPxKI9S00eCrkCD2Sko8vJ/THqBb926AOc34zYl0ATmZScJr3wXYiYnWaeauxOq+Phfpsn6CZxsSg8h+ZnTUv84A3kLIIGlCgnKF8jRNUQHpMpvI=</ds:X509Certificate></ds:X509Data><ds:KeyValue><ds:RSAKeyValue><ds:Modulus>veEYg03txqaY8YOI4ZRIUb7esrjSJTEfHI4rnIw3+BXOPMTlM6m46v4crwKdHdGBaTs924H+qvEDdpIBckzaPO8u6Y2HFp+0S3f9pxoBME55ypZA7hUe20zRt6gcy10J5IVGiQdjsHKko5bsRJPxB3SukJMF/gMNmdtCP+VzQMih/ZuMACYN5fqU7VrjCyv7WSBCYgd4yrsXuk9xIhB/IZPKyoRxmwe9C3bxb3zDnkpAdLu2kIURV2aX0CIL94vQuY+Kv7v++beRmhHtiy2hU5z0Y4/cpqgyGofeFiitcRKe6Mf9sySnY5b3OiGWgdzrJBSEoV46zspz0H0x1oOfvw==</ds:Modulus><ds:Exponent>AQAB</ds:Exponent></ds:RSAKeyValue></ds:KeyValue></ds:KeyInfo><ds:Object Id="XadesObjectId-251ed612-d958-4473-af4f-2d812c0b3530"><xades:QualifyingProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" Id="QualifyingProperties-9e291ab1-6700-48ba-bcf3-02e320a3fc8d" Target="#Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><xades:SignedProperties Id="SignedProperties-Signature-70822e66-85b8-42af-8b0c-9e8cdba5d45c"><xades:SignedSignatureProperties><xades:SigningTime>2026-08-01T05:24:09-06:00</xades:SigningTime><xades:SigningCertificate><xades:Cert><xades:CertDigest><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>/7Dmeq4GKgw/CGVZHQ9dF4yjKIddHYJBeRjSZ6F/7Ls=</ds:DigestValue></xades:CertDigest><xades:IssuerSerial><ds:X509IssuerName>CN=CA PERSONA JURIDICA, OU=DGT, O=MINISTERIO DE HACIENDA, C=CR</ds:X509IssuerName><ds:X509SerialNumber>1755832628904</ds:X509SerialNumber></xades:IssuerSerial></xades:Cert></xades:SigningCertificate><xades:SignaturePolicyIdentifier><xades:SignaturePolicyId><xades:SigPolicyId><xades:Identifier>https://tribunet.hacienda.go.cr/docs/esquemas/2016/v4.2/Resolucion_Comprobantes_Electronicos_DGT-R-48-2016.pdf</xades:Identifier><xades:Description /></xades:SigPolicyId><xades:SigPolicyHash><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>NmI5Njk1ZThkNzI0MmIzMGJmZDAyNDc4YjUwNzkzODM2NTBiOWUxNTBkMmI2YjgzYzZjM2I5NTZlNDQ4OWQzMQ==</ds:DigestValue></xades:SigPolicyHash></xades:SignaturePolicyId></xades:SignaturePolicyIdentifier></xades:SignedSignatureProperties><xades:SignedDataObjectProperties><xades:DataObjectFormat ObjectReference="#Reference-241bcd3d-b1b3-4f49-9be5-b2aa96a49a3b"><xades:MimeType>text/xml</xades:MimeType><xades:Encoding>UTF-8</xades:Encoding></xades:DataObjectFormat></xades:SignedDataObjectProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object></ds:Signature></FacturaElectronica>

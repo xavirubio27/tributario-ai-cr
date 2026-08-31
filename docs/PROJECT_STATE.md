@@ -31,7 +31,10 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
   Phase E1 — Logical Fiscal Model Design — COMPLETED
   Phase E2 — PostgreSQL Fiscal Schema Design — COMPLETED
   Phase E3 — First Fiscal Migration — COMPLETED
-Next: siguiente fase del Checkpoint E. NO INICIADA.
+  Phase E4-A — Real XML Fixture Intake & Baseline — COMPLETED
+  Phase E4-B0 — Real Fixture Compatibility Fix — COMPLETED
+  Phase E4-A2 — Fixture Expansion — NOT STARTED
+Next: E4-A2. El parser aún no existe.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -377,6 +380,173 @@ Verificado contra [DECISIONS.md](DECISIONS.md):
 | Procesamiento en segundo plano | ADR-016 ⏳ |
 | Proveedor LLM inicial | ADR-013 ⏳ |
 | Estrategia de embeddings | ADR-014 ⏳ |
+
+## Checkpoint E — Fases E4-A y E4-B0
+
+### E4-A — Real XML Fixture Intake & Baseline · COMPLETED
+
+Dos Facturas Electrónicas v4.4 **reales**, aceptadas por Hacienda, incorporadas como
+golden fixtures en `backend/tests/fixtures/fiscal/real/v4_4/fe/`:
+
+```
+50601082600310161019803900001010004596121100000000.xml   16 067 B
+  sha256 a1f639d06c79cedfa01fe6e3ca8fce5b8ad7de9225afe6cbf7054ff6515c8b0b
+
+50602082600310161019800100024010059940227200000000.xml   10 911 B
+  sha256 b9892fad51b9c9d49aa8d04581088ee69b0d2262b2337b880355b53b4ad70ae0
+```
+
+Claves distintas, situaciones distintas (`1` normal · `2` contingencia): **dos
+comprobantes independientes**, nunca consolidados. Bytes intactos —CRLF, sin salto
+final—; los tests comparan la huella sobre los bytes, sin reserializar.
+
+Cobertura de los 48 campos MVP: **37/48** y **35/48**. Todas las ausencias son legítimas
+—campos opcionales no declarados o el nodo `InformacionReferencia` inexistente—. El par
+ilustra con datos reales la distinción **ausente ≠ cero**: `TotalDescuentos` ausente en
+uno mientras `PlazoCredito` está presente con valor `0`.
+
+### E4-B0 — Real Fixture Compatibility Fix · COMPLETED
+
+**Auditoría independiente de Codex: `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0` — PASS.**
+
+**Los fixtures reales destaparon un `CHECK` demasiado estricto creado en E3.**
+
+```
+E3 cerrada
+   ↓
+se incorporan fixtures FE 4.4 reales
+   ↓
+se descubre la incompatibilidad del código de actividad
+   ↓
+migración correctiva
+```
+
+Los dos comprobantes declaran `CodigoActividadEmisor = "6110.0"` —seis caracteres, con
+punto—. E3 exigía `^[0-9]{6}$` en ambos códigos de actividad, de modo que **habría
+rechazado comprobantes reales**. De las 20 restricciones de forma, 19 pasaron; esta no.
+
+**Corrección:** migración nueva `20260830162516_fix_fiscal_activity_code_constraints`
+que cambia la validación estructural de *seis dígitos ASCII* a **exactamente seis
+caracteres**.
+
+**Motivo:** fidelidad a la fuente estructural oficial. El XSD v4.4 declara
+`xs:string minLength=6 maxLength=6` **sin patrón**, y los Anexos dicen «String 6» con
+validación contra el padrón del RUT. La validación semántica de catálogo/RUT **sigue
+diferida** a la capa 2; aquí no se introduce catálogo alguno.
+
+La migración de E3 **no se editó**: permanece históricamente intacta.
+
+| | |
+|---|---|
+| Migraciones | **11 locales · 11 remotas**, versiones idénticas |
+| Constraint anterior | `CHECK (issuer_activity_code ~ '^[0-9]{6}$')` |
+| Constraint nuevo | `CHECK (char_length(issuer_activity_code) = 6)` |
+| Receptor | `CHECK (receiver_activity_code IS NULL OR char_length(...) = 6)` — sigue nullable |
+| Verificación | Por `INSERT` real, no solo introspección: `6110.0`, `620100` y `ABC123` aceptados; 5 y 7 caracteres rechazados (`23514`) |
+
+### Remediación tras auditoría de Codex
+
+La auditoría cerró `FAIL` con 1 MEDIUM y 2 LOW. Corregido:
+
+- **Cleanup destructivo sin ámbito.** `test_fiscal_fixtures.py` ejecutaba
+  `delete from fiscal.electronic_documents` **sin predicado**, capaz de borrar datos de
+  otra ejecución concurrente o de otro desarrollador contra el mismo DEV. **Encontré el
+  mismo defecto en `test_fiscal_schema.py`**, que la auditoría no señaló. Los tres
+  quedan acotados por el **UUID exacto** de la empresa creada por esa ejecución.
+- **Fuga de tenencia.** Las fixtures `user_a`/`user_b` creaban usuario de Auth, empresa y
+  membresía **sin teardown**. Ahora se limpian en un bloque `finally`, en el orden que
+  imponen las claves foráneas reales: filas fiscales → empresa (la membresía cae por
+  CASCADE) → usuario de Auth. Se reutiliza el mecanismo privilegiado de tests ya
+  aprobado; no se introduce infraestructura nueva ni se relaja ningún `RESTRICT`.
+- **Regresiones nuevas.** Un test *centinela* demuestra por comportamiento —no
+  inspeccionando SQL— que el cleanup de una empresa **no borra** documentos de otra. Otro
+  lanza una excepción dentro del generador de la fixture, como hace pytest cuando un test
+  falla, y comprueba que el teardown se ejecuta igualmente.
+
+**Prueba de estabilidad:** dos ejecuciones consecutivas, 29/29 cada una, sin crecimiento
+de usuarios, empresas ni filas fiscales.
+
+### CABYS — formato semántico: **CONFIRMED NUMERIC**
+
+```
+XSD v4.4          xs:string, longitud 13        → SOLO longitud, sin patrón
+BCCR (CABYS)      código de producto            → 13 DÍGITOS
+CHECK actual      cabys_code ~ '^[0-9]{13}$'    → SOPORTADO
+migración         NO se requiere
+H-3               sigue ABIERTO
+```
+
+**Fuentes primarias del respaldo semántico**, las tres del Banco Central de Costa Rica:
+
+| Documento | Qué establece |
+|---|---|
+| Página oficial CABYS — «Catálogo de bienes y servicios para uso tributario y de Cuentas Nacionales» | Jerarquía de **1 dígito** (categorías generales) → **2** → … → **13 dígitos** (producto) |
+| Preguntas frecuentes CABYS | Productos «**identificados por 13 dígitos**» |
+| Guía oficial del buscador CABYS | El campo Código es un «**número de trece dígitos que identifica un producto**» |
+
+**No se atribuye «13 dígitos» al XSD**: el XSD aporta la longitud; el respaldo numérico es
+del BCCR. Lo corrobora una fuente verificada localmente: los Anexos v4.4
+(`sha256 6e093226…`) hablan de «el primer **dígito** del código CABYS sea 0, 1, 2, 3 y 4
+(bienes)», y su nota 17 delega la codificación a ese catálogo.
+
+**Cerrar el formato NO cierra H-3.**
+
+```
+CABYS format confirmed   ≠   CABYS catalog implemented
+```
+
+**H-3 continúa ABIERTO** porque todavía no existe: catálogo CABYS integrado · validación
+del código contra el catálogo vigente · enriquecimiento · resolución de descripción ·
+manejo de versiones del catálogo. **ADR-029 sigue aplicando**: ningún código externo lleva
+clave foránea obligatoria a un catálogo local. Lo que deja de ser una cuestión abierta es
+el *formato* del código, no el catálogo.
+
+**Trazabilidad de la conclusión** —no se reescribe el pasado—:
+
+| Momento | Estado |
+|---|---|
+| **E3** | Se implementó `CHECK (cabys_code ~ '^[0-9]{13}$')` |
+| **E4-A / E4-B0** | Se cuestionó que la forma numérica fuera atribuible al **XSD** — y no lo era |
+| **Auditoría** | Clasificado temporalmente como `STILL UNPROVEN` al no haberse recuperado el documento primario |
+| **Evidencia oficial posterior** | Tres documentos del **BCCR** confirman los 13 dígitos |
+| **Estado actual** | `CONFIRMED NUMERIC` · `CHECK` soportado · **sin migración** |
+
+El constraint **nunca cambió**: lo que cambió fue saber qué fuente lo respalda.
+
+**No confundir con el hallazgo del código de actividad**, que es una conclusión distinta y
+sigue vigente: para `CodigoActividad` el XSD exige **exactamente 6 caracteres, no seis
+dígitos**, la validación contra el padrón del RUT queda diferida, y ahí **sí** hizo falta
+una migración correctiva.
+
+Las otras 18 restricciones de forma son fieles a la fuente o deliberadamente más
+permisivas.
+
+### Cierre de E4-B0 — baseline verificado
+
+| | |
+|---|---|
+| Fixtures reales | **2** FE v4.4, byte-estables — huellas en la sección E4-A |
+| Tests backend | **295 / 295 PASS** (incluye la cobertura de fixtures y cleanup de E4-B0) |
+| Tests Day 2 | **32 / 32 PASS**, 0 omitidos |
+| Frontend | `eslint` PASS · `tsc` PASS · `build` PASS |
+| Migraciones | **11 locales · 11 remotas**, mismas versiones ordenadas |
+| Tablas fiscales | **7** · filas fiscales: **0** |
+| Migración de E3 | **sin modificar** |
+| Migración correctiva | aplicada **una sola vez** y sincronizada |
+
+**Seguridad del cleanup de tests, estado final:** `0` `DELETE` fiscal sin ámbito · `0`
+`TRUNCATE` · `0` reinicio de esquema. La limpieza se acota al UUID exacto de los recursos
+que crea la propia ejecución, corre en `finally` y sobrevive al fallo de un test. Es
+**exclusiva del andamiaje de tests**: la ruta normal de la aplicación no cambia.
+
+**Deuda histórica de tests, previa a E4-B0 y no introducida por él.** Las suites antiguas
+—Day 2 y anteriores— no tenían teardown, y DEV conserva hoy datos de prueba de tenencia y
+Auth acumulados. No se borra nada ahora: queda registrado como deuda conocida, fuera del
+alcance de esta fase. Lo que sí está demostrado es que **E4-B0 no aporta crecimiento**:
+sus ejecuciones dejan 0 residuo fiscal, 0 empresas, 0 membresías y 0 usuarios de Auth
+nuevos.
+
+---
 
 ## Checkpoint E — Fase E3 · COMPLETED
 

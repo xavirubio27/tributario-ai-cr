@@ -551,9 +551,73 @@ check (cabys_code ~ '^[0-9]{13}$')
 Es exactamente [ADR-029](DECISIONS.md#adr-029) llevado al motor: el código reportado es la
 verdad; el catálogo local es enriquecimiento opcional, sin clave foránea obligatoria.
 
-**CABYS** (§27 del encargo): el XSD sí fija su forma —`string`, longitud **exactamente
-13**—, así que la restricción de longitud está respaldada por la fuente. Lo que sigue
-abierto en **H-3** es el *contenido* del catálogo, que no necesitamos para ingerir.
+### 12.1 CABYS — forma canónica
+
+```
+Fuente estructural       XSD v4.4  →  xs:string, longitud 13, SIN pattern numérico
+Fuente semántica         BCCR CABYS →  producto identificado por 13 DÍGITOS
+Representación física    text
+CHECK                    cabys_code ~ '^[0-9]{13}$'
+Estado                   SUPPORTED
+Migración correctiva     NO REQUERIDA
+```
+
+**Son dos fuentes distintas y aportan cosas distintas.** El XSD acota la **longitud**; que
+los caracteres sean numéricos lo establece el **BCCR**, propietario del catálogo.
+
+**Fuentes primarias del respaldo semántico**, todas del Banco Central de Costa Rica:
+
+| Documento | Qué establece |
+|---|---|
+| Página oficial CABYS — «Catálogo de bienes y servicios para uso tributario y de Cuentas Nacionales» | La jerarquía: **1 dígito** para las categorías generales, **2** para el nivel siguiente, y así sucesivamente hasta los **13 dígitos** del producto |
+| Preguntas frecuentes CABYS | Los productos están «**identificados por 13 dígitos**» |
+| Guía oficial del buscador CABYS | Describe el campo Código como «**número de trece dígitos que identifica un producto**» |
+
+Corrobora la conclusión una fuente que además tenemos **verificada localmente**: los
+Anexos y Estructuras v4.4 (`sha256 6e093226…`) hablan de «el primer **dígito** del código
+CABYS sea 0, 1, 2, 3 y 4 (bienes)» —asignan valor numérico a las posiciones— y su **nota
+17** delega expresamente la codificación al catálogo del BCCR.
+
+**No se atribuye «13 dígitos» al XSD.** El XSD aporta la longitud; el respaldo numérico es
+del BCCR.
+
+**Esto NO cierra H-3.** Que el *formato* esté confirmado no significa que tengamos el
+*catálogo*: sigue sin existir la capa de validación y enriquecimiento contra CABYS y el
+RUT. **H-3 continúa ABIERTO** por esa razón, y ADR-029 mantiene que ningún código externo
+lleva clave foránea obligatoria a un catálogo local.
+
+*(Trazabilidad: E3 implementó el `CHECK` de 13 dígitos; E4-A y E4-B0 cuestionaron que la
+atribución fuera del XSD; la auditoría lo clasificó temporalmente como no demostrado; la
+evidencia oficial del BCCR lo confirma. El constraint nunca cambió.)*
+
+### 12.2 Código de actividad económica — forma canónica
+
+`CodigoActividadEmisor` y `CodigoActividadReceptor` son el **caso contrario al de CABYS**:
+aquí la fuente estructural acota la longitud y **nadie** impone que los caracteres sean
+numéricos.
+
+```
+Fuente estructural   XSD v4.4  → xs:string, minLength=6, maxLength=6, SIN pattern numérico
+Anexos v4.4          «String 6» + validación contra el padrón del RUT
+Capa 1 (BD)          exactamente 6 CARACTERES
+Capa 2 (diferida)    validez del código contra RUT / catálogo oficial
+```
+
+| Columna | Tipo | Null | `CHECK` vigente |
+|---|---|---|---|
+| `issuer_activity_code` | `text` | NOT NULL | `char_length(issuer_activity_code) = 6` |
+| `receiver_activity_code` | `text` | NULLABLE | `receiver_activity_code IS NULL OR char_length(receiver_activity_code) = 6` |
+
+**No se dice «6 dígitos».** La distinción no es teórica: los dos comprobantes FE 4.4 reales
+incorporados en E4-A declaran `CodigoActividadEmisor = "6110.0"` —seis caracteres, con
+punto—, que un patrón numérico habría rechazado.
+
+*(Trazabilidad: E3 implementó `~ '^[0-9]{6}$'`, más estricto que la fuente; E4-A lo
+detectó contra fixtures reales; la migración `20260830162516_fix_fiscal_activity_code_constraints`
+de E4-B0 lo corrigió. La migración de E3 **no se editó**.)*
+
+**La validación semántica contra el RUT sigue diferida** a la capa 2 y no se introduce
+aquí ningún catálogo.
 
 ---
 
@@ -883,8 +947,8 @@ Los 11 nodos estructurales **no aparecen**: son relaciones y cardinalidad, no co
 | # | XML Path | Tabla | Columna | Tipo PostgreSQL | Null | Default | Tipo fuente | CHECK | Razón |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | `FE/Clave` | `electronic_documents` | `clave` | `text` | NOT NULL | — | `ClaveType` `\d{50}` | `~ '^[0-9]{50}$'` | Identificador con ceros significativos: texto, nunca numérico |
-| 2 | `FE/CodigoActividadEmisor` | `electronic_documents` | `issuer_activity_code` | `text` | NOT NULL | — | `string` len 6 | `~ '^[0-9]{6}$'` | Longitud fija oficial |
-| 3 | `FE/CodigoActividadReceptor` | `electronic_documents` | `receiver_activity_code` | `text` | NULL | — | `string` len 6 `[0..1]` | `~ '^[0-9]{6}$'` | Opcional: ausente ≠ vacío |
+| 2 | `FE/CodigoActividadEmisor` | `electronic_documents` | `issuer_activity_code` | `text` | NOT NULL | — | `string` len 6 (**sin patrón**) | `char_length(…) = 6` | Longitud fija oficial. El XSD **no** exige dígitos (§12.2) |
+| 3 | `FE/CodigoActividadReceptor` | `electronic_documents` | `receiver_activity_code` | `text` | NULL | — | `string` len 6 `[0..1]` (**sin patrón**) | `… IS NULL OR char_length(…) = 6` | Opcional: ausente ≠ vacío (§12.2) |
 | 4 | `FE/NumeroConsecutivo` | `electronic_documents` | `consecutive_number` | `text` | NOT NULL | — | `NumeroConsecutivoType` `\d{20}` | `~ '^[0-9]{20}$'` | Ceros significativos; embebido en la clave |
 | 5 | `FE/FechaEmision` | `electronic_documents` | `issued_at` · `issued_at_offset_minutes` · `issued_at_raw` | `timestamptz` · `smallint` · `text` | NOT NULL ×3 | — | `xs:dateTime` RFC3339 | offset `between -840 and 840` | **Un campo lógico → tres columnas** (§17) |
 | 6 | `FE/Emisor/Nombre` | `document_parties` | `legal_name` | `text` | NOT NULL | — | `string` 5..100 (emisor) | `length between 1 and 100` | Mínimo relajado: emisor 5, receptor 3 |
@@ -898,7 +962,7 @@ Los 11 nodos estructurales **no aparecen**: son relaciones y cardinalidad, no co
 | 14 | `FE/CondicionVenta` | `electronic_documents` | `sale_condition_code` | `text` | NOT NULL | — | `string` 2, 14 enum | `~ '^[0-9]{2}$'` | Catálogo: longitud, no valor |
 | 15 | `FE/PlazoCredito` | `electronic_documents` | `credit_term` | `integer` | NULL | — | `xs:integer` 5 dígitos | `between 0 and 99999` | Tri-estado: ausente ≠ 0 |
 | 16 | `FE/DetalleServicio/LineaDetalle/NumeroLinea` | `document_lines` | `line_number` | `integer` | NOT NULL | — | `positiveInteger` 1..1000 | `between 1 and 1000` | Rango oficial explícito |
-| 17 | `FE/DetalleServicio/LineaDetalle/CodigoCABYS` | `document_lines` | `cabys_code` | `text` | NOT NULL | — | `string` len 13 | `~ '^[0-9]{13}$'` | Longitud oficial. **Sin FK a catálogo** (ADR-029) |
+| 17 | `FE/DetalleServicio/LineaDetalle/CodigoCABYS` | `document_lines` | `cabys_code` | `text` | NOT NULL | — | XSD: `string` len 13 (**sin patrón**) · BCCR (CABYS): **13 dígitos** | `~ '^[0-9]{13}$'` | Longitud del XSD, forma numérica del **BCCR** (§12). **Sin FK a catálogo** (ADR-029) |
 | 18 | `FE/DetalleServicio/LineaDetalle/Cantidad` | `document_lines` | `reported_quantity` | `numeric(16,3)` | NOT NULL | — | `xs:decimal` 16,3 | `>= 0` | Exacto, verificado |
 | 19 | `FE/DetalleServicio/LineaDetalle/UnidadMedida` | `document_lines` | `unit_of_measure_code` | `text` | NOT NULL | — | `string`, 101 enum | `length between 1 and 15` | Catálogo amplio y creciente |
 | 20 | `FE/DetalleServicio/LineaDetalle/Detalle` | `document_lines` | `description` | `text` | NOT NULL | — | `string` 3..200 | `length between 1 and 200` |  |
@@ -1052,6 +1116,8 @@ intacta.
 |---|---|---|---|
 | `clave ~ '^[0-9]{50}$'` | `electronic_documents` | Forma oficial de la clave | **BD** |
 | `consecutive_number ~ '^[0-9]{20}$'` | `electronic_documents` | Forma del consecutivo | **BD** |
+| `char_length(issuer_activity_code) = 6` | `electronic_documents` | Longitud del código de actividad, **no** su forma numérica (§12.2) | **BD** |
+| `receiver_activity_code IS NULL OR char_length(…) = 6` | `electronic_documents` | Igual, conservando el tri-estado | **BD** |
 | `UNIQUE (company_id, clave)` | `electronic_documents` | Identidad lógica por tenant; expone el conflicto | **BD** |
 | `document_type IN (…)` | `electronic_documents` | Vocabulario **propio** | **BD** |
 | `direction IN (…)` | `electronic_documents` | Vocabulario propio | **BD** |
@@ -1072,7 +1138,7 @@ intacta.
 | **Al menos una referencia en NC y ND** | `document_references` | Condición por tipo de documento | **Capa 2** |
 | **Al menos un `source_document` por documento** | — | Mínimo `1..N` (§9) | **Capa 2** / transacción |
 | **Coherencia de totales** | — | Que la suma de líneas cuadre con el resumen | **Capa 3** |
-| **Valores de catálogo válidos** | — | Que el código exista en el catálogo vigente | **Capa 2** |
+| **Valores de catálogo válidos** | — | Que el código exista en el catálogo vigente, **padrón del RUT incluido** | **Capa 2** |
 
 La columna «capa» es deliberada. Confundir **integridad relacional** con **completitud
 semántica del documento** llevaría a *triggers* que replican reglas de Hacienda dentro del
@@ -1573,7 +1639,7 @@ hay consulta del MVP que los filtre, y cada índice tiene coste en cada escritur
 | Hueco | Estado tras E2 |
 |---|---|
 | **~~H-6~~** — huella y almacenamiento | **CERRADO PARA EL MVP** (§8). `raw_xml bytea` + `content_sha256 bytea`, SHA-256 sobre bytes exactos, verificado en DEV. La escalabilidad queda como decisión futura con métricas reales, no como bloqueante |
-| **H-3** — catálogos externos | **ABIERTO**, no bloquea: ADR-029 permite ingerir sin catálogo. La *forma* de CABYS sí quedó fijada por el XSD (13 dígitos) |
+| **H-3** — catálogos externos | **ABIERTO**, no bloquea la ingesta: ADR-029 permite ingerir sin catálogo. Sigue abierto por la **capa de validación/enriquecimiento** contra CABYS y RUT, que no existe. El *formato* de CABYS **sí está cerrado**: 13 dígitos según el BCCR (§12) |
 | **H-4** — semántica condicional | **ABIERTO**, no bloquea: las condiciones identificadas son de capa 2, no restricciones (§23) |
 
 ### 29.1 Autorización de escritura: diseño cerrado, implementación en E3

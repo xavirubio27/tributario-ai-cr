@@ -99,21 +99,29 @@ def _insert_source(conn, company_id: str, *, edoc_id: str | None = None) -> str:
 
 
 @pytest.fixture(scope="module")
-def clean_fiscal(admin_sql):
-    """Deja las tablas vacías al terminar el módulo.
+def clean_fiscal(admin_sql, user_a, user_b):
+    """Retira SOLO las filas de las empresas creadas por esta ejecución.
 
     Es de ámbito de MÓDULO a propósito: cada limpieza invoca la CLI de Supabase
     —el único camino con privilegio de DELETE, que `fiscal_backend` no tiene— y
-    hacerlo por test multiplicaría el tiempo de la suite sin aportar aislamiento.
-    Los tests se aíslan usando claves distintas y acotando sus consultas.
+    hacerlo por test multiplicaría el tiempo de la suite. Los tests se aíslan
+    entre sí usando claves distintas y acotando sus consultas.
+
+    **Nunca sin predicado.** Un `delete from fiscal.<tabla>` global borraría
+    datos de otra ejecución concurrente o de otro desarrollador contra el mismo
+    proyecto DEV. El ámbito son los UUID exactos de las dos empresas creadas por
+    esta ejecución.
     """
-    admin_sql(
-        "delete from fiscal.source_documents; delete from fiscal.electronic_documents;"
-    )
-    yield
-    admin_sql(
-        "delete from fiscal.source_documents; delete from fiscal.electronic_documents;"
-    )
+    def _borrar():
+        for company_id in (user_a.company_id, user_b.company_id):
+            admin_sql(f"delete from fiscal.source_documents where company_id = '{company_id}'")
+            admin_sql(f"delete from fiscal.electronic_documents where company_id = '{company_id}'")
+
+    _borrar()
+    try:
+        yield
+    finally:
+        _borrar()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
