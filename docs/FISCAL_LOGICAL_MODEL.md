@@ -27,7 +27,7 @@ decidimos nosotros — distinción que ADR-021 exige mantener nítida.
 
 El criterio no es reproducir el XSD, sino responder preguntas del dominio: qué se
 vendió, a quién, cuánto impuesto se declaró, qué documento ajusta a cuál. Un nodo del
-XML puede convertirse en tres campos (`FechaEmision`, §8), varios nodos en una sola
+XML puede convertirse en cuatro campos (`FechaEmision`, §8), varios nodos en una sola
 entidad (`Emisor`/`Receptor` → `DocumentParty`, §5), y un contenedor puede desaparecer
 aportando solo su cardinalidad (`DetalleServicio`).
 
@@ -208,12 +208,25 @@ La **ausencia** de `ElectronicDocument` sigue siendo un estado válido y no viol
 Representación normalizada y consultable del comprobante. Todo lo que contiene es
 **reportado**; nada es calculado por nosotros.
 
-### Tipos soportados en el MVP
-| `document_type` | Código oficial | Documento |
+### Tipos soportados
+| `document_type` | Código oficial | Documento (raíz XML) |
 |---|---|---|
 | `invoice` | `01` | Factura Electrónica |
 | `debit_note` | `02` | Nota de Débito Electrónica |
 | `credit_note` | `03` | Nota de Crédito Electrónica |
+| `ticket` | `04` | Tiquete Electrónico |
+
+**`ticket` se añadió en E4-A2 (A2-B0)**, cuando un TiqueteElectronico real entró en el
+corpus y resultó no tener representación válida. Los tres primeros son el núcleo de
+[ADR-025](DECISIONS.md#adr-025); el Tiquete era el siguiente en su orden orientativo.
+
+**Tipo fuente ≠ tipo normalizado.** La raíz del XML se conserva aparte, en
+`SourceDocument.detected_document_type`; `document_type` es la **forma normalizada**. Por
+eso el Tiquete no se colapsa en `invoice`: son dos tipos fiscales distintos, con código
+oficial distinto, y colapsarlos borraría la distinción justo donde importa.
+
+`receipt` **queda reservado** para el Recibo Electrónico de Pago (código `10`): no se usa
+para el Tiquete.
 
 **Discriminador explícito y necesario.** Los tres comparten esqueleto (E0 §3.1), pero el
 tipo gobierna reglas distintas: NC y ND **exigen** al menos una referencia; la factura no.
@@ -228,7 +241,7 @@ Ver §6.
 Agrupado por concepto, no por orden del XSD:
 
 **Identificación**
-`clave` · `consecutive_number` · `document_type` · `issued_at` (+offset+literal, §8)
+`clave` · `consecutive_number` · `document_type` · `issued_at_local` (reloj de pared, siempre) · `issued_at` + `issued_at_offset_minutes` (**solo si la fuente declara desplazamiento**, [ADR-039](DECISIONS.md#adr-039)) · `issued_at_raw` (literal)
 
 **Contexto del emisor y del receptor**
 `issuer_economic_activity_code` · `receiver_economic_activity_code`
@@ -475,16 +488,21 @@ empresa en él.
 
 ---
 
-## 8. `FechaEmision` — tres representaciones de un dato
+## 8. `FechaEmision` — cuatro representaciones de un dato
 
-Los Anexos exigen RFC3339 con desplazamiento: `YYYY-MM-DDThh:mi:ss[Z|(+|-)hh:mm]`
-(E0 §7). El instante es inequívoco, pero el desplazamiento **también es información
+Los Anexos definen el formato como `YYYY-MM-DDThh:mi:ss[Z|(+|-)hh:mm]` (E0 §7), con el
+desplazamiento **entre corchetes** —es decir, opcional en su propia notación—, aunque
+citan RFC3339 §5.6, cuyo `date-time` sí lo exige. La ambigüedad es de la fuente y está
+documentada en E0 §7; el XSD la resuelve de hecho con `xs:dateTime`, que admite su
+ausencia. **Cuando el desplazamiento está, el instante es inequívoco**; cuando falta, no
+se infiere ([ADR-039](DECISIONS.md#adr-039)). El desplazamiento **también es información
 fiscal** y se pierde al normalizar a UTC.
 
 | Representación | Para qué |
 |---|---|
+| `issued_at_local` — reloj de pared reportado | Fecha civil de la fuente; **existe siempre** |
 | `issued_at` — instante absoluto | Ordenar, comparar, filtrar por rango |
-| `issued_at_offset` — desplazamiento declarado | Interpretar el día local del emisor |
+| `issued_at_offset_minutes` — desplazamiento declarado | Interpretar el día local del emisor |
 | `issued_at_raw` — valor literal del XML | Trazabilidad exacta y reproceso |
 
 **No se codifica UTC−6 en ninguna parte.** El desplazamiento se toma del documento. Un
@@ -495,6 +513,12 @@ contexto suficiente para interpretar reglas que dependen del tiempo, incluso si 
 interpretación del instante cambiara.
 
 Se aplica igual a `FechaEmisionIR` en `DocumentReference`. No se elige tipo SQL.
+
+**El huso puede faltar.** `FechaEmision` y `FechaEmisionIR` son ambos `xs:dateTime`, y en
+XML Schema el desplazamiento de ese tipo es **opcional**: 4 de 13 comprobantes reales no
+lo declaran. Por eso la fecha civil y el literal existen **siempre**, mientras que el
+instante absoluto y el desplazamiento existen **solo cuando la fuente los da**. Nunca se
+infiere una zona horaria — ver [ADR-039](DECISIONS.md#adr-039).
 
 ---
 
@@ -615,7 +639,9 @@ componente aplanado. Tres razones de fondo, no de elegancia relacional:
 |---|---|
 | `referenced_document_type_code` | Obligatorio. Catálogo de **20** valores tras la revisión 2026 |
 | `reported_number` | **Opcional** — el punto crítico |
-| `reported_reference_date` | Obligatorio |
+| `reported_reference_date_local` | **Obligatorio** — el reloj de pared siempre existe |
+| `reported_reference_date` · `reported_reference_offset_minutes` | **Opcionales y ligados**: solo si el XML declara desplazamiento ([ADR-039](DECISIONS.md#adr-039)) |
+| `reported_reference_date_raw` | **Obligatorio** — el literal exacto del XML |
 | `reference_code` | Opcional. **Determina el periodo contable** |
 | `reason` | Opcional |
 | `sequence` | Orden dentro del documento |
@@ -1203,7 +1229,7 @@ precisamente porque su lugar no existe en el MVP, y eso es el hallazgo, no una o
 | 3 | `FE/CodigoActividadEmisor` | ElectronicDocument | issuer_economic_activity_code | Obligatorio | Código de **exactamente 6 caracteres** (el XSD no exige dígitos). Se guarda como código (§11) |
 | 4 | `FE/CodigoActividadReceptor` | ElectronicDocument | receiver_economic_activity_code | Opcional | Tri-estado: ausente ≠ vacío |
 | 5 | `FE/NumeroConsecutivo` | ElectronicDocument | consecutive_number | Obligatorio | 20 dígitos. Redundante con `clave[22:41]`: se conserva para verificación cruzada |
-| 6 | `FE/FechaEmision` | ElectronicDocument | issued_at + issued_at_offset + issued_at_raw | Obligatorio | Tres representaciones del mismo dato (§8) |
+| 6 | `FE/FechaEmision` | ElectronicDocument | issued_at_local + issued_at + issued_at_offset_minutes + issued_at_raw | Obligatorio | Cuatro representaciones del mismo dato (§8). El instante y el desplazamiento son **opcionales y ligados** ([ADR-039](DECISIONS.md#adr-039)) |
 | 7 | `FE/Emisor` | DocumentParty | — | Obligatorio | Contenedor → una fila con `role = issuer` |
 | 8 | `FE/Emisor/Nombre` | DocumentParty | legal_name | Obligatorio |  |
 | 9 | `FE/Emisor/Identificacion` | DocumentParty | — | Obligatorio | Contenedor |
@@ -1262,7 +1288,7 @@ precisamente porque su lugar no existe en el MVP, y eso es el hallazgo, no una o
 | 62 | `FE/InformacionReferencia` | DocumentReference | — | 0..10 | Entidad de primer nivel (§10) |
 | 63 | `FE/InformacionReferencia/TipoDocIR` | DocumentReference | referenced_document_type_code | Obligatorio | Catálogo de 20 valores (rev. 2026) |
 | 64 | `FE/InformacionReferencia/Numero` | DocumentReference | reported_number | **Opcional** | Por eso no puede haber FK obligatoria (§10.2) |
-| 65 | `FE/InformacionReferencia/FechaEmisionIR` | DocumentReference | reported_reference_date | Obligatorio | Puede llevar el periodo fiscal, no la fecha real (nota 10, código 13) |
+| 65 | `FE/InformacionReferencia/FechaEmisionIR` | DocumentReference | reported_reference_date_local (+ `_date` y `_offset_minutes` **solo si hay desplazamiento**, + `_raw`) | Obligatorio | Puede llevar el periodo fiscal, no la fecha real (nota 10, código 13) |
 | 66 | `FE/InformacionReferencia/Codigo` | DocumentReference | reference_code | Opcional | **Determina el periodo contable** (§10.3) |
 | 67 | `FE/InformacionReferencia/Razon` | DocumentReference | reason | Opcional |  |
 
@@ -1287,6 +1313,6 @@ Dentro de esos 59 —no sumados a ellos—:
 0 sin explicar    ·    0 perdidos    ·    67 / 67 contabilizados
 ```
 
-Transformaciones que no son uno-a-uno: `FechaEmision` se expande en tres campos lógicos
+Transformaciones que no son uno-a-uno: `FechaEmision` se expande en cuatro campos lógicos
 (§8); `Emisor` y `Receptor` se funden en una sola entidad `DocumentParty` discriminada
 por `role` (§5).

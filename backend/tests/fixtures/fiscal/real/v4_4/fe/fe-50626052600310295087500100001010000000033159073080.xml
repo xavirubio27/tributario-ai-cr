@@ -1,0 +1,81 @@
+<?xml version='1.0' encoding='utf-8'?>
+<FacturaElectronica xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns="https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica"><Clave>50626052600310295087500100001010000000033159073080</Clave><ProveedorSistemas>3102950875</ProveedorSistemas><CodigoActividadEmisor>6201.0</CodigoActividadEmisor><CodigoActividadReceptor>6201.0</CodigoActividadReceptor><NumeroConsecutivo>00100001010000000033</NumeroConsecutivo><FechaEmision>2026-05-26T12:30:59</FechaEmision><Emisor><Nombre>3-102-950875 SOCIEDAD DE RESPONSABILIDAD LIMITADA</Nombre><Identificacion><Tipo>02</Tipo><Numero>3102950875</Numero></Identificacion><NombreComercial>IQ SOURCE</NombreComercial><Ubicacion><Provincia>1</Provincia><Canton>18</Canton><Distrito>02</Distrito><Barrio>granadilla sur</Barrio><OtrasSenas>Residencial Altamonte</OtrasSenas></Ubicacion><CorreoElectronico>info@iqsource.ai</CorreoElectronico></Emisor><Receptor><Nombre>Pixdea SA</Nombre><Identificacion><Tipo>02</Tipo><Numero>3101779527</Numero></Identificacion><NombreComercial>Pixdea SA</NombreComercial><CorreoElectronico>xavier@pixdea.com</CorreoElectronico></Receptor><CondicionVenta>01</CondicionVenta><DetalleServicio><LineaDetalle><NumeroLinea>1</NumeroLinea><CodigoCABYS>8314300000000</CodigoCABYS><CodigoComercial><Tipo>01</Tipo><Codigo>DEV-001</Codigo></CodigoComercial><Cantidad>1.000</Cantidad><UnidadMedida>Sp</UnidadMedida><TipoTransaccion>01</TipoTransaccion><Detalle>Servicios de desarrollo | 50% adelanto - Wake Word</Detalle><PrecioUnitario>1250.00000</PrecioUnitario><MontoTotal>1250.00000</MontoTotal><SubTotal>1250.00000</SubTotal><BaseImponible>1250.00000</BaseImponible><Impuesto><Codigo>01</Codigo><CodigoTarifaIVA>08</CodigoTarifaIVA><Tarifa>13.00</Tarifa><Monto>162.50000</Monto></Impuesto><ImpuestoAsumidoEmisorFabrica>0.00000</ImpuestoAsumidoEmisorFabrica><ImpuestoNeto>162.50000</ImpuestoNeto><MontoTotalLinea>1412.50000</MontoTotalLinea></LineaDetalle></DetalleServicio><ResumenFactura><CodigoTipoMoneda><CodigoMoneda>USD</CodigoMoneda><TipoCambio>455.14000</TipoCambio></CodigoTipoMoneda><TotalServGravados>1250.00000</TotalServGravados><TotalServExentos>0.00000</TotalServExentos><TotalServExonerado>0.00000</TotalServExonerado><TotalServNoSujeto>0.00000</TotalServNoSujeto><TotalMercanciasGravadas>0.00000</TotalMercanciasGravadas><TotalMercanciasExentas>0.00000</TotalMercanciasExentas><TotalMercExonerada>0.00000</TotalMercExonerada><TotalMercNoSujeta>0.00000</TotalMercNoSujeta><TotalGravado>1250.00000</TotalGravado><TotalExento>0.00000</TotalExento><TotalExonerado>0.00000</TotalExonerado><TotalNoSujeto>0.00000</TotalNoSujeto><TotalVenta>1250.00000</TotalVenta><TotalDescuentos>0.00000</TotalDescuentos><TotalVentaNeta>1250.00000</TotalVentaNeta><TotalDesgloseImpuesto><Codigo>01</Codigo><CodigoTarifaIVA>08</CodigoTarifaIVA><TotalMontoImpuesto>162.50000</TotalMontoImpuesto></TotalDesgloseImpuesto><TotalImpuesto>162.50000</TotalImpuesto><TotalImpAsumEmisorFabrica>0.00000</TotalImpAsumEmisorFabrica><TotalIVADevuelto>0.00000</TotalIVADevuelto><TotalOtrosCargos>0.00000</TotalOtrosCargos><MedioPago><TipoMedioPago>01</TipoMedioPago></MedioPago><TotalComprobante>1412.50000</TotalComprobante></ResumenFactura><ds:Signature Id="xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b">
+<ds:SignedInfo>
+<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+<ds:Reference Id="xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-ref0" URI="">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>ZTJhqpF4TaOTb1BqLydIlDfIailScPRCBZx6YJOJH3g=</ds:DigestValue>
+</ds:Reference>
+<ds:Reference URI="#xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-keyinfo">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>ouW7tEiLffmIRLwL1TfaYQD3KbSlSL5tuFNeTQKInUc=</ds:DigestValue>
+</ds:Reference>
+<ds:Reference URI="#xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-signedprops" Type="http://uri.etsi.org/01903#SignedProperties">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>VBPT1inTrKIVkWApu+GS2kzyok1PVsV+rMLsP0+1RfU=</ds:DigestValue>
+</ds:Reference>
+</ds:SignedInfo>
+<ds:SignatureValue Id="xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-sigvalue">e8Q98NrlSOyOpUQF4vXZOv3j/ZXC50bN4o8wSkAj+G1rXH1sCJzKE/BTlybqvegF
+sf+pQjjnpdcnQa8eg4FSAIXVw7XObRKAK3xU+3oEDiL1Ge8ox9Ye/5iwyhx6O8o1
+RZvUD802jQnJDq7BUb5TsSgZEUADbq0ET9OfHcyf9GoVieaKkE59nKylBowH8grE
+kC50aDywMNOWWKDZpzc8c+aeaLk20khb9LIS/cUkvytHkZmA4bWh8RyZFTuo8s3t
+YAz05LcTmlUiAyOm0HHL0Zc2stsShZshUeKJBLVJro75kJ5BwSuNIzGBDR5AJbs6
+4EUvHRiK0PAqCMLPJvEzvA==</ds:SignatureValue>
+<ds:KeyInfo Id="xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-keyinfo">
+<ds:X509Data>
+<ds:X509Certificate>MIIFODCCAyCgAwIBAgIGAZwPdbZ6MA0GCSqGSIb3DQEBCwUAMFoxCzAJBgNVBAYT
+AkNSMR8wHQYDVQQKDBZNSU5JU1RFUklPIERFIEhBQ0lFTkRBMQwwCgYDVQQLDANE
+R1QxHDAaBgNVBAMME0NBIFBFUlNPTkEgSlVSSURJQ0EwHhcNMjYwMTMwMTUxMTM4
+WhcNMzAwMTI5MTUxMTM4WjCBkjEZMBcGA1UEBRMQQ1BKLTMtMTAyLTk1MDg3NTEL
+MAkGA1UEBhMCQ1IxGTAXBgNVBAoMEFBFUlNPTkEgSlVSSURJQ0ExDDAKBgNVBAsM
+A0NQSjE/MD0GA1UEAww2My0xMDItOTUwODc1IFNPQ0lFREFEIERFIFJFU1BPTlNB
+QklMSURBRCBMSU1JVEFEQSBudWxsMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
+CgKCAQEAkuD1HT+iCLhhLEoNz5Q4SvbTzm6HmOL192YC73TUFDuXs4isGsEU86Al
+dQcBRhIuIeO2FA57Zwv334x/P89PekFYipSKX27mMVDBlmV6xEIS6bViaF7ETP2M
+a0vQZKOGCgUAC1BmZV8KJrWzAQ/FHaVHRV291XkiFiDmTxrqVdxcf3/zP7t+MlKR
+JoanbWr+26O2z+DFSXfoN9kdKKPJLL8SuscGeciQOFioB0DF5e4o+D8OosO5YD1l
+MSIwKqwK9IikjOsRDtcOFm2krQgLmKR9IEdxhD/004Tj9VQ2BGbqym+5FaVoRXLz
+KS6KygCzp0fpxkP8uBo3UT/JyniiSQIDAQABo4HKMIHHMB8GA1UdIwQYMBaAFDtt
+V/XWfOmeEAIgQeO9GszPs06VMB0GA1UdDgQWBBQ5zygZVek19nhBifSryQpysUVu
++DALBgNVHQ8EBAMCBsAwEwYDVR0lBAwwCgYIKwYBBQUHAwQwYwYIKwYBBQUHAQEE
+VzBVMFMGCCsGAQUFBzAChkdodHRwczovL3BraS5jb21wcm9iYW50ZXNlbGVjdHJv
+bmljb3MuZ28uY3IvcHJvZC9pbnRlcm1lZGlhdGUtcGotcGVtLmNydDANBgkqhkiG
+9w0BAQsFAAOCAgEACINCSEM0k0E9kdY/vpVp7QGWd5oD7bvWfWvv2qAamW8nQG8T
+lL4YEcimBgTq97kpBVWfPRbdYPy397har8VrpmSVaZO0R4t5ca7W8WCvMearNA9p
+5B3NzjbsvLViP8J2/TpzdQ6xOVrd9p4oVs/QoouBOBbyRqVZnXhA08Ov1iszxAvn
+em6Z7Xgv2AN7VDqT81A+iEhFQDyfrKLV7knkYuw5tWoOn5CsYXrDD9fz56z1XOZ0
+lW66y80zaUwbcBGB6jTJKv0nHDMJSzreUJ5qqJ4FQ7lMoWgniTFylO39OZUkc42P
+uR9/qlZTEwflpEgylIxQMh2yEkwkimnpnKqd+gP0SILo7Q1Kul9o/+FtV1UnAMAY
+B6A1u80QPlB4CADV4xnqhvdJE8NCVOFu1aabyKsFdYCxGeeh88ozXbflzZRM1zX1
+k2LsdWM17BDs1Z4RuWx0LNpfJqxbRd81b5LffVlLhcG6mM1+ULKvG1wtfWFHmi+x
+4tY07P52PAblRvoArMNDbFboLCDoEop7o4jdM0++zCfI0IV8gUjSYnW3DDKCSXWc
+7beP/CT9wUK7m+stjs1xuTJxzQS3tCic5oVqeKPBTuoyrwaAYu0DESqcpBrx/KVB
+9bzjvuO9fn6rPJY+1D3Esdr4Ut37xRV7K/kgyXEg0HWyeJRenHO0/uD5Cus=</ds:X509Certificate>
+<ds:X509IssuerSerial>
+<ds:X509IssuerName>CN=CA PERSONA JURIDICA, OU=DGT, O=MINISTERIO DE HACIENDA, C=CR</ds:X509IssuerName>
+<ds:X509SerialNumber>1769785898618</ds:X509SerialNumber>
+</ds:X509IssuerSerial>
+</ds:X509Data>
+<ds:KeyValue>
+<ds:RSAKeyValue>
+<ds:Modulus>kuD1HT+iCLhhLEoNz5Q4SvbTzm6HmOL192YC73TUFDuXs4isGsEU86AldQcBRhIu
+IeO2FA57Zwv334x/P89PekFYipSKX27mMVDBlmV6xEIS6bViaF7ETP2Ma0vQZKOG
+CgUAC1BmZV8KJrWzAQ/FHaVHRV291XkiFiDmTxrqVdxcf3/zP7t+MlKRJoanbWr+
+26O2z+DFSXfoN9kdKKPJLL8SuscGeciQOFioB0DF5e4o+D8OosO5YD1lMSIwKqwK
+9IikjOsRDtcOFm2krQgLmKR9IEdxhD/004Tj9VQ2BGbqym+5FaVoRXLzKS6KygCz
+p0fpxkP8uBo3UT/JyniiSQ==</ds:Modulus>
+<ds:Exponent>AQAB</ds:Exponent>
+</ds:RSAKeyValue>
+</ds:KeyValue>
+</ds:KeyInfo>
+<ds:Object><xades:QualifyingProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" Target="#xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b"><xades:SignedProperties Id="xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-signedprops"><xades:SignedSignatureProperties><xades:SigningCertificate><xades:Cert><xades:CertDigest><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>rWM+WJ954cHRYvIvWijeSVy+sUsIi+VjIQrDRuvU0uM=</ds:DigestValue></xades:CertDigest><xades:IssuerSerial><ds:X509IssuerName>CN=CA PERSONA JURIDICA, OU=DGT, O=MINISTERIO DE HACIENDA, C=CR</ds:X509IssuerName><ds:X509SerialNumber>1769785898618</ds:X509SerialNumber></xades:IssuerSerial></xades:Cert></xades:SigningCertificate><xades:SignaturePolicyIdentifier><xades:SignaturePolicyId><xades:SigPolicyId><xades:Identifier>https://cdn.comprobanteselectronicos.go.cr/xmlschemas/Resoluci%C3%B3n_General_sobre_disposiciones_t%C3%A9cnicas_comprobantes_electr%C3%B3nicos_para_efectos_tributarios.pdf</xades:Identifier><xades:Description/></xades:SigPolicyId><xades:SigPolicyHash><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>DWxin1xWOeI8OuWQXazh4VjLWAaCLAA954em7DMh0h8=</ds:DigestValue></xades:SigPolicyHash></xades:SignaturePolicyId></xades:SignaturePolicyIdentifier><xades:SignerRole><xades:ClaimedRoles><xades:ClaimedRole>ObligadoTributario</xades:ClaimedRole></xades:ClaimedRoles></xades:SignerRole></xades:SignedSignatureProperties><xades:SignedDataObjectProperties><xades:DataObjectFormat ObjectReference="#xmldsig-4808efbd-eb49-4f43-90ed-d9d2bd350a1b-ref0"><xades:MimeType>text/xml</xades:MimeType><xades:Encoding>UTF-8</xades:Encoding></xades:DataObjectFormat></xades:SignedDataObjectProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object></ds:Signature></FacturaElectronica>

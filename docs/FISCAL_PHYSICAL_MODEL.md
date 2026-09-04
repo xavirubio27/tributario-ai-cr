@@ -482,7 +482,7 @@ Además de las 18 columnas del inventario (§20), lleva:
 |---|---|---|---|
 | `id` | `uuid` | NOT NULL | PK |
 | `company_id` | `uuid` | NOT NULL | FK → `public.companies` `RESTRICT` |
-| `document_type` | `text` | NOT NULL | `CHECK IN ('invoice','credit_note','debit_note')` (§11) |
+| `document_type` | `text` | NOT NULL | `CHECK IN ('invoice','ticket','credit_note','debit_note')` (§11.1) |
 | `ruleset_revision` | `text` | **NULL** | Puede no ser determinable (§13) |
 | `ruleset_revision_status` | `text` | NOT NULL | `detected` · `ambiguous` · `resolved` |
 | `direction` | `text` | NOT NULL | `issued` · `received` · `unknown` (§14) |
@@ -500,7 +500,7 @@ unique (company_id, id),                    -- habilita las FK compuestas de los
 unique (company_id, clave),                 -- identidad lógica por tenant (§15)
 check (clave ~ '^[0-9]{50}$'),
 check (consecutive_number ~ '^[0-9]{20}$'),
-check (document_type in ('invoice','credit_note','debit_note')),
+check (document_type in ('invoice','ticket','credit_note','debit_note')),
 check (direction in ('issued','received','unknown')),
 check (ruleset_revision_status in ('detected','ambiguous','resolved'))
 ```
@@ -522,6 +522,38 @@ Un `CHECK` sobre `text` se reemplaza con un `ALTER TABLE ... DROP CONSTRAINT` y 
 
 **Aquí sí procede validar el valor**, a diferencia de los códigos oficiales: `document_type`
 es **vocabulario nuestro**, no un catálogo de Hacienda. Nosotros decidimos cuándo crece.
+
+### 11.1 El vocabulario ya creció una vez — y la decisión se pagó sola
+
+```
+FacturaElectronica       01  →  invoice
+NotaDebitoElectronica    02  →  debit_note
+NotaCreditoElectronica   03  →  credit_note
+TiqueteElectronico       04  →  ticket        ← añadido en E4-A2 (A2-B0)
+```
+
+E3 dejó el `CHECK` con los tres tipos del núcleo. En **E4-A2 (A2-B)** entró un
+TiqueteElectronico **real** y se descubrió que no tenía representación válida. La
+corrección fue la migración `20260831154210_add_ticket_fiscal_document_type`: un
+`DROP CONSTRAINT` y un `ADD CONSTRAINT`, sin tocar datos ni reconstruir la tabla. Con un
+`enum` habría sido un `ALTER TYPE`. **La migración de E3 no se editó.**
+
+**Por qué `ticket` y no otra cosa:**
+
+| Alternativa | Por qué no |
+|---|---|
+| `invoice` | Borraría la distinción Factura ↔ Tiquete, que tienen código oficial distinto |
+| `04` | La columna usa vocabulario propio precisamente porque el catálogo oficial crece |
+| `receipt` | **Reservado** para el Recibo Electrónico de Pago (código `10`), otro tipo de la hoja de ruta |
+
+`ticket` mantiene el registro del vocabulario existente: inglés normalizado, minúsculas,
+singular. **No se añadieron tipos hipotéticos**: Factura de Compra, de Exportación y
+Recibo de Pago entrarán cuando exista evidencia real, como ocurrió aquí.
+
+**Tipo fuente ≠ tipo normalizado.** La raíz del XML se conserva en
+`fiscal.source_documents.detected_document_type` —`text` nullable, **sin `CHECK`**, porque
+es metadato de detección—; `electronic_documents.document_type` es la forma normalizada y
+validada. Ninguna de las dos sustituye a la otra.
 
 ---
 
@@ -773,9 +805,15 @@ deduplicación, en §15.1.
 
 ## 17. Fecha y hora
 
-**Propuesta: opción C — instante + desplazamiento + valor literal.**
+> ⚠ **El bloque siguiente es el diseño ORIGINAL de E2 y ya no es el vigente.** Asumía que
+> el documento siempre declara su desplazamiento, y **4 de 13 comprobantes reales no lo
+> declaran**. El modelo en vigor está en **§17.2**. Se conserva porque explica por qué se
+> eligió instante + desplazamiento + literal, que sigue siendo la base.
+
+**Propuesta original de E2: opción C — instante + desplazamiento + valor literal.**
 
 ```sql
+-- HISTÓRICO (E2). Vigente: §17.2 — issued_at y el desplazamiento son NULLABLE.
 issued_at                timestamptz not null,
 issued_at_offset_minutes smallint    not null
     check (issued_at_offset_minutes between -840 and 840),
@@ -791,7 +829,7 @@ no se codifica UTC−6 en ninguna parte.
 
 | Columna | Qué preserva |
 |---|---|
-| `issued_at` | El **instante**. Ordena, compara y filtra por rango correctamente |
+| `issued_at` | El **instante**. Ordena y filtra por rango — **solo entre documentos que lo tienen** (§17.2) |
 | `issued_at_offset_minutes` | El **desplazamiento declarado**. Permite reconstruir el día local del emisor |
 | `issued_at_raw` | El **valor literal** del XML. Trazabilidad exacta y reproceso |
 
@@ -807,6 +845,57 @@ Por qué no bastan las opciones más simples:
 **No se codifica UTC−6 en ninguna parte.** El desplazamiento se toma del documento; un
 comprobante de exportación puede declarar otro.
 
+> **Corregido en E4-A2 (A2-B1).** Lo anterior describe el diseño de E2, que asumía que el
+> documento **siempre** declara su desplazamiento. **Los fixtures reales lo desmintieron:
+> 4 de 13 comprobantes no lo declaran.** El modelo vigente es el de §17.2; esta sección se
+> conserva porque explica por qué se eligió instante + desplazamiento + literal, que sigue
+> siendo la base.
+
+### 17.2 Cuando la fuente no declara desplazamiento — modelo vigente
+
+`FechaEmision` es `xs:dateTime` **puro** en los XSD v4.4, sin restricción ni patrón, y en
+XML Schema el huso de ese tipo es **opcional**. Se confirmó contra el corpus real:
+
+```
+con desplazamiento    2026-08-31T08:55:48-06:00     9 de 13
+sin desplazamiento    2026-06-19T14:05:50           4 de 13   (3 FE + el TE)
+```
+
+```sql
+issued_at_local          timestamp   not null,   -- reloj de pared, SIEMPRE
+issued_at                timestamptz null,       -- instante, solo si se puede resolver
+issued_at_offset_minutes smallint    null
+    check (issued_at_offset_minutes between -840 and 840),
+issued_at_raw            text        not null    -- literal exacto, sin cambios
+```
+
+Dos restricciones impiden los estados incoherentes:
+
+| Restricción | Qué garantiza |
+|---|---|
+| `(issued_at is null) = (issued_at_offset_minutes is null)` | Instante y desplazamiento van juntos o no van |
+| `issued_at is null or issued_at = (issued_at_local - offset) at time zone 'UTC'` | Las dos representaciones no pueden contradecirse |
+
+**Nunca se infiere una zona horaria** —ni UTC, ni UTC−6, ni la del servidor—. Ver
+[ADR-039](DECISIONS.md#adr-039).
+
+**Qué columna usar para qué:**
+
+| Para | Columna |
+|---|---|
+| Ordenar por instante absoluto | `issued_at` — **solo** entre documentos que lo tienen |
+| Fecha civil de la fuente | `issued_at_local` |
+| Período fiscal (día de devengo) | `issued_at_local` — el día fiscal es civil, no UTC |
+| Trazabilidad literal | `issued_at_raw` |
+
+**Consecuencia en los índices.** Los tres índices sobre `issued_at DESC` siguen siendo
+válidos —B-tree indexa nulos sin problema— pero **la semántica de consulta cambia**:
+verificado en el motor, `ORDER BY issued_at DESC` coloca los `NULL` **primero**, así que
+los documentos sin instante encabezarían un listado de «más recientes». Cualquier consulta
+que asuma `issued_at` siempre presente debe revisarse. **No se añade índice sobre
+`issued_at_local`**: no hay todavía ninguna consulta del MVP que lo justifique, y un índice
+sin consulta es coste sin beneficio.
+
 ### 17.1 `FechaEmisionIR` recibe el mismo tratamiento
 
 **Corrección respecto a la primera versión de E2**, que reducía la fecha de referencia a
@@ -816,14 +905,35 @@ otro documento» no la hace menos fiscal: al contrario, el código `13` de la no
 ingreso**, no la fecha real. Es justo el campo donde el literal importa.
 
 ```sql
-reported_reference_date                  timestamptz not null,
-reported_reference_offset_minutes        smallint    not null
+reported_reference_date_local            timestamp   not null,   -- reloj de pared, SIEMPRE
+reported_reference_date                  timestamptz null,       -- instante, solo si se resuelve
+reported_reference_offset_minutes        smallint    null
     check (reported_reference_offset_minutes between -840 and 840),
-reported_reference_date_raw              text        not null
+reported_reference_date_raw              text        not null    -- literal exacto del XML
 ```
 
-**Las tres son `NOT NULL`, y no lleva `CHECK` de coherencia entre ellas.** Verificado
-contra la fuente oficial antes de decidirlo:
+**Cuatro columnas, no tres, y solo dos son `NOT NULL`.** `FechaEmisionIR` es el mismo
+`xs:dateTime` que `FechaEmision`: **el huso es opcional**, así que la fecha civil existe
+siempre pero el instante absoluto no siempre puede resolverse.
+[ADR-039](DECISIONS.md#adr-039) es la autoridad vigente.
+
+| El XML trae desplazamiento | `_date_local` | `_date` | `_offset_minutes` | `_date_raw` |
+|---|---|---|---|---|
+| **Sí** | NOT NULL | **NOT NULL** | **NOT NULL** | NOT NULL |
+| **No** | NOT NULL | **NULL** | **NULL** | NOT NULL |
+
+Dos restricciones garantizan la coherencia, en paridad exacta con `FechaEmision`:
+
+| Restricción | Qué garantiza |
+|---|---|
+| `document_references_date_instant_check` | Instante y desplazamiento van juntos o no van |
+| `document_references_date_coherence_check` | El instante es exactamente el reloj de pared desplazado |
+
+Más el rango `between -840 and 840` cuando el desplazamiento existe. **Nunca se infiere
+una zona horaria.**
+
+**Que la fecha exista siempre sigue siendo cierto** —y por eso `_date_local` y `_date_raw`
+son `NOT NULL`—. Verificado contra la fuente oficial:
 
 - El XSD declara `FechaEmisionIR [1..1]` dentro de `InformacionReferencia`.
 - Los Anexos v4.4 le asignan condición **`1 1 1 1 1 1 1`** —obligatorio en los siete tipos
@@ -831,9 +941,15 @@ contra la fuente oficial antes de decidirlo:
   información en el campo "Tipo de documento de referencia"», y `TipoDocIR` es a su vez
   obligatorio dentro del nodo.
 
-Es decir: **si existe la fila de referencia, la fecha existe siempre**. La opcionalidad
-está en el nodo `InformacionReferencia [0..10]`, que se representa por la ausencia de fila,
-no por columnas nulas.
+Es decir: **si existe la fila de referencia, la fecha civil existe siempre**. La
+opcionalidad del nodo `InformacionReferencia [0..10]` se representa por la ausencia de
+fila, no por columnas nulas. Lo que sí puede faltar es el **desplazamiento**, y con él el
+instante absoluto.
+
+> **Historia.** E2 fijó las tres columnas como `NOT NULL` asumiendo que el documento
+> siempre declara su huso. **A2-B1 lo desmintió** con comprobantes reales y adaptó ambas
+> fechas; A2-B2 puso al día esta documentación. La estructura de E2 no era errónea, solo
+> incompleta en su nulabilidad.
 
 Un `CHECK` del tipo «las tres nulas o las tres pobladas» **describiría una opcionalidad que
 la fuente no tiene**. No se añade: sería inventar obligatoriedad condicional donde hay
@@ -950,7 +1066,7 @@ Los 11 nodos estructurales **no aparecen**: son relaciones y cardinalidad, no co
 | 2 | `FE/CodigoActividadEmisor` | `electronic_documents` | `issuer_activity_code` | `text` | NOT NULL | — | `string` len 6 (**sin patrón**) | `char_length(…) = 6` | Longitud fija oficial. El XSD **no** exige dígitos (§12.2) |
 | 3 | `FE/CodigoActividadReceptor` | `electronic_documents` | `receiver_activity_code` | `text` | NULL | — | `string` len 6 `[0..1]` (**sin patrón**) | `… IS NULL OR char_length(…) = 6` | Opcional: ausente ≠ vacío (§12.2) |
 | 4 | `FE/NumeroConsecutivo` | `electronic_documents` | `consecutive_number` | `text` | NOT NULL | — | `NumeroConsecutivoType` `\d{20}` | `~ '^[0-9]{20}$'` | Ceros significativos; embebido en la clave |
-| 5 | `FE/FechaEmision` | `electronic_documents` | `issued_at` · `issued_at_offset_minutes` · `issued_at_raw` | `timestamptz` · `smallint` · `text` | NOT NULL ×3 | — | `xs:dateTime` RFC3339 | offset `between -840 and 840` | **Un campo lógico → tres columnas** (§17) |
+| 5 | `FE/FechaEmision` | `electronic_documents` | `issued_at_local` · `issued_at` · `issued_at_offset_minutes` · `issued_at_raw` | `timestamp` · `timestamptz` · `smallint` · `text` | NOT NULL · **NULL** · **NULL** · NOT NULL | — | `xs:dateTime` (huso **opcional**) | offset `between -840 and 840` cuando existe · coherencia instante ↔ reloj de pared | **Un campo lógico → cuatro columnas** (§17.2). El instante solo existe si la fuente declara desplazamiento ([ADR-039](DECISIONS.md#adr-039)) |
 | 6 | `FE/Emisor/Nombre` | `document_parties` | `legal_name` | `text` | NOT NULL | — | `string` 5..100 (emisor) | `length between 1 and 100` | Mínimo relajado: emisor 5, receptor 3 |
 | 7 | `FE/Emisor/Identificacion/Tipo` | `document_parties` | `identification_type_code` | `text` | NOT NULL | — | `string` 2, 6 enum | `~ '^[0-9]{2}$'` | Código de catálogo: longitud, no valor (ADR-029) |
 | 8 | `FE/Emisor/Identificacion/Numero` | `document_parties` | `identification_number` | `text` | NOT NULL | — | `string` ≤20 | `length between 1 and 20` | **Texto**: admite alfanuméricos (rev. 2026) |
@@ -991,13 +1107,13 @@ Los 11 nodos estructurales **no aparecen**: son relaciones y cardinalidad, no co
 | 43 | `FE/ResumenFactura/TotalComprobante` | `electronic_documents` | `reported_total_document` | `numeric(18,5)` | NOT NULL | — | `[1..1]` | `>= 0` | Positivo también en NC/ND |
 | 44 | `FE/InformacionReferencia/TipoDocIR` | `document_references` | `referenced_document_type_code` | `text` | NOT NULL | — | `string` 2 · XSD 19 enum / Anexos **20** | `~ '^[0-9]{2}$'` | **Sin CHECK de valor**: el catálogo ya divergió |
 | 45 | `FE/InformacionReferencia/Numero` | `document_references` | `reported_number` | `text` | NULL | — | `string` ≤50 `[0..1]` | `length between 1 and 50` | Opcional → sin FK obligatoria |
-| 46 | `FE/InformacionReferencia/FechaEmisionIR` | `document_references` | `reported_reference_date` · `reported_reference_offset_minutes` · `reported_reference_date_raw` | `timestamptz` · `smallint` · `text` | NOT NULL ×3 | — | `xs:dateTime` · condición `1` en los 7 tipos | offset `between -840 and 840` | **Un campo lógico → tres columnas** (§17.1). Puede portar el periodo, no la fecha real |
+| 46 | `FE/InformacionReferencia/FechaEmisionIR` | `document_references` | `reported_reference_date_local` · `reported_reference_date` · `reported_reference_offset_minutes` · `reported_reference_date_raw` | `timestamp` · `timestamptz` · `smallint` · `text` | NOT NULL · **NULL** · **NULL** · NOT NULL | — | `xs:dateTime` (huso **opcional**) | offset `between -840 and 840` cuando existe · coherencia instante ↔ reloj de pared | **Un campo lógico → cuatro columnas** (§17.1). El instante solo existe si la fuente declara desplazamiento ([ADR-039](DECISIONS.md#adr-039)) |
 | 47 | `FE/InformacionReferencia/Codigo` | `document_references` | `reference_code` | `text` | NULL | — | `string` 2 · XSD 12 / Anexos **17** | `~ '^[0-9]{2}$'` | **Determina el periodo contable** |
 | 48 | `FE/InformacionReferencia/Razon` | `document_references` | `reason` | `text` | NULL | — | `string` ≤180 `[0..1]` | `length between 1 and 180` |  |
 
 ### 20.1 Un campo lógico puede necesitar varias columnas
 
-Dos de los 48 se expanden a tres columnas físicas cada uno: **`FechaEmision`** (§17) y
+Dos de los 48 se expanden a cuatro columnas físicas cada uno: **`FechaEmision`** (§17) y
 **`FechaEmisionIR`** (§17.1). Aparecen como **una fila cada uno**, porque un dato de origen
 es un dato de origen: las columnas auxiliares **no son nodos XML nuevos** y no se cuentan
 como tales.
@@ -1119,7 +1235,7 @@ intacta.
 | `char_length(issuer_activity_code) = 6` | `electronic_documents` | Longitud del código de actividad, **no** su forma numérica (§12.2) | **BD** |
 | `receiver_activity_code IS NULL OR char_length(…) = 6` | `electronic_documents` | Igual, conservando el tri-estado | **BD** |
 | `UNIQUE (company_id, clave)` | `electronic_documents` | Identidad lógica por tenant; expone el conflicto | **BD** |
-| `document_type IN (…)` | `electronic_documents` | Vocabulario **propio** | **BD** |
+| `document_type IN ('invoice','ticket','credit_note','debit_note')` | `electronic_documents` | Vocabulario **propio** (§11.1) | **BD** |
 | `direction IN (…)` | `electronic_documents` | Vocabulario propio | **BD** |
 | `ruleset_revision_status IN (…)` | `electronic_documents` | Vocabulario propio | **BD** |
 | `reported_* >= 0` | varias | XSD `minInclusive=0` | **BD** |
@@ -1426,7 +1542,7 @@ La capacidad de escritura de §25.3 **no incluye** alterar arbitrariamente, tras
 normalización correcta:
 
 ```
-raw_xml · content_sha256 · clave · consecutive_number · issued_at (y sus tres columnas)
+raw_xml · content_sha256 · clave · consecutive_number · issued_at (y sus cuatro columnas)
 importes reportados · instantáneas de emisor y receptor
 hechos de origen de líneas · hechos de origen de impuestos
 ```
@@ -1521,7 +1637,7 @@ Todas las columnas propuestas de las siete tablas. `INSERT` las crea todas; la c
 | `id`, `company_id`, `electronic_document_id`, `sequence` | ❌ | Identidad, tenant y orden de origen |
 | `referenced_document_type_code` | ❌ | **Reportado** |
 | `reported_number` | ❌ | **Reportado** |
-| `reported_reference_date` · `_offset_minutes` · `_raw` | ❌ | **Reportadas** |
+| `reported_reference_date_local` · `_date` · `_offset_minutes` · `_raw` | ❌ | **Reportadas** |
 | `reference_code`, `reason` | ❌ | **Reportados** |
 | `resolved_document_id` | ✅ | **Única mutable**: resolución diferida (ADR-028) |
 

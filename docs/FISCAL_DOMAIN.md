@@ -367,11 +367,35 @@ Los Anexos v4.4 lo precisan:
 > indicado caso contrario se rechazará el comprobante. No podrán señalarse fechas
 > posteriores ni anteriores a la fecha de generación del comprobante.»
 
-**El desplazamiento forma parte del valor**, así que el instante es inequívoco. Pero el
-desplazamiento local también es información fiscal —determina a qué periodo pertenece
+**La fuente es ambigua sobre si el desplazamiento es obligatorio**, y conviene decirlo con
+precisión:
+
+| Lo que dice la fuente | Qué implica |
+|---|---|
+| Cita «RFC3339 sección 5.6, tipo `date-time`» | En el ABNF de RFC 3339, `full-time = partial-time time-offset` **sin corchetes**: el desplazamiento sería obligatorio |
+| Escribe el formato `…ss[Z\|(+\|-)hh:mm]` | Los **corchetes** marcan la parte opcional —compárese con `[time-secfrac]` en el propio RFC—: el desplazamiento sería opcional |
+| «Se verificará el cumplimiento **del formato indicado**» | La validación remite al formato escrito, que es el de los corchetes |
+
+**No hay texto normativo explícito que declare obligatorio el desplazamiento.** El XSD lo
+resuelve de hecho: declara `xs:dateTime`, cuyo huso es opcional. Y la práctica lo
+confirma —4 de 13 comprobantes reales aceptados por Hacienda no lo declaran (E4-A2)—.
+
+**Cuando el desplazamiento está, el instante es inequívoco; cuando falta, no se infiere.**
+El desplazamiento local es además información fiscal —determina a qué periodo pertenece
 un comprobante— y se pierde al normalizar a UTC. La conclusión de diseño es que el
 instante y el desplazamiento original son **dos datos distintos**, y el XML crudo
-conserva la forma literal en cualquier caso.
+conserva la forma literal en cualquier caso. Ver [ADR-039](DECISIONS.md#adr-039).
+
+> **Frontera de la evidencia.** La afirmación sobre el XSD —`FechaEmision` declarado como
+> `xs:dateTime` puro, sin `xs:pattern`, sin `simpleType` propio y sin `explicitTimezone`—
+> procede de una **inspección real de los XSD oficiales v4.4 realizada en A2-B1**, y quedó
+> transcrita en [ADR-039](DECISIONS.md#adr-039) y en la cabecera de la migración de fechas.
+>
+> **Hoy no es reproducible desde un clon limpio de este repositorio**: los XSD oficiales no
+> están versionados aquí, tampoco su dependencia `xmldsig-core-schema.xsd`, y el acceso al
+> CDN oficial no es reproducible desde el entorno de trabajo. **A2-C** se hará cargo de esa
+> verificabilidad. La conclusión de ADR-039 no se debilita —la inspección ocurrió y está
+> registrada—; lo que falta es poder repetirla sin depender de nadie.
 
 *(El ejemplo oficial escribe `+06:00` mientras Costa Rica es UTC−6. Es **un ejemplo de
 la sintaxis RFC3339, no una regla de zona horaria**: el documento ilustra el formato
@@ -669,8 +693,10 @@ Sin SQL. Entidades conceptuales, con responsabilidad y límites explícitos.
 - **Responsabilidad:** ser la única respuesta a «¿de dónde salió esto?». Inmutable.
 
 ### `ElectronicDocument` — el comprobante normalizado
-- **Contiene:** `Clave`, `NumeroConsecutivo`, tipo, versión, fecha de emisión con su
-  desplazamiento, moneda y tipo de cambio, y los totales `reported_*` del resumen.
+- **Contiene:** `Clave`, `NumeroConsecutivo`, tipo, versión, la fecha de emisión —siempre
+  su fecha/hora civil y su literal; el desplazamiento y el instante absoluto **solo si el
+  XML declara el desplazamiento**, que nunca se infiere ([ADR-039](DECISIONS.md#adr-039))—,
+  moneda y tipo de cambio, y los totales `reported_*` del resumen.
 - **No contiene:** el XML; ni un solo valor calculado por nosotros.
 - **Relación:** representa la interpretación normalizada de **uno o más**
   `SourceDocument` equivalentes pertenecientes al mismo tenant, y pertenece a una
@@ -986,9 +1012,12 @@ modificación posterior amplió el plazo. Ver §1.1.
 **~~H-2~~ — CERRADO, no bloqueante.** El `+06:00` de los Anexos es **un ejemplo de
 formato RFC3339, no una regla de zona horaria de Costa Rica**. El documento está
 especificando la sintaxis `[Z|(+|-)hh:mm]`, no prescribiendo un desplazamiento. La
-conclusión de diseño de §7 no dependía de ello y se mantiene íntegra: el desplazamiento
-viaja en el valor, el instante es inequívoco, y el desplazamiento local es información
-que se pierde al normalizar a UTC.
+conclusión de diseño de §7 no dependía de ello y se mantiene: **cuando el valor fuente
+incluye desplazamiento, el instante es inequívoco**; cuando no lo incluye, no se infiere
+ni el desplazamiento ni el instante absoluto —`issued_at_local` y `issued_at_raw`
+preservan la evidencia de la fuente—. El desplazamiento local sigue siendo información
+que se pierde al normalizar a UTC. La ingesta la gobierna
+[ADR-039](DECISIONS.md#adr-039); H-2 **no se reabre**.
 
 **~~H-8~~ — CERRADO.** El PDF de 99 páginas con la Bitácora al 22/04/2026 se obtuvo de
 `hacienda.go.cr` (`sha256 6e093226…`, `Last-Modified 13-may-2026`) y es ahora la base

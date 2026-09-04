@@ -33,8 +33,14 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
   Phase E3 — First Fiscal Migration — COMPLETED
   Phase E4-A — Real XML Fixture Intake & Baseline — COMPLETED
   Phase E4-B0 — Real Fixture Compatibility Fix — COMPLETED
-  Phase E4-A2 — Fixture Expansion — NOT STARTED
-Next: E4-A2. El parser aún no existe.
+  Phase E4-A2 — Real Fixture Expansion — IN PROGRESS
+    · A2-A: intake, clasificación y auditoría de diversidad — COMPLETED
+    · A2-B: organización, golden set y alta de Nota de Crédito — COMPLETED
+    · A2-B0: document_type admite TiqueteElectronico — COMPLETED
+    · A2-B1: semántica de fecha de origen y endurecimiento de contratos — COMPLETED
+    · A2-B2: vocabulario exacto, docs de FechaEmisionIR y contrato de los golden originales — COMPLETED
+    · A2-C: validación XSD reproducible — NOT STARTED / NEXT
+Next: A2-C. E4-A2 sigue IN PROGRESS porque A2-C no ha empezado. El parser aún no existe.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -520,6 +526,228 @@ una migración correctiva.
 
 Las otras 18 restricciones de forma son fieles a la fuente o deliberadamente más
 permisivas.
+
+### E4-A2 — Real Fixture Expansion · IN PROGRESS
+
+**A2-A, A2-B, A2-B0, A2-B1 y A2-B2 cerradas** — auditoría independiente de Codex
+`CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0`. **A2-C es lo siguiente y no ha empezado**, por
+eso E4-A2 no se marca COMPLETED.
+
+#### Resultado consolidado del bloque A2-B
+
+```
+24 XML reales      FE 11 · TE 1 · NC 1 · MH 11
+                   10 GOLDEN (contrato de bytes y rasgos) · 14 CORPUS (evidencia)
+verificación       24/24 smoke válido · 10/10 golden byte-estables
+```
+
+| | |
+|---|---|
+| Modelo | **FE, TE y NC reutilizan las mismas 7 entidades**; ninguna nueva |
+| Nota de Crédito | Valida `DocumentReference` con un `InformacionReferencia` real |
+| `document_type` | Vocabulario final y cerrado: `invoice · ticket · credit_note · debit_note`. TiqueteElectronico → **`ticket`** |
+| Fechas | Los datetimes reales **pueden no traer desplazamiento** (4 de 13) |
+| [ADR-039](DECISIONS.md#adr-039) | Reloj de pared **siempre**; instante absoluto **solo si la fuente da el desplazamiento**; **nunca se infiere zona horaria**. Misma semántica propagada a `FechaEmisionIR` |
+
+**Huecos de fixture conocidos, todos abiertos:** Nota de Débito · exoneración · descuentos
+múltiples · tarifa 0 %/exento · venta a crédito. **A2-C es dueña de la reproducibilidad
+de los XSD.**
+
+**Evidencia de regresión al cierre:** backend **455/455** (0 fallos, 0 errores, 0 saltos)
+· Day 2 **32/32**, 0 saltos · `eslint`/`tsc`/`build` PASS · DEV **15 locales = 15 remotas**,
+7 tablas fiscales, **0 filas** tras los tests.
+
+**A2-A — intake y diversidad.** 20 XML reales nuevos. Clasificados **por raíz XML, no
+por nombre de fichero**: la precaución resultó necesaria —un fichero llamado
+«…Estado procesando.xml» es una `FacturaElectronica`, y el único `TiqueteElectronico`
+se llama «Comprobante_Electronico_…»—.
+
+**A2-B — organización, golden set y Nota de Crédito.** Dos ficheros más: una
+`NotaCreditoElectronica` real y su `MensajeHacienda`. Fixtures reorganizados por tipo.
+
+```
+total XML 24     FE 11 · TE 1 · NC 1 · MH 11 · ND 0
+emisores  12 distintos (eran 1)
+duplicados de bytes 0 · comprobantes con Clave repetida 0
+11 pares comprobante ↔ MensajeHacienda, los 11 «Mensaje = 1» (aceptado)
+```
+
+| | |
+|---|---|
+| Organización | `real/v4_4/{fe,te,nc,mh}/`, por raíz XML · 11 ficheros movidos, **0 bytes alterados** |
+| Golden set | **10** de 24 — la diversidad máxima con el menor número razonable |
+| Nodos inesperados | **0** de 88 local-names: el inventario de E0/E1/E2 resiste 12 emisores |
+| Compatibilidad de esquema | **0 violaciones** de los `CHECK` vigentes, NC incluida |
+| `.gitattributes` | `backend/tests/fixtures/fiscal/**/*.xml -text` |
+
+**Los 28 códigos CABYS reales tienen 13 dígitos**, y los 19 códigos de actividad tienen
+6 caracteres **con punto**. Lo primero corrobora empíricamente la conclusión del BCCR; lo
+segundo confirma que la migración correctiva de E4-B0 era imprescindible.
+
+**La Nota de Crédito cierra el hueco `InformacionReferencia`**, que estaba a 0 en los 12
+comprobantes anteriores. Referencia `TipoDocIR = 01` con `Codigo = 01` a un comprobante
+**que no está entre los fixtures**: una referencia colgante, que es el caso real que el
+modelo debe soportar.
+
+**Conclusión provisional: FE, TE y NC reutilizan el mismo modelo de 7 entidades.** La NC
+no necesita ninguna entidad nueva —`DocumentReference` ya existía y por fin tiene un caso
+real—; el TE solo se distingue por carecer de `Receptor`, cardinalidad que el modelo ya
+contemplaba.
+
+**Un blocker detectado aquí y cerrado en A2-B0:** en ese momento `document_type` admitía
+solo `invoice · credit_note · debit_note`, y **el TiqueteElectronico no tenía valor
+representable**. No era un fallo de diseño —el modelo físico §11 eligió `text + CHECK` en
+lugar de `enum` precisamente para poder añadir tipos—. **Estado actual:** resuelto, ver
+A2-B0.
+
+**Huecos que siguen abiertos:** `Exoneracion`, descuentos múltiples, Nota de Débito y
+tarifa 0 %/exento no aparecen en ningún documento real disponible.
+
+#### GOLDEN ≠ CORPUS
+
+Los 24 XML **no** son golden. La distinción es deliberada:
+
+| | Qué es | Cuántos |
+|---|---|---|
+| **GOLDEN** | SHA-256, tamaño, forma de línea y rasgos estructurales **fijados por tests**; cada uno documenta por qué se conserva | **10** |
+| **CORPUS** | Documentos reales adicionales, conservados como evidencia y material futuro; sin aserciones semánticas individuales | **14** |
+
+Nada se elimina: el corpus permanece en Git. Lo que no procede es llamar «golden» a los 24,
+porque solo 10 tienen contrato de bytes verificado.
+
+#### A2-C — Frontera de la evidencia XSD · NOT STARTED
+
+**A2-B1 inspeccionó los XSD oficiales v4.4 y registró el hallazgo de `xs:dateTime`.** Esa
+inspección fue real y está transcrita en [ADR-039](DECISIONS.md#adr-039) y en la cabecera
+de la migración de fechas.
+
+**Pero hoy esa evidencia no es reproducible desde un clon limpio del repositorio:**
+
+```
+XSD oficiales v4.4         NO versionados en el repo
+xmldsig-core-schema.xsd    NO versionado (import que impide compilar los XSD)
+CDN oficial                no reproducible desde el entorno de trabajo
+```
+
+**A2-C será dueña de:** procedencia oficial de los XSD · copias locales versionadas u otra
+adquisición reproducible · cierre de la dependencia `xmldsig` · hashes e integridad ·
+validación reproducible desde un clon limpio.
+
+Esto **no debilita** ninguna conclusión vigente: la inspección ocurrió y quedó registrada.
+Lo que falta es poder repetirla sin depender de un scratchpad ni de un acceso externo.
+
+#### A2-B2 — Remediación final de los tres MEDIUM
+
+**Vocabulario exacto de `document_type`.** La guardia de A2-B1 probaba un universo
+*finito* de candidatos, y eso no demuestra el dominio de una columna `text`: ninguna lista
+de ejemplos negativos prueba que no exista un quinto valor aceptado. La migración
+`20260901094500_enforce_exact_fiscal_document_type_vocabulary` traslada la garantía de las
+pruebas a **la definición**:
+
+```sql
+check (document_type in ('invoice', 'ticket', 'credit_note', 'debit_note'))
+```
+
+Un `IN` sobre conjunto literal es pertenencia: acepta un valor **si y solo si** es igual a
+uno de los cuatro. Con la columna `NOT NULL`, el dominio efectivo es exactamente esos
+cuatro, **por construcción y no por muestreo**. El vocabulario no cambia; cambia de dónde
+viene la garantía. Sigue siendo `text` + `CHECK`, no `enum`. Verificado: **una sola**
+restricción de `document_type` en la tabla. Las migraciones anteriores no se editaron.
+
+**Documentación de `FechaEmisionIR`.** La implementación ya era correcta desde A2-B1; la
+documentación seguía describiendo tres columnas `NOT NULL`. Puesta al día en §17.1 del
+modelo físico, en la matriz de 48 campos, en la de mutabilidad y en el modelo lógico:
+cuatro columnas, con `_date_local` y `_date_raw` obligatorias y el instante y el
+desplazamiento **ligados y opcionales**.
+
+**Contrato de los dos golden originales.** Eran los únicos que descansaban sobre huella y
+metadatos. Ahora tienen aserciones semánticas directas, leídas del XML.
+
+Dos etiquetas históricas revisadas contra el dato real:
+
+| Etiqueta previa | Qué resultó ser |
+|---|---|
+| «Registrofiscal8707» | **Impreciso.** El nodo aparece como `<Registrofiscal8707 />`, **vacío y autocerrado**. El rasgo real es *elemento presente pero vacío ≠ ausente* |
+| «contingencia» | **Correcto, y ahora formalmente justificado.** Anexos v4.4 págs. 66-67: el dígito 42 de la Clave es la situación —`1` Normal, `2` Contingencia, `3` Sin internet—. El golden 2 lleva `2`; el golden 1 lleva `1` |
+
+La codificación de la Clave se corrobora además con un test que comprueba, en todos los
+comprobantes del corpus, que sus posiciones 22-41 **son** el `NumeroConsecutivo`.
+
+#### A2-B1 — La fecha de origen puede no traer desplazamiento
+
+**El hallazgo que más lejos llega de toda la fase.** De 13 comprobantes reales,
+**4 declaran `FechaEmision` sin desplazamiento** —3 FE y el TE—:
+
+```
+con desplazamiento    2026-08-31T08:55:48-06:00     9 de 13
+sin desplazamiento    2026-06-19T14:05:50           4 de 13
+```
+
+E2 y E3 asumieron desplazamiento explícito siempre y fijaron `issued_at timestamptz
+NOT NULL` junto a `issued_at_offset_minutes NOT NULL`. **Eso no puede representar un
+datetime civil sin huso sin inventar uno.** La fuente estructural permite la ausencia:
+`<xs:element name="FechaEmision" type="xs:dateTime"/>`, tipo primitivo puro sin
+restricción ni patrón, y en XML Schema el huso de `xs:dateTime` es opcional.
+
+Modelo vigente ([ADR-039](DECISIONS.md#adr-039)), migración
+`20260831181500_support_offsetless_fiscal_issue_datetime`:
+
+```
+issued_at_local            timestamp     NOT NULL   reloj de pared, SIEMPRE
+issued_at                  timestamptz   NULL       instante, solo si se resuelve
+issued_at_offset_minutes   smallint      NULL       el DECLARADO, nunca inferido
+issued_at_raw              text          NOT NULL   literal exacto, sin cambios
+```
+
+**No se inventa zona horaria alguna** —ni UTC, ni UTC−6, ni la del servidor—. El mismo
+tratamiento se aplicó a `FechaEmisionIR` en `document_references`: es el mismo
+`xs:dateTime` y el modelo físico §17.1 ya exigía esa paridad; dejarlo habría sido dejar
+el mismo defecto en otro sitio.
+
+**Consecuencia real en consultas:** `ORDER BY issued_at DESC` coloca los `NULL` primero
+—verificado en el motor—, así que los documentos sin instante encabezarían un listado de
+«más recientes». Para período fiscal debe usarse `issued_at_local`: el día fiscal es
+civil, no UTC.
+
+**Correcciones de contrato en la misma subfase.** El fixture TE estaba descrito como
+«crédito»; el XSD documenta `01 = Contado`, `02 = Crédito`, y **los 13 comprobantes son
+`CondicionVenta = 01`**. No hay ningún documento a crédito en el corpus: el hueco queda
+abierto. Los tests golden dejaron de ser tautológicos —el tipo se lee del XML y se
+contrasta con una expectativa independiente—, cada golden prueba ahora la razón por la
+que se conserva, los 24 XML tienen smoke colectivo, y la referencia colgante de la NC se
+contrasta contra **todos** los comprobantes del corpus, no solo los golden.
+
+#### A2-B0 — `document_type` admite el Tiquete
+
+**El TiqueteElectronico real no tenía representación válida.** E3 dejó
+`document_type in ('invoice','credit_note','debit_note')`; A2-B lo detectó con el fixture
+real. Migración `20260831154210_add_ticket_fiscal_document_type`:
+
+```
+FacturaElectronica     01 → invoice
+NotaDebitoElectronica  02 → debit_note
+NotaCreditoElectronica 03 → credit_note
+TiqueteElectronico     04 → ticket        ← añadido
+```
+
+**`ticket`, no `invoice`** —colapsarlos borraría la distinción entre dos tipos fiscales
+distintos—, **no `04`** —la columna es vocabulario propio— y **no `receipt`**, reservado
+para el Recibo Electrónico de Pago (código `10`). No se añadieron tipos hipotéticos.
+
+**Guardia reforzada en A2-B1.** Las comprobaciones de aquella migración usaban
+`pg_get_constraintdef(...) LIKE '%ticket%'`, técnica frágil: depende del orden textual, de
+cómo se impriman los casts y del formato de `pg_get_constraintdef`, y una subcadena no
+demuestra que el conjunto sea **exacto**. Como la migración ya estaba aplicada **no se
+editó**: se añadió `20260831181600_assert_fiscal_document_type_vocabulary`, que no lee el
+texto de la restricción sino que la **ejecuta** —la re-adjunta a una tabla temporal y
+prueba valor a valor sobre un universo de candidatos explícito—, de modo que el resultado
+es inmune al orden, a los casts y al formato.
+
+La migración solo reemplaza el `CHECK`: aborta ante deriva, no toca datos, no reconstruye
+la tabla, y deja intactos tipo, nullability, RLS, privilegios e índices. **E3 no se editó.**
+El tipo **fuente** sigue conservándose aparte en `source_documents.detected_document_type`.
+
+---
 
 ### Cierre de E4-B0 — baseline verificado
 

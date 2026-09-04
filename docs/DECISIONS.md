@@ -61,6 +61,7 @@
 | [ADR-036](#adr-036) | Inmutabilidad, borrado y ausencia de `DELETE` | ✅ |
 | [ADR-037](#adr-037) | Almacenamiento y huella del artefacto de origen | ✅ |
 | [ADR-038](#adr-038) | Autorización de escritura fiscal | ✅ |
+| [ADR-039](#adr-039) | La fecha de emisión puede no declarar desplazamiento | ✅ |
 
 ---
 ---
@@ -1652,7 +1653,14 @@ son vocabulario nuestro, no catálogo de Hacienda.
 <a id="adr-034"></a>
 ## ADR-034 — Representación física de fecha y hora
 
-**Estado:** ✅ Aceptada (Día 3, fase E2)
+**Estado:** ✅ Aceptada (Día 3, fase E2) · **parcialmente superada por
+[ADR-039](#adr-039)** (Día 3, fase E4-A2)
+
+> La estructura de tres columnas por fecha sigue vigente y fue acertada. Lo que ADR-039
+> corrige es su **nulabilidad**: esta ADR asumía que el documento siempre declara su
+> desplazamiento, y los comprobantes reales demostraron que no. Hoy hay **cuatro** columnas
+> por fecha, y el instante y el desplazamiento son **nullables**. El texto original se
+> conserva íntegro.
 
 ### Decisión
 
@@ -1978,3 +1986,101 @@ ni a `auth` ni a `company_memberships`.
 CONTRATO DE DISEÑO  =  CERRADO EN E2
 IMPLEMENTACIÓN      =  E3
 ```
+
+---
+
+<a id="adr-039"></a>
+## ADR-039 — La fecha de emisión puede no declarar desplazamiento
+
+**Estado:** ✅ Aceptada (Día 3, fase E4-A2 · subfase A2-B1) · **Criticidad: alta**
+
+### Contexto
+
+[ADR-034](#adr-034) y el diseño de E2 §17 fijaron la representación temporal como
+**instante + desplazamiento + literal**, con las tres columnas `NOT NULL`. Ese diseño fue
+deliberado en un punto importante —no codificar UTC−6 en ninguna parte— pero descansaba
+sobre una premisa que nadie verificó: **que el documento siempre declara su
+desplazamiento**.
+
+La expansión de fixtures de E4-A2 la desmintió. De **13 comprobantes reales aceptados por
+Hacienda, 4 declaran `FechaEmision` sin desplazamiento**: 3 Facturas Electrónicas y el
+Tiquete Electrónico.
+
+```
+con desplazamiento    2026-08-31T08:55:48-06:00     9 de 13
+sin desplazamiento    2026-06-19T14:05:50           4 de 13
+```
+
+**La fuente estructural lo permite.** Los XSD v4.4 declaran el campo como tipo primitivo
+puro, sin restricción ni patrón:
+
+```xml
+<xs:element name="FechaEmision" type="xs:dateTime"/>
+```
+
+En XML Schema el huso de `xs:dateTime` es **opcional**. Verificado además que el XSD no
+define ningún `simpleType` de fecha ni ningún `xs:pattern` sobre estos campos: los únicos
+patrones del esquema son de dígitos (`ClaveType`, `NumeroConsecutivoType`).
+
+Que Hacienda aceptara los cuatro documentos **corrobora** la lectura, pero la prueba es el
+esquema, no la aceptación.
+
+### Decisión
+
+**Se separa el reloj de pared del instante absoluto.**
+
+| Columna | Tipo | Nulabilidad | Qué significa |
+|---|---|---|---|
+| `issued_at_local` | `timestamp` (sin huso) | **NOT NULL** | El datetime civil que el documento declara. **Existe siempre** |
+| `issued_at` | `timestamptz` | **NULL** | El instante absoluto. **Solo si la fuente da con qué resolverlo** |
+| `issued_at_offset_minutes` | `smallint` | **NULL** | El desplazamiento **declarado**. Nunca uno inferido |
+| `issued_at_raw` | `text` | NOT NULL | El literal exacto del XML (sin cambios) |
+
+Ligadas por una restricción que impide los estados incoherentes: `issued_at` y
+`issued_at_offset_minutes` **son ambos nulos o ambos no nulos**, y cuando existen, el
+instante debe ser exactamente el reloj de pared desplazado.
+
+**Nunca se inventa una zona horaria.** Ni UTC, ni UTC−6, ni la del servidor, ni una zona
+IANA. Si el documento no dice cuándo ocurrió en términos absolutos, **la base de datos
+tampoco lo dice**.
+
+`FechaEmisionIR` recibe el mismo tratamiento, por el mismo motivo: es el mismo
+`xs:dateTime` sin restricción. E2 §17.1 ya exigía esa paridad.
+
+### Consecuencias
+
+**Lo que se gana.** El modelo deja de rechazar casi un tercio de los comprobantes reales
+disponibles, y deja de convertir en instante lo que la fuente no fijó.
+
+**Lo que cuesta.** `issued_at` deja de servir como orden universal: un documento sin
+desplazamiento no tiene instante comparable. Para ordenar cronológicamente de forma
+homogénea hay que usar `issued_at_local`, aceptando que compara relojes de pared de husos
+potencialmente distintos. Cuál usar depende de la pregunta:
+
+| Para | Columna |
+|---|---|
+| Ordenar por instante absoluto | `issued_at` — solo entre documentos que lo tienen |
+| Conservar la fecha civil de la fuente | `issued_at_local` |
+| Período fiscal (día/mes de devengo) | `issued_at_local` — el día fiscal es civil, no UTC |
+| Trazabilidad literal | `issued_at_raw` |
+
+**Lo que NO decide esta ADR.** No decide cómo el Tax Engine determinará el período fiscal;
+eso llegará con el motor. Aquí solo se garantiza que el dato civil **existe y no está
+contaminado** por una zona inventada.
+
+### Alternativas descartadas
+
+| Alternativa | Por qué no |
+|---|---|
+| Asumir UTC−6 cuando falta | Inventa información fiscal. Un comprobante de exportación puede declarar otro desplazamiento, y el emisor puede no estar en Costa Rica |
+| Asumir UTC | Igual de inventado, y además desplaza el día civil seis horas |
+| Usar la zona del servidor | Hace que el mismo XML produzca datos distintos según dónde se ingiera |
+| Guardar solo `issued_at_raw` y parsear al vuelta | Renuncia a indexar y comparar; el literal ya se conserva, pero no basta para operar |
+| Dejar `issued_at` NOT NULL y rechazar esos documentos | Rechazaría comprobantes que Hacienda aceptó y que el XSD permite |
+
+### Historia
+
+E2 y E3 asumieron desplazamiento explícito siempre; era una asunción razonable y quedó
+escrita como tal. **Los fixtures reales de E4-A2 la desmintieron.** La migración
+`20260831181500_support_offsetless_fiscal_issue_datetime` adapta el modelo sin editar
+ninguna migración histórica y sin inventar zona horaria alguna.

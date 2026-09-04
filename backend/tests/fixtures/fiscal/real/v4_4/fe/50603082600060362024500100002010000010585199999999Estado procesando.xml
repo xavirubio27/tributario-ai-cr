@@ -1,0 +1,63 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="no"?><FacturaElectronica xmlns="https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica"><Clave>50603082600060362024500100002010000010585199999999</Clave><ProveedorSistemas>3102776292</ProveedorSistemas><CodigoActividadEmisor>5610.0</CodigoActividadEmisor><CodigoActividadReceptor>6201.0</CodigoActividadReceptor><NumeroConsecutivo>00100002010000010585</NumeroConsecutivo><FechaEmision>2026-08-03T14:16:36.000-06:00</FechaEmision><Emisor><Nombre>Allan Parrales Fonseca</Nombre><Identificacion><Tipo>01</Tipo><Numero>603620245</Numero></Identificacion><NombreComercial>Delmonico Sabana</NombreComercial><Ubicacion><Provincia>1</Provincia><Canton>01</Canton><Distrito>01</Distrito><OtrasSenas>Sabana Delmonicos Sabana</OtrasSenas></Ubicacion><Telefono><CodigoPais>506</CodigoPais><NumTelefono>63431411</NumTelefono></Telefono><CorreoElectronico>delmonicosabana@gmail.com</CorreoElectronico></Emisor><Receptor><Nombre>PIXDEA S.A </Nombre><Identificacion><Tipo>02</Tipo><Numero>3101779527</Numero></Identificacion><NombreComercial>PIXDEA S.A </NombreComercial><Telefono><CodigoPais>506</CodigoPais><NumTelefono>70169169</NumTelefono></Telefono><CorreoElectronico>facturaspixdea@gmail.com</CorreoElectronico></Receptor><CondicionVenta>01</CondicionVenta><DetalleServicio><LineaDetalle><NumeroLinea>1</NumeroLinea><CodigoCABYS>2399700000000</CodigoCABYS><CodigoComercial><Tipo>01</Tipo><Codigo>020DMS</Codigo></CodigoComercial><Cantidad>1.000</Cantidad><UnidadMedida>Unid</UnidadMedida><Detalle>***Ejecutivo Res***</Detalle><PrecioUnitario>5973.45000</PrecioUnitario><MontoTotal>5973.45000</MontoTotal><SubTotal>5973.45000</SubTotal><BaseImponible>5973.45000</BaseImponible><Impuesto><Codigo>01</Codigo><CodigoTarifaIVA>08</CodigoTarifaIVA><Tarifa>13.00000</Tarifa><Monto>776.54850</Monto></Impuesto><ImpuestoAsumidoEmisorFabrica>0.00000</ImpuestoAsumidoEmisorFabrica><ImpuestoNeto>776.54850</ImpuestoNeto><MontoTotalLinea>6749.99850</MontoTotalLinea></LineaDetalle></DetalleServicio><ResumenFactura><CodigoTipoMoneda><CodigoMoneda>CRC</CodigoMoneda><TipoCambio>1.00000</TipoCambio></CodigoTipoMoneda><TotalServGravados>0.00000</TotalServGravados><TotalServExentos>0.00000</TotalServExentos><TotalServExonerado>0.00000</TotalServExonerado><TotalMercanciasGravadas>5973.45000</TotalMercanciasGravadas><TotalMercanciasExentas>0.00000</TotalMercanciasExentas><TotalMercExonerada>0.00000</TotalMercExonerada><TotalGravado>5973.45000</TotalGravado><TotalExento>0.00000</TotalExento><TotalExonerado>0.00000</TotalExonerado><TotalVenta>5973.45000</TotalVenta><TotalDescuentos>0.00000</TotalDescuentos><TotalVentaNeta>5973.45000</TotalVentaNeta><TotalDesgloseImpuesto><Codigo>01</Codigo><CodigoTarifaIVA>08</CodigoTarifaIVA><TotalMontoImpuesto>776.54850</TotalMontoImpuesto></TotalDesgloseImpuesto><TotalImpuesto>776.54850</TotalImpuesto><TotalIVADevuelto>0.00000</TotalIVADevuelto><MedioPago><TipoMedioPago>02</TipoMedioPago><TotalMedioPago>6749.99850</TotalMedioPago></MedioPago><TotalComprobante>6749.99850</TotalComprobante></ResumenFactura><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913">
+<ds:SignedInfo>
+<ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+<ds:Reference Id="xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913-ref0" URI="">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>cHrOZzoVhF0zL6Y7IBMIqb2xC0zqmJeOHZ0Op0bkofY=</ds:DigestValue>
+</ds:Reference>
+<ds:Reference Type="http://uri.etsi.org/01903#SignedProperties" URI="#xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913-signedprops">
+<ds:Transforms>
+<ds:Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+</ds:Transforms>
+<ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+<ds:DigestValue>9SNVd9RTLBFDbO0A7KP7Xj/8wg1JJvmHp5QC0KCO1Z8=</ds:DigestValue>
+</ds:Reference>
+</ds:SignedInfo>
+<ds:SignatureValue Id="xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913-sigvalue">
+Qo59VpF6rCC4xMMW1Z36mS7O49yNxqOcQi3TPGsDBQUKn5GJKzhMHLNTxubczwm+WJnggW9m5NIv&#13;
+suVB2/0iz1XWzhLxNWJyUzRC6Vv1nHRBQ84AQ6QojqTTRS8MhDdRU3p3RSxIrteWeYZzJq00Y/Hs&#13;
+XEtFyreYDCTNLyzYdan4RQKBWq6vXn7/y0LtDU2P72a3DLfxirMihthPMX4AAB5w+Giwkzr/C/AZ&#13;
+9psI2vj6l71m4YTU+XyNmMv2mk2sDLh0FpOdqt1ZHJeVyOgC5Tw0a0TuLVIr5xoMbfYNeLiHuGQY&#13;
+TEFGIvy/uZksxaXvnvMGLvjTJO0Pbp3CEPjsiA==
+</ds:SignatureValue>
+<ds:KeyInfo>
+<ds:X509Data>
+<ds:X509Certificate>
+MIIFTzCCAzegAwIBAgIGAZW1c7WVMA0GCSqGSIb3DQEBCwUAMFgxCzAJBgNVBAYTAkNSMR8wHQYD&#13;
+VQQKDBZNSU5JU1RFUklPIERFIEhBQ0lFTkRBMQwwCgYDVQQLDANER1QxGjAYBgNVBAMMEUNBIFBF&#13;
+UlNPTkEgRklTSUNBMB4XDTI1MDMyMDIxMjY1NFoXDTI5MDMxOTIxMjY1NFowgasxGTAXBgNVBAUT&#13;
+EENQRi0wNi0wMzYyLTAyNDUxGTAXBgNVBAQMEFBBUlJBTEVTIEZPTlNFQ0ExFjAUBgNVBCoMDUFM&#13;
+TEFOIEFMQkVSVE8xCzAJBgNVBAYTAkNSMRcwFQYDVQQKDA5QRVJTT05BIEZJU0lDQTEMMAoGA1UE&#13;
+CwwDQ1BGMScwJQYDVQQDDB5BTExBTiBBTEJFUlRPIFBBUlJBTEVTIEZPTlNFQ0EwggEiMA0GCSqG&#13;
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQC4sfZ1ffm7najQ8TnNmSLdG8Sk/EwM6jx7vzSdoeZlWHmQ&#13;
+gjqS+aEDOFN1ajy+22PxdWZR3OsTvEf4YrKAO4qGBQ+d5I5KYf/eDpv0FphWIR1m8tb6z9yU1bhG&#13;
+W5he24I+WRngZlbM7XZxAZUVtE+nLdd5s0GP9IJVxQ994s+59o8WuwnOs6MMAaEyPOGBt3urLIkO&#13;
+PAvFl1V1OGKhdoD2+NfjyhB5cTcKoP0rnmAIJN9/ri59+LKGLsttFXNhx66GxNieHK7BaMwEvdIr&#13;
+6Z2aLgELMxvSUg3WS7nktXjEY6byNW58ElcjoppqIVfPa+kpRhZtiM7CC9O0Zw3UB0dxAgMBAAGj&#13;
+gcowgccwHwYDVR0jBBgwFoAUE/ZqQQ3toiRF0ciUqEGDfGIla1kwHQYDVR0OBBYEFGW5edC0cD9+&#13;
+PQ4FArzs++uwEtNhMAsGA1UdDwQEAwIGwDATBgNVHSUEDDAKBggrBgEFBQcDBDBjBggrBgEFBQcB&#13;
+AQRXMFUwUwYIKwYBBQUHMAKGR2h0dHBzOi8vcGtpLmNvbXByb2JhbnRlc2VsZWN0cm9uaWNvcy5n&#13;
+by5jci9wcm9kL2ludGVybWVkaWF0ZS1wZi1wZW0uY3J0MA0GCSqGSIb3DQEBCwUAA4ICAQA0lgAz&#13;
+onjmPm+HvZrSqN+K69R49TCc68g4kYSYX+GJ6oSutqXaOG/KPWrG/OJDPaK7+VBu/G7xQRR4mIfI&#13;
+J2UXAF4bktfy1q2mzn+mPwcv8YbtjcCqfJLh8IyUPPIaM+CqmLYx8ac7XWl2dEB9T4KZH5FT+jz1&#13;
+juB1du4j5+kStWfzoVQXA7YAS5M8xFYQKxy0gV8a1s+Hlc+vDrknZAF+jKZP/IDE8q509QgaH/iq&#13;
+BMrDDRpqtgB0NXo/XiSsZtTSnDsWUZF4JXYOOxiuezlHRgMW58vQtrQ1fYgeUvfMQzBvJZrgkqK4&#13;
+ekgKP8B+bbUFNU+2W/HhZCAo01jjI3Mn9Db0ngz5tO8k2vmJcanwxjuZmCeKjwhtEQc53+Do9/ss&#13;
+RffdJ35nryeuVKL/cz6lqIZiLbr8n9Tm9Nfzxv1hyQNHDcRdRCgRr4cE5PjOmZp5G92VeCLiHihR&#13;
+rt1Y7HnFJ9vew39/pxXtPcnskeCuZYbId7NhonZ+mJ5893PoA8w9eoGcdW/2O4UkIfigE2n0XBnc&#13;
+r8rGjllQkhdRRT7yMAvPa3EodZJqG9kW0wisVabPNxa4X8n2xmyMZnCjSOWvo0xTuWxNn/2FDDsU&#13;
++O2IS7SkLuH4xl6kbwgccB8DiRVOpV5xbA4Q6YvsoN+KGxraM4I2b5S0+xKVTZ7fSGtKDQ==
+</ds:X509Certificate>
+<ds:X509IssuerSerial>
+<ds:X509IssuerName>cn=CA PERSONA FISICA,ou=DGT,o=MINISTERIO DE HACIENDA,c=CR</ds:X509IssuerName>
+<ds:X509SerialNumber>1742506014101</ds:X509SerialNumber>
+</ds:X509IssuerSerial>
+<ds:X509SubjectName>cn=ALLAN ALBERTO PARRALES FONSECA,ou=CPF,o=PERSONA FISICA,c=CR,givenName=ALLAN ALBERTO,sn=PARRALES FONSECA,serialNumber=CPF-06-0362-0245</ds:X509SubjectName>
+</ds:X509Data>
+</ds:KeyInfo>
+<ds:Object><xades:QualifyingProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#" Target="#xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913"><xades:SignedProperties Id="xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913-signedprops"><xades:SignedSignatureProperties><xades:SigningTime>2026-08-03T14:16:36.732-06:00</xades:SigningTime><xades:SigningCertificate><xades:Cert><xades:CertDigest><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>i6RYxlKJA23PJKD2+SsAUA+1g3yo4CU29zEZLVZLaA0=</ds:DigestValue></xades:CertDigest><xades:IssuerSerial><ds:X509IssuerName>cn=CA PERSONA FISICA,ou=DGT,o=MINISTERIO DE HACIENDA,c=CR</ds:X509IssuerName><ds:X509SerialNumber>1742506014101</ds:X509SerialNumber></xades:IssuerSerial></xades:Cert></xades:SigningCertificate><xades:SignaturePolicyIdentifier><xades:SignaturePolicyId><xades:SigPolicyId><xades:Identifier>https://www.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2016/v4.3/Resoluci%C3%B3n_General_sobre_disposiciones_t%C3%A9cnicas_comprobantes_electr%C3%B3nicos_para_efectos_tributarios.pdf</xades:Identifier></xades:SigPolicyId><xades:SigPolicyHash><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>qejyRRM8RyeH+uO5XMcFUY6G1fYHho06sAHH7sue9gM=</ds:DigestValue></xades:SigPolicyHash></xades:SignaturePolicyId></xades:SignaturePolicyIdentifier></xades:SignedSignatureProperties><xades:SignedDataObjectProperties><xades:DataObjectFormat ObjectReference="#xmldsig-7cb85733-68df-4044-b0c6-80c6d3eea913-ref0"><xades:MimeType>application/octet-stream</xades:MimeType></xades:DataObjectFormat></xades:SignedDataObjectProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object>
+</ds:Signature></FacturaElectronica>

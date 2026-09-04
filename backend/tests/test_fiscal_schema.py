@@ -66,14 +66,14 @@ def _insert_document(conn, company_id: str, *, seed: int, marker: str) -> str:
         """
         insert into fiscal.electronic_documents (
             company_id, document_type, clave, consecutive_number,
-            issued_at, issued_at_offset_minutes, issued_at_raw,
+            issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
             issuer_activity_code, sale_condition_code,
             currency_code, reported_exchange_rate,
             reported_total_sale, reported_total_net_sale, reported_total_document,
             ruleset_revision_status, direction, direction_computed_at
         ) values (
             %s, 'invoice', %s, %s,
-            now(), -360, %s,
+            timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360, %s,
             '620100', '01',
             'CRC', 1,
             100, 100, 113,
@@ -174,6 +174,7 @@ def test_tipos_decimales_exactos(admin_sql):
     assert rows, "No se encontró ninguna columna de importe"
     for r in rows:
         if r["column_name"] in ("reported_number", "reported_reference_date",
+                                "reported_reference_date_local",
                                 "reported_reference_offset_minutes",
                                 "reported_reference_date_raw"):
             continue
@@ -595,12 +596,12 @@ def test_forma_de_la_clave(pool, settings, user_a, clave, valido, clean_fiscal):
                 """
                 insert into fiscal.electronic_documents (
                     company_id, document_type, clave, consecutive_number,
-                    issued_at, issued_at_offset_minutes, issued_at_raw,
+                    issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                     issuer_activity_code, sale_condition_code, currency_code,
                     reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                     reported_total_document, ruleset_revision_status, direction,
                     direction_computed_at
-                ) values (%s,'invoice',%s,%s,now(),-360,'x','620100','01','CRC',
+                ) values (%s,'invoice',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x','620100','01','CRC',
                           1,100,100,113,'detected','issued',now())
                 """,
                 (user_a.company_id, clave, _consecutive(30)),
@@ -623,12 +624,12 @@ def test_forma_del_consecutivo(pool, settings, user_a, cons, valido, clean_fisca
                 """
                 insert into fiscal.electronic_documents (
                     company_id, document_type, clave, consecutive_number,
-                    issued_at, issued_at_offset_minutes, issued_at_raw,
+                    issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                     issuer_activity_code, sale_condition_code, currency_code,
                     reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                     reported_total_document, ruleset_revision_status, direction,
                     direction_computed_at
-                ) values (%s,'invoice',%s,%s,now(),-360,'x','620100','01','CRC',
+                ) values (%s,'invoice',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x','620100','01','CRC',
                           1,100,100,113,'detected','issued',now())
                 """,
                 (user_a.company_id, _clave(31), cons),
@@ -655,15 +656,25 @@ def test_rango_del_desplazamiento_horario(pool, settings, user_a, offset, valido
                 """
                 insert into fiscal.electronic_documents (
                     company_id, document_type, clave, consecutive_number,
-                    issued_at, issued_at_offset_minutes, issued_at_raw,
+                    issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                     issuer_activity_code, sale_condition_code, currency_code,
                     reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                     reported_total_document, ruleset_revision_status, direction,
                     direction_computed_at
-                ) values (%s,'invoice',%s,%s,now(),%s,'x','620100','01','CRC',
-                          1,100,100,113,'detected','issued',now())
+                ) values (
+                    %s,'invoice',%s,%s,
+                    timestamp '2026-08-01 05:24:09',
+                    -- El instante se deriva del desplazamiento PROBADO: la
+                    -- restriccion de coherencia exige que ambas
+                    -- representaciones concuerden, incluso en los casos que
+                    -- el rango debe rechazar.
+                    (timestamp '2026-08-01 05:24:09'
+                     - make_interval(mins => %s)) at time zone 'UTC',
+                    %s,'x','620100','01','CRC',
+                    1,100,100,113,'detected','issued',now())
                 """,
-                (user_a.company_id, _clave(seed), _consecutive(seed), offset),
+                (user_a.company_id, _clave(seed), _consecutive(seed),
+                 offset, offset),
             )
 
     if valido:
@@ -682,12 +693,12 @@ def test_ausente_no_es_cero(pool, settings, admin_sql, user_a, clean_fiscal):
             """
             insert into fiscal.electronic_documents (
                 company_id, document_type, clave, consecutive_number,
-                issued_at, issued_at_offset_minutes, issued_at_raw,
+                issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                 issuer_activity_code, sale_condition_code, currency_code,
                 reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                 reported_total_document, reported_total_tax,
                 ruleset_revision_status, direction, direction_computed_at
-            ) values (%s,'invoice',%s,%s,now(),-360,'x','620100','01','CRC',
+            ) values (%s,'invoice',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x','620100','01','CRC',
                       1,100,100,113,0,'detected','issued',now())
             """,
             (user_a.company_id, _clave(41), _consecutive(41)),
@@ -709,12 +720,12 @@ def test_importes_negativos_rechazados(pool, settings, user_a, clean_fiscal):
                 """
                 insert into fiscal.electronic_documents (
                     company_id, document_type, clave, consecutive_number,
-                    issued_at, issued_at_offset_minutes, issued_at_raw,
+                    issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                     issuer_activity_code, sale_condition_code, currency_code,
                     reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                     reported_total_document, ruleset_revision_status, direction,
                     direction_computed_at
-                ) values (%s,'credit_note',%s,%s,now(),-360,'x','620100','01','CRC',
+                ) values (%s,'credit_note',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x','620100','01','CRC',
                           1,100,100,-113,'detected','issued',now())
                 """,
                 (user_a.company_id, _clave(42), _consecutive(42)),
@@ -757,12 +768,12 @@ def test_clave_unica_por_empresa_pero_no_global(pool, settings, user_a, user_b, 
             """
             insert into fiscal.electronic_documents (
                 company_id, document_type, clave, consecutive_number,
-                issued_at, issued_at_offset_minutes, issued_at_raw,
+                issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                 issuer_activity_code, sale_condition_code, currency_code,
                 reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                 reported_total_document, ruleset_revision_status, direction,
                 direction_computed_at
-            ) values (%s,'invoice',%s,%s,now(),-360,'B','620100','01','CRC',
+            ) values (%s,'invoice',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'B','620100','01','CRC',
                       1,100,100,113,'detected','received',now())
             """,
             (user_b.company_id, _clave(50), _consecutive(51)),
@@ -775,12 +786,12 @@ def test_clave_unica_por_empresa_pero_no_global(pool, settings, user_a, user_b, 
                 """
                 insert into fiscal.electronic_documents (
                     company_id, document_type, clave, consecutive_number,
-                    issued_at, issued_at_offset_minutes, issued_at_raw,
+                    issued_at_local, issued_at, issued_at_offset_minutes, issued_at_raw,
                     issuer_activity_code, sale_condition_code, currency_code,
                     reported_exchange_rate, reported_total_sale, reported_total_net_sale,
                     reported_total_document, ruleset_revision_status, direction,
                     direction_computed_at
-                ) values (%s,'invoice',%s,%s,now(),-360,'dup','620100','01','CRC',
+                ) values (%s,'invoice',%s,%s,timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'dup','620100','01','CRC',
                           1,999,999,999,'detected','issued',now())
                 """,
                 (user_a.company_id, _clave(50), _consecutive(52)),
@@ -830,8 +841,8 @@ def test_referencia_resuelta_no_cruza_empresas(pool, settings, user_a, user_b, c
         conn.execute(
             "insert into fiscal.document_references "
             "(company_id, electronic_document_id, sequence, referenced_document_type_code, "
-            " reported_reference_date, reported_reference_offset_minutes, reported_reference_date_raw) "
-            "values (%s,%s,1,'01',now(),-360,'x')",
+            " reported_reference_date_local, reported_reference_date, reported_reference_offset_minutes, reported_reference_date_raw) "
+            "values (%s,%s,1,'01',timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x')",
             (user_a.company_id, doc_a),
         )
 
@@ -840,9 +851,10 @@ def test_referencia_resuelta_no_cruza_empresas(pool, settings, user_a, user_b, c
             conn.execute(
                 "insert into fiscal.document_references "
                 "(company_id, electronic_document_id, sequence, referenced_document_type_code, "
-                " reported_reference_date, reported_reference_offset_minutes, "
+                " reported_reference_date_local, reported_reference_date, "
+                " reported_reference_offset_minutes, "
                 " reported_reference_date_raw, resolved_document_id) "
-                "values (%s,%s,2,'01',now(),-360,'x',%s)",
+                "values (%s,%s,2,'01',timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360,'x',%s)",
                 (user_a.company_id, doc_a, edoc_b),
             )
     assert exc.value.sqlstate == "23503"

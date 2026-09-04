@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<NotaCreditoElectronica xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica" xsi:schemaLocation="https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica.xsd">
+  <Clave>50631082600310181576400100001030000001522114249307</Clave>
+  <ProveedorSistemas>3101225890</ProveedorSistemas>
+  <CodigoActividadEmisor>6619.0</CodigoActividadEmisor>
+  <CodigoActividadReceptor>6201.0</CodigoActividadReceptor>
+  <NumeroConsecutivo>00100001030000001522</NumeroConsecutivo>
+  <FechaEmision>2026-08-31T08:55:48-06:00</FechaEmision>
+  <Emisor>
+    <Nombre>ONVO COSTA RICA SOCIEDAD ANONIMA</Nombre>
+    <Identificacion>
+      <Tipo>02</Tipo>
+      <Numero>3101815764</Numero>
+    </Identificacion>
+    <NombreComercial>ONVO COSTA RICA SOCIEDAD ANONIMA</NombreComercial>
+    <Ubicacion>
+      <Provincia>1</Provincia>
+      <Canton>01</Canton>
+      <Distrito>01</Distrito>
+      <Barrio>SAN JOSÉ (parte)</Barrio>
+      <OtrasSenas>San José Santa Ana Santa Ana 200 norte de la cruz roja</OtrasSenas>
+    </Ubicacion>
+    <Telefono>
+      <CodigoPais>506</CodigoPais>
+      <NumTelefono>43501000</NumTelefono>
+    </Telefono>
+    <CorreoElectronico>conta@onvopay.com</CorreoElectronico>
+  </Emisor>
+  <Receptor>
+    <Nombre>PIXDEA   SOCIEDAD ANONIMA</Nombre>
+    <Identificacion>
+      <Tipo>02</Tipo>
+      <Numero>3101779527</Numero>
+    </Identificacion>
+    <Ubicacion>
+      <Provincia>1</Provincia>
+      <Canton>03</Canton>
+      <Distrito>01</Distrito>
+      <OtrasSenas>Escazú, Escazú, Sab Jose, Escazu, Rivergrand, Calle la Arboleda</OtrasSenas>
+    </Ubicacion>
+    <Telefono>
+      <CodigoPais>506</CodigoPais>
+      <NumTelefono>70169169</NumTelefono>
+    </Telefono>
+    <CorreoElectronico>xavier@pixdea.com</CorreoElectronico>
+  </Receptor>
+  <CondicionVenta>01</CondicionVenta>
+  <DetalleServicio>
+    <LineaDetalle>
+      <NumeroLinea>1</NumeroLinea>
+      <CodigoCABYS>7119099000000</CodigoCABYS>
+      <CodigoComercial>
+        <Tipo>01</Tipo>
+        <Codigo>1</Codigo>
+      </CodigoComercial>
+      <Cantidad>1</Cantidad>
+      <UnidadMedida>Cm</UnidadMedida>
+      <Detalle>Comisiones Gravadas</Detalle>
+      <PrecioUnitario>27732.34</PrecioUnitario>
+      <MontoTotal>27732.34</MontoTotal>
+      <SubTotal>27732.34</SubTotal>
+      <BaseImponible>27732.34</BaseImponible>
+      <Impuesto>
+        <Codigo>01</Codigo>
+        <CodigoTarifaIVA>08</CodigoTarifaIVA>
+        <Tarifa>13.00</Tarifa>
+        <Monto>3605.20</Monto>
+      </Impuesto>
+      <ImpuestoAsumidoEmisorFabrica>0</ImpuestoAsumidoEmisorFabrica>
+      <ImpuestoNeto>3605.20</ImpuestoNeto>
+      <MontoTotalLinea>31337.54</MontoTotalLinea>
+    </LineaDetalle>
+  </DetalleServicio>
+  <ResumenFactura>
+    <CodigoTipoMoneda>
+      <CodigoMoneda>CRC</CodigoMoneda>
+      <TipoCambio>1</TipoCambio>
+    </CodigoTipoMoneda>
+    <TotalServGravados>27732.34</TotalServGravados>
+    <TotalServExentos>0</TotalServExentos>
+    <TotalServExonerado>0</TotalServExonerado>
+    <TotalServNoSujeto>0</TotalServNoSujeto>
+    <TotalMercanciasGravadas>0</TotalMercanciasGravadas>
+    <TotalMercanciasExentas>0</TotalMercanciasExentas>
+    <TotalMercExonerada>0</TotalMercExonerada>
+    <TotalMercNoSujeta>0</TotalMercNoSujeta>
+    <TotalGravado>27732.34</TotalGravado>
+    <TotalExento>0</TotalExento>
+    <TotalExonerado>0</TotalExonerado>
+    <TotalVenta>27732.34</TotalVenta>
+    <TotalDescuentos>0</TotalDescuentos>
+    <TotalVentaNeta>27732.34</TotalVentaNeta>
+    <TotalDesgloseImpuesto>
+      <Codigo>01</Codigo>
+      <CodigoTarifaIVA>08</CodigoTarifaIVA>
+      <TotalMontoImpuesto>3605.20</TotalMontoImpuesto>
+    </TotalDesgloseImpuesto>
+    <TotalImpuesto>3605.20</TotalImpuesto>
+    <TotalImpAsumEmisorFabrica>0</TotalImpAsumEmisorFabrica>
+    <TotalIVADevuelto>0</TotalIVADevuelto>
+    <MedioPago>
+      <TipoMedioPago>01</TipoMedioPago>
+      <TotalMedioPago>31337.54</TotalMedioPago>
+    </MedioPago>
+    <TotalComprobante>31337.54</TotalComprobante>
+  </ResumenFactura>
+  <InformacionReferencia>
+    <TipoDocIR>01</TipoDocIR>
+    <Numero>50630082600310181576400100001010000022472103888064</Numero>
+    <FechaEmisionIR>2026-08-31T08:48:19-06:00</FechaEmisionIR>
+    <Codigo>01</Codigo>
+    <Razon>Factura erronea</Razon>
+  </InformacionReferencia>
+  <Otros>
+    <OtroTexto>Cobro por comisión por uso de plataforma aplicada durante el periodo del 26 de Julio 2026 al 25 de Agosto 2026 - Comercio: PIXDEA - PIXDEA   SOCIEDAD ANONIMA</OtroTexto>
+  </Otros>
+<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315" /><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" /><ds:Reference Id="Reference-a00e3fce-03a3-4bda-bc75-0f0442e29f96" URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" /></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>W5QlSaKxXep2heAtPLgAgMCMos/ZR0zxLONGalr4Pwc=</ds:DigestValue></ds:Reference><ds:Reference Id="ReferenceKeyInfo" URI="#KeyInfoId-Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>A2pro3mdrTPcKcZzhuZ+Xyn7gyEkVPIl4r4Ygko1Q5Y=</ds:DigestValue></ds:Reference><ds:Reference Type="http://uri.etsi.org/01903#SignedProperties" URI="#SignedProperties-Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>ca6HpJY50q2GCa9b4lcfa7qhWZe0hwaKncWvUc+Yjfs=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue Id="SignatureValue-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b">My36bwvgkhSrLsks3+6d2S2sg9fD8xDhqdXxjUsljuXt26CQRt4sbbouenaeFuzVaydvGzFzt7ASr/GN5SGiaX6SoGj3VnSMbS98LgYUZ16MMIx3o/PwxoFUq++11zw8u+AGrnRUHRxXepZsmFAaSVa8CMM25e+lqQmfQTtRaH2siZsZpC+MU9SxhLQTQLgKUzjvEeDUjE3bHRK2BnVqWKFDDSAY10+V2Cy5G7bMNZqx4C4RAvYXS+wmDCGDEGhMMVFTg+5Y1Q1lAvOzDS10FGE1RtbhL0KOOZvx3yCqGhDe7OxRbyXxbKGVw58pEfUTJ3MQdjjQOMr1sJIvWUw0mQ==</ds:SignatureValue><ds:KeyInfo Id="KeyInfoId-Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><ds:X509Data><ds:X509Certificate>MIIFJzCCAw+gAwIBAgIGAZo3A97cMA0GCSqGSIb3DQEBCwUAMFoxCzAJBgNVBAYTAkNSMR8wHQYDVQQKDBZNSU5JU1RFUklPIERFIEhBQ0lFTkRBMQwwCgYDVQQLDANER1QxHDAaBgNVBAMME0NBIFBFUlNPTkEgSlVSSURJQ0EwHhcNMjUxMDMwMjEyNjMxWhcNMjkxMDI5MjEyNjMxWjCBgTEZMBcGA1UEBRMQQ1BKLTMtMTAxLTgxNTc2NDELMAkGA1UEBhMCQ1IxGTAXBgNVBAoMEFBFUlNPTkEgSlVSSURJQ0ExDDAKBgNVBAsMA0NQSjEuMCwGA1UEAwwlT05WTyBDT1NUQSBSSUNBIFNPQ0lFREFEIEFOT05JTUEgbnVsbDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAJp127jPr4ahe8cTMqGE6W2hzK6m1UdPZ5dQyZuIVydn4wgRzi8pQdzSa/I4so4mET9KfLnOvRHRiXwpZsbY4gdn9p0aiPbfvyzFyGgGJl8EDR2wNs1E8RoJ94zOBI+Vposy1f6eSUbb5Aobykbw/JP6Wh1E2JpjDGE4HZLRrsJgY0RPYmb0w9u4KKiCvvzKPtrh46Eosl5ryq+/PM2xa1q3Wlf6TzHb23Y+yEisGF4OpwBNPW9I3hW1X9WvUoYWTqH5KPfHvyqUSEp94ngCEUsJwbLWPT0TWKKe+M5ddwef5zEf3ubhYxItzBlLpNJocIYuCfGw7hrJVM87FuQX8pcCAwEAAaOByjCBxzAfBgNVHSMEGDAWgBQ7bVf11nzpnhACIEHjvRrMz7NOlTAdBgNVHQ4EFgQU5Ebt5WA0p/dC7UmzJHmzGNqXGl4wCwYDVR0PBAQDAgbAMBMGA1UdJQQMMAoGCCsGAQUFBwMEMGMGCCsGAQUFBwEBBFcwVTBTBggrBgEFBQcwAoZHaHR0cHM6Ly9wa2kuY29tcHJvYmFudGVzZWxlY3Ryb25pY29zLmdvLmNyL3Byb2QvaW50ZXJtZWRpYXRlLXBqLXBlbS5jcnQwDQYJKoZIhvcNAQELBQADggIBAJJdCJmArjUHOhPEBGKBDdKiPkEolzSkxzq1yjss2ND/WmCuHbumfyy7RFLqDJKuqL9/oSZh9kMH9m4/yPvujoYoArN4ZTBf3FAlsZO6ltPPa+UeP2TY+Sb68ACFOhVi01cirRQTf1atyzTtQdZ9Q9zp8kJxqbmK1e8nxdTao3QqBP9ZZKLmEVUbZa3WPMgS47iDgZgWqfj1l2yHaS7KvFv4BrqvPBU3wvKbc1WAkFAOoHbEi9jfwjWTaJHmwJifFRS9MTa4/qH5zor3ioBzpeXZRbLlVgYE9lTtbZTSMaBPb9zez19F4eOCoeyQ9V2w9uwrdDTa0D8yGt5I3BxwbXkdO6XPXOqTW6wLSP4juTr3u1Nn+q+6sv+ldAkAH+EqPFT1jHVQf37uHhUwvclIXwmqhzpj8RMNPZ5f/CAcmdVwiaBjP3hpZtR9AUKH5ZQ0tcTJcaocJhAx98v0xKpBMu4J+LMmXyrc5VBEdrBXyjT/2w7YGs+FYHJuSGf0GkjGWDEvBm53hG+JOGbmtrXKuLhN27FATXnWxDG1z6U8KvKpOR09DESaPp1bnBCcrLSg+BIRct9xbEwnLy7MI98pIFlB99AZvqxWQAC5kmQjdZ91RZW/t63EMmx4iZD0G1Mi3i2/y1jt/XJBcNLRDFoti+CWYtgTyx0Jl68jxj9EnFS0</ds:X509Certificate></ds:X509Data><ds:KeyValue><ds:RSAKeyValue><ds:Modulus>mnXbuM+vhqF7xxMyoYTpbaHMrqbVR09nl1DJm4hXJ2fjCBHOLylB3NJr8jiyjiYRP0p8uc69EdGJfClmxtjiB2f2nRqI9t+/LMXIaAYmXwQNHbA2zUTxGgn3jM4Ej5WmizLV/p5JRtvkChvKRvD8k/paHUTYmmMMYTgdktGuwmBjRE9iZvTD27goqIK+/Mo+2uHjoSiyXmvKr788zbFrWrdaV/pPMdvbdj7ISKwYXg6nAE09b0jeFbVf1a9ShhZOofko98e/KpRISn3ieAIRSwnBstY9PRNYop74zl13B5/nMR/e5uFjEi3MGUuk0mhwhi4J8bDuGslUzzsW5Bfylw==</ds:Modulus><ds:Exponent>AQAB</ds:Exponent></ds:RSAKeyValue></ds:KeyValue></ds:KeyInfo><ds:Object Id="XadesObjectId-95122ee7-faeb-48a5-9a4e-2a52480733ab"><xades:QualifyingProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" Id="QualifyingProperties-a4cce415-534e-4ff1-9b3f-e9e51814600d" Target="#Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><xades:SignedProperties Id="SignedProperties-Signature-8ea91b10-ddd1-4fab-b13e-3bfa40e1654b"><xades:SignedSignatureProperties><xades:SigningTime>2026-08-31T08:55:51-06:00</xades:SigningTime><xades:SigningCertificate><xades:Cert><xades:CertDigest><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" /><ds:DigestValue>opFJDdYv6BGekTYe+niYShnrELSQARsDHWILkQZ4MPM=</ds:DigestValue></xades:CertDigest><xades:IssuerSerial><ds:X509IssuerName>CN=CA PERSONA JURIDICA, OU=DGT, O=MINISTERIO DE HACIENDA, C=CR</ds:X509IssuerName><ds:X509SerialNumber>1761859591900</ds:X509SerialNumber></xades:IssuerSerial></xades:Cert></xades:SigningCertificate><xades:SignaturePolicyIdentifier><xades:SignaturePolicyId><xades:SigPolicyId><xades:Identifier>https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica</xades:Identifier><xades:Description /></xades:SigPolicyId><xades:SigPolicyHash><ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1" /><ds:DigestValue>Ohixl6upD6av8N7pEvDABhEL6hM=</ds:DigestValue></xades:SigPolicyHash></xades:SignaturePolicyId></xades:SignaturePolicyIdentifier><xades:SignerRole><xades:ClaimedRoles><xades:ClaimedRole>ObligadoTributario</xades:ClaimedRole></xades:ClaimedRoles></xades:SignerRole></xades:SignedSignatureProperties><xades:SignedDataObjectProperties><xades:DataObjectFormat ObjectReference="#Reference-a00e3fce-03a3-4bda-bc75-0f0442e29f96"><xades:MimeType>text/xml</xades:MimeType><xades:Encoding>UTF-8</xades:Encoding></xades:DataObjectFormat></xades:SignedDataObjectProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object></ds:Signature></NotaCreditoElectronica>

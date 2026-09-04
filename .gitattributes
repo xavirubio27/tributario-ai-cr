@@ -1,0 +1,3 @@
+# Fixtures fiscales reales: bytes exactos, nunca normalizados.
+# Sus SHA-256 son parte del contrato de los tests golden; core.autocrlf los rompería.
+backend/tests/fixtures/fiscal/**/*.xml -text
