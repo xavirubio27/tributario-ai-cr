@@ -62,6 +62,7 @@
 | [ADR-037](#adr-037) | Almacenamiento y huella del artefacto de origen | ✅ |
 | [ADR-038](#adr-038) | Autorización de escritura fiscal | ✅ |
 | [ADR-039](#adr-039) | La fecha de emisión puede no declarar desplazamiento | ✅ |
+| [ADR-040](#adr-040) | Los esquemas oficiales se versionan en el repositorio | ✅ |
 
 ---
 ---
@@ -2084,3 +2085,212 @@ E2 y E3 asumieron desplazamiento explícito siempre; era una asunción razonable
 escrita como tal. **Los fixtures reales de E4-A2 la desmintieron.** La migración
 `20260831181500_support_offsetless_fiscal_issue_datetime` adapta el modelo sin editar
 ninguna migración histórica y sin inventar zona horaria alguna.
+
+---
+
+<a id="adr-040"></a>
+## ADR-040 — Los esquemas oficiales se versionan en el repositorio
+
+**Estado:** ✅ Aceptada (Día 3, fase E4-A2 · subfase A2-C) · **Criticidad: media**
+
+### Contexto
+
+Hasta A2-C, toda afirmación sobre los XSD oficiales descansaba en inspecciones reales pero
+**irrepetibles**: los ficheros vivían en un directorio temporal que desapareció. Cuando
+A2-B2 quiso volver a comprobar el hallazgo de `xs:dateTime`, no pudo — y una evidencia que
+no se puede repetir no es evidencia, es memoria.
+
+A eso se sumaban dos obstáculos concretos:
+
+1. El CDN `cdn.comprobanteselectronicos.go.cr` devuelve **HTTP 403** a peticiones
+   programáticas.
+2. Los cinco esquemas importan `../../xmldsig-core-schema.xsd`, y **Hacienda no publica ese
+   fichero en esa ruta** (HTTP 404, verificado el 2026-09-03). Sin él, **ningún** esquema
+   compila: la validación fallaba entera y el error —«failed to load external entity»—
+   parecía decir que los XML eran inválidos cuando el problema era el esquema.
+
+### Decisión
+
+**Los esquemas oficiales se versionan, byte-exactos, dentro del repositorio.**
+
+```
+backend/resources/fiscal/xsd/cr/
+├── MANIFEST.json                 procedencia, huellas y dependencias
+├── xmldsig-core-schema.xsd       W3C — dependencia de los cinco
+└── esquemas/v4_4/
+    ├── FacturaElectronica_V4.4.xsd
+    ├── TiqueteElectronico_V4.4.xsd
+    ├── NotaCreditoElectronica_V4.4.xsd
+    ├── NotaDebitoElectronica_V4.4.xsd
+    └── MensajeHacienda_V4.4.xsd
+```
+
+**Fuera de `tests/`**, en `resources/`: son recursos de dominio reutilizables, no material
+de prueba. El parser de producción usará estos mismos ficheros.
+
+**La profundidad de directorios no es arbitraria.** Reproduce la que los esquemas
+oficiales esperan: desde `esquemas/v4_4/X.xsd`, `../../xmldsig-core-schema.xsd` resuelve a
+la raíz del paquete. Así el import funciona **sin editar los ficheros oficiales** y sin
+instalar un resolutor a medida. Los XSD se conservan intactos; adaptar el entorno es
+correcto, adaptar la fuente no lo sería.
+
+**Procedencia, por autoridad separada:**
+
+| Artefacto | Autoridad | Origen |
+|---|---|---|
+| Los 5 esquemas v4.4 | Ministerio de Hacienda (ATV) | `atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/` |
+| `xmldsig-core-schema.xsd` | **W3C** | `www.w3.org/TR/2002/REC-xmldsig-core-20020212/` |
+
+El XMLDSIG **no** se toma de Hacienda: Hacienda no lo sirve, y su autoridad canónica es el
+W3C, que es quien define el namespace `http://www.w3.org/2000/09/xmldsig#`.
+
+**Integridad anclada al pasado.** Las huellas de los cinco esquemas descargados hoy
+**coinciden con las que E0 registró el 2026-08-29** desde una descarga independiente. No es
+solo que el fichero no haya cambiado desde que lo copiamos: es que es el mismo artefacto
+oficial que analizamos entonces.
+
+**Validación sin red.** `lxml` sobre libxml2, con `no_network`, `load_dtd` y
+`resolve_entities` desactivados. El esquema del W3C declara un subconjunto DTD interno,
+pero **sus entidades no se usan en el cuerpo** —verificado—, así que compila igualmente.
+
+A eso se añade una **política de recursos** propia registrada en el parser: solo resuelve
+ficheros dentro del paquete y rechaza explícitamente `http`, `https`, `ftp` y cualquier
+ruta local fuera de él. `no_network` vive dentro de libxml2 y no deja rastro; la política
+sí registra cada intento, de modo que la afirmación «no se salió a la red» es una
+**observación**, no una confianza. El test que lo prueba parte de estado limpio —sin
+esquemas en caché— e intercepta además `socket.socket.connect`,
+`socket.create_connection` y `socket.getaddrinfo`.
+
+### Alcance del validador: XSD 1.0 frente a `vc:minVersion="1.1"`
+
+Los cinco esquemas de Hacienda declaran `vc:minVersion="1.1"`, y **libxml2 es un validador
+de XSD 1.0**. La diferencia importa: si un esquema usara una construcción exclusiva de 1.1,
+libxml2 no la aplicaría **en silencio**, y estaríamos validando menos de lo que creemos.
+
+Verificado que no ocurre. Ninguno de los seis artefactos usa `xs:assert`, `xs:assertion`,
+`xs:alternative`, `xs:openContent`, `xs:override`, `explicitTimezone`, `notQName`,
+`notNamespace`, `defaultAttributes` ni `inheritable`; `vc:` no aparece fuera del elemento
+`<xs:schema>`. Es decir: **declaran 1.1 pero emplean un subconjunto que 1.0 cubre**, y por
+eso los seis compilan y los 24 comprobantes validan.
+
+**Esto no es una garantía general de conformidad con XSD 1.1.** Es una afirmación acotada
+a los esquemas versionados hoy.
+
+### La garantía frente al futuro no es un escáner
+
+Sería tentador confiar en la comprobación anterior —«ningún esquema usa construcciones de
+1.1»— como defensa permanente. **No lo es, y prometerlo sería falso.** Esa lista cubre
+construcciones *conocidas*; las diferencias entre XSD 1.0 y 1.1 no se agotan en una lista,
+y ampliarla no la volvería exhaustiva. Un escáner incompleto que se presenta como garantía
+es peor que no tenerlo: da seguridad sin darla.
+
+**La garantía real es una puerta que se cierra sola:**
+
+```
+el validador esta aprobado UNICAMENTE para el paquete XSD exacto revisado en A2-C
+        │
+cambia un byte de cualquiera de los seis artefactos
+        ↓
+cambia el fingerprint  →  FALLO determinista  →  REVISION HUMANA
+```
+
+**Fingerprint canónico**, ajeno al sistema de ficheros —sin `mtime`, sin orden del
+directorio, sin rutas absolutas, sin depender del orden del manifiesto—:
+
+1. SHA-256 de los bytes de cada artefacto;
+2. entradas ordenadas por `artifact id`;
+3. concatenar `"{artifact_id}:{sha256}\n"`;
+4. SHA-256 de esa secuencia en UTF-8.
+
+El digest aprobado vive en `backend/tests/support/xsd_bundle_policy.py`, **fuera del
+`MANIFEST.json`** y a propósito: si estuviera en los metadatos de procedencia, quien
+regenerase el manifiesto junto a los esquemas abriría la puerta sin darse cuenta. Un test
+comprueba además que el digest **no** aparece en el manifiesto.
+
+### La aprobación cubre también la membresía física
+
+El fingerprint por sí solo protege **bytes de artefactos declarados**, y eso deja dos
+huecos: un séptimo `.xsd` que nadie declare pasaría inadvertido, y un fichero renombrado o
+movido conservando id y bytes también. La ubicación no es cosmética —determina cómo
+resuelve `../../xmldsig-core-schema.xsd`—, así que forma parte de lo aprobado.
+
+**Superficie gobernada: todo `*.xsd` bajo la raíz del paquete**, no solo lo que el
+manifiesto mencione. Un esquema no declarado sigue estando en el disco, y un import futuro
+podría alcanzarlo.
+
+La aprobación cubre cuatro dimensiones, y cualquiera que cambie cierra la puerta:
+
+| Dimensión | Aprobada en |
+|---|---|
+| conjunto exacto de artefactos | `APPROVED_SCHEMA_ARTIFACTS` |
+| identidad `artifact_id` | `APPROVED_SCHEMA_ARTIFACTS` |
+| ruta relativa exacta | `APPROVED_SCHEMA_ARTIFACTS` |
+| bytes exactos | `APPROVED_VALIDATOR_BUNDLE_SHA256` |
+
+`verify_approved_schema_bundle(schema_root)` es la puerta única: descubre físicamente los
+`.xsd`, exige que el conjunto de rutas sea **exactamente** el aprobado, comprueba que el
+manifiesto asocie cada id a la misma ruta que la política, y solo entonces valida el
+fingerprint. Opera sobre cualquier raíz, de modo que las pruebas de mutación ejercitan
+**este mismo mecanismo** sobre una copia temporal, no una simulación en memoria.
+
+**El `MANIFEST.json` no define qué es el paquete aprobado.** Es metadato de procedencia e
+integridad: debe concordar con la política y con el disco, pero no puede autorizar nada por
+sí mismo. Verificado con un caso deliberado: renombrar un esquema **y** actualizar el
+manifiesto para que apunte a la ruta nueva con el mismo id y los mismos bytes deja el
+paquete internamente coherente — y **falla igualmente**, porque la política vive fuera.
+
+**Ningún enlace simbólico dentro del paquete gobernado**, apunte donde apunte. La política
+no distingue interno de externo: la sola presencia de un enlace basta para rechazar.
+
+Cubre cuatro sitios: la **raíz** entregada a la puerta, cualquier **directorio**, cualquier
+**fichero**, y el propio **`MANIFEST.json`**. La raíz se comprueba **antes** de resolver
+nada — resolver primero y aceptar después equivaldría a tratar un enlace como raíz normal.
+
+**La inspección recorre el árbol completo sin seguir enlaces** (`os.walk(followlinks=False)`),
+mirando explícitamente los nombres de directorio antes de descender. No basta con que el
+recorrido decida no seguirlos: la puerta tiene que *ver* el enlace para rechazarlo.
+
+Esto corrige un hueco real: `rglob("*.xsd")` no ve un directorio enlazado cuyo nombre no
+acabe en `.xsd`, ni desciende por él. Un `linked_dir -> /fuera/` con un esquema dentro
+quedaba invisible y el paquete pasaba la puerta.
+
+**Alcance de la garantía, dicho sin exagerar.** Lo que se afirma es exactamente esto y nada
+más: la raíz no puede ser un enlace · no se admite ningún enlace bajo la raíz ·
+`MANIFEST.json` no puede ser un enlace · el conjunto y las rutas de los `.xsd` regulares
+están aprobados · los bytes revisados están aprobados. **No** se afirma resistencia frente a
+enlaces duros, *junctions*, puntos de montaje ni condiciones de carrera del sistema de
+ficheros: eso queda fuera del modelo de amenazas de A2-C.
+
+Un paquete nuevo falla **aunque compile, aunque no contenga ninguna construcción que el
+escáner conozca y aunque los 24 fixtures sigan validando**: la aprobación es de bytes, no
+de comportamiento observado. Eso obliga a revisar conscientemente la versión de XSD, las
+construcciones nuevas, la idoneidad de `lxml`/libxml2, el grafo de dependencias, los
+fixtures y la documentación.
+
+**El escáner de construcciones 1.1 se conserva como diagnóstico**, no como garantía: ayuda
+a explicar *por qué* algo dejó de encajar, pero no es lo que protege.
+
+### Consecuencias
+
+Un clon limpio puede validar los 24 comprobantes reales **sin acceso a internet y sin un
+solo fichero fuera del repositorio**. La afirmación de [ADR-039](#adr-039) sobre
+`xs:dateTime` deja de ser un recuerdo y pasa a ser un test.
+
+**Lo que esto NO es.** La validación XSD comprueba **estructura**, no criptografía. Que un
+`ds:Signature` sea conforme al esquema **no dice nada** sobre si la firma es válida: eso
+exige verificar digest y cadena de certificación, y no está en el alcance de A2-C.
+
+**Coste asumido:** ~500 KB de esquemas en el repositorio, y la obligación de revisar el
+paquete si Hacienda publica una revisión. El `MANIFEST.json` existe precisamente para que
+esa revisión sea detectable en lugar de silenciosa —el mismo razonamiento de
+[ADR-026](#adr-026)—.
+
+### Alternativas descartadas
+
+| Alternativa | Por qué no |
+|---|---|
+| Descargar los XSD en cada ejecución | Ata los tests a la disponibilidad de Hacienda y a la red; el CDN ya devuelve 403 |
+| Cachear en un directorio temporal | Es exactamente lo que falló: el scratchpad desapareció y la evidencia con él |
+| Usar un espejo no oficial | Ningún tercero es autoridad fiscal. Solo valdría como contraste |
+| Editar el `schemaLocation` de los XSD | Rompe la huella y convierte un artefacto oficial en uno nuestro |
+| Reescribir el XMLDSIG para quitarle el DOCTYPE | Misma objeción, y además innecesario: sus entidades no se usan |

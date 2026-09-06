@@ -1,3 +1,7 @@
 # Fixtures fiscales reales: bytes exactos, nunca normalizados.
 # Sus SHA-256 son parte del contrato de los tests golden; core.autocrlf los rompería.
 backend/tests/fixtures/fiscal/**/*.xml -text
+
+# Esquemas oficiales v4.4: artefactos de origen, byte-exactos. Sus SHA-256 son
+# el contrato de procedencia; core.autocrlf los rompería igual que a los fixtures.
+backend/resources/fiscal/xsd/**/*.xsd -text

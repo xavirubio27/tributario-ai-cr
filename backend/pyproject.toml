@@ -18,6 +18,12 @@ dependencies = [
 dev = [
     "pytest==9.1.1",
     "httpx==0.28.1",
+    # Validacion XSD contra los esquemas oficiales v4.4 versionados en
+    # backend/resources/fiscal/xsd/. libxml2 cubre XSD 1.0 por completo y
+    # permite desactivar red, DTD y entidades externas de forma explicita.
+    # Hoy solo lo usan los tests; pasara a dependencia principal cuando el
+    # parser de produccion lo necesite.
+    "lxml==6.0.2",
 ]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,102 @@
+{
+  "manifest_version": 1,
+  "description": "Esquemas oficiales de comprobantes electronicos v4.4 de Costa Rica, versionados byte-exactos para validacion reproducible sin red.",
+  "layout_note": "La profundidad de directorios reproduce la que esperan los esquemas oficiales: desde esquemas/v4_4/X.xsd, '../../xmldsig-core-schema.xsd' resuelve a la raiz de este bundle. Asi los ficheros oficiales NO se modifican.",
+  "schemas": [
+    {
+      "id": "cr.fe.v4_4",
+      "root": "FacturaElectronica",
+      "path": "esquemas/v4_4/FacturaElectronica_V4.4.xsd",
+      "namespace": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica",
+      "source_url": "https://atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/FacturaElectronica_V4.4.xsd",
+      "version": "4.4",
+      "source_authority": "Ministerio de Hacienda de Costa Rica (ATV)",
+      "retrieved": "2026-09-03",
+      "dependencies": [
+        "w3c.xmldsig"
+      ],
+      "kind": "comprobante",
+      "bytes": 118624,
+      "sha256": "d384afef665573606f6499b2182d6070850ada8c93bc40fa7f0f3901a25b9cc8"
+    },
+    {
+      "id": "cr.te.v4_4",
+      "root": "TiqueteElectronico",
+      "path": "esquemas/v4_4/TiqueteElectronico_V4.4.xsd",
+      "namespace": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/tiqueteElectronico",
+      "source_url": "https://atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/TiqueteElectronico_V4.4.xsd",
+      "version": "4.4",
+      "source_authority": "Ministerio de Hacienda de Costa Rica (ATV)",
+      "retrieved": "2026-09-03",
+      "dependencies": [
+        "w3c.xmldsig"
+      ],
+      "kind": "comprobante",
+      "bytes": 116845,
+      "sha256": "cda1c7dd97f9a235111c29948f05d7893864663cd73792fd3b51e3dae582cfdb"
+    },
+    {
+      "id": "cr.nc.v4_4",
+      "root": "NotaCreditoElectronica",
+      "path": "esquemas/v4_4/NotaCreditoElectronica_V4.4.xsd",
+      "namespace": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica",
+      "source_url": "https://atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/NotaCreditoElectronica_V4.4.xsd",
+      "version": "4.4",
+      "source_authority": "Ministerio de Hacienda de Costa Rica (ATV)",
+      "retrieved": "2026-09-03",
+      "dependencies": [
+        "w3c.xmldsig"
+      ],
+      "kind": "comprobante",
+      "bytes": 121916,
+      "sha256": "9af7dff4ee0c2787f8fc30cb63aef37b574c96846007be327d442e30e0ddf804"
+    },
+    {
+      "id": "cr.nd.v4_4",
+      "root": "NotaDebitoElectronica",
+      "path": "esquemas/v4_4/NotaDebitoElectronica_V4.4.xsd",
+      "namespace": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaDebitoElectronica",
+      "source_url": "https://atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/NotaDebitoElectronica_V4.4.xsd",
+      "version": "4.4",
+      "source_authority": "Ministerio de Hacienda de Costa Rica (ATV)",
+      "retrieved": "2026-09-03",
+      "dependencies": [
+        "w3c.xmldsig"
+      ],
+      "kind": "comprobante",
+      "bytes": 121934,
+      "sha256": "ac2c63f93602502af22980a81f26032c6a561ed3a8c516ac28184ce1433b7b61"
+    },
+    {
+      "id": "cr.mh.v4_4",
+      "root": "MensajeHacienda",
+      "path": "esquemas/v4_4/MensajeHacienda_V4.4.xsd",
+      "namespace": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/mensajeHacienda",
+      "source_url": "https://atv.hacienda.go.cr/ATV/ComprobanteElectronico/docs/esquemas/2024/v4.4/MensajeHacienda_V4.4.xsd",
+      "version": "4.4",
+      "source_authority": "Ministerio de Hacienda de Costa Rica (ATV)",
+      "retrieved": "2026-09-03",
+      "dependencies": [
+        "w3c.xmldsig"
+      ],
+      "kind": "mensaje",
+      "bytes": 7790,
+      "sha256": "411d858b0e2e293322910a0d4204243d34a874a6e7939c7c492721246900f390"
+    },
+    {
+      "id": "w3c.xmldsig",
+      "root": null,
+      "path": "xmldsig-core-schema.xsd",
+      "namespace": "http://www.w3.org/2000/09/xmldsig#",
+      "version": "2002-02-12 (REC xmldsig-core)",
+      "kind": "dependency",
+      "source_authority": "World Wide Web Consortium (W3C)",
+      "source_url": "https://www.w3.org/TR/2002/REC-xmldsig-core-20020212/xmldsig-core-schema.xsd",
+      "retrieved": "2026-09-03",
+      "dependencies": [],
+      "note": "Importado por los cinco esquemas de Hacienda como '../../xmldsig-core-schema.xsd'. Hacienda NO lo publica en esa ruta (HTTP 404 el 2026-09-03), por lo que se toma del W3C, que es su autoridad can\u00f3nica. Declara un subconjunto DTD interno cuyas entidades NO se usan en el cuerpo: se carga con DTD y red deshabilitadas.",
+      "bytes": 10293,
+      "sha256": "35cf8197da812c85e40d57891b35c94187569ed474a2dac813ce5090dafcd35c"
+    }
+  ]
+}

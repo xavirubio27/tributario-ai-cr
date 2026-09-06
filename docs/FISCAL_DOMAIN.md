@@ -386,16 +386,25 @@ un comprobante— y se pierde al normalizar a UTC. La conclusión de diseño es 
 instante y el desplazamiento original son **dos datos distintos**, y el XML crudo
 conserva la forma literal en cualquier caso. Ver [ADR-039](DECISIONS.md#adr-039).
 
-> **Frontera de la evidencia.** La afirmación sobre el XSD —`FechaEmision` declarado como
-> `xs:dateTime` puro, sin `xs:pattern`, sin `simpleType` propio y sin `explicitTimezone`—
-> procede de una **inspección real de los XSD oficiales v4.4 realizada en A2-B1**, y quedó
-> transcrita en [ADR-039](DECISIONS.md#adr-039) y en la cabecera de la migración de fechas.
+> **Evidencia reproducible desde A2-C.** La afirmación sobre el XSD **ya no descansa en
+> una inspección irrepetible**: los esquemas oficiales están versionados en
+> `backend/resources/fiscal/xsd/cr/` con su manifiesto de procedencia
+> ([ADR-040](DECISIONS.md#adr-040)), y los tests la comprueban en cada ejecución, sin red.
 >
-> **Hoy no es reproducible desde un clon limpio de este repositorio**: los XSD oficiales no
-> están versionados aquí, tampoco su dependencia `xmldsig-core-schema.xsd`, y el acceso al
-> CDN oficial no es reproducible desde el entorno de trabajo. **A2-C** se hará cargo de esa
-> verificabilidad. La conclusión de ADR-039 no se debilita —la inspección ocurrió y está
-> registrada—; lo que falta es poder repetirla sin depender de nadie.
+> El razonamiento, en el orden en que sostiene la conclusión:
+>
+> 1. `FechaEmision` es **directamente** `xs:dateTime`, sin tipo intermedio;
+> 2. `FechaEmisionIR` también, donde aparece;
+> 3. ningún `simpleType`, `pattern` ni `restriction` local los estrecha;
+> 4. en **XSD 1.0**, el huso de `xs:dateTime` es opcional por definición del tipo;
+> 5. y cuatro comprobantes reales **sin desplazamiento validan** contra estos esquemas.
+>
+> Bajo la validación efectiva que realizamos —XSD 1.0 sobre libxml2— el huso es
+> **OPCIONAL**. El punto 5 es el más fuerte: es conductual y no depende de interpretar
+> facetas. **No se usa la ausencia de `explicitTimezone` como prueba**: es una faceta de
+> XSD 1.1 que este validador no aplicaría, así que su ausencia no demostraría nada. Se
+> comprueba, eso sí, que ningún esquema use construcciones de 1.1, para que libxml2 no
+> esté ignorando reglas en silencio.
 
 *(El ejemplo oficial escribe `+06:00` mientras Costa Rica es UTC−6. Es **un ejemplo de
 la sintaxis RFC3339, no una regla de zona horaria**: el documento ilustra el formato

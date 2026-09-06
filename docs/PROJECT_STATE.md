@@ -33,14 +33,15 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
   Phase E3 — First Fiscal Migration — COMPLETED
   Phase E4-A — Real XML Fixture Intake & Baseline — COMPLETED
   Phase E4-B0 — Real Fixture Compatibility Fix — COMPLETED
-  Phase E4-A2 — Real Fixture Expansion — IN PROGRESS
+  Phase E4-A2 — Real Fixture Expansion — COMPLETED
     · A2-A: intake, clasificación y auditoría de diversidad — COMPLETED
     · A2-B: organización, golden set y alta de Nota de Crédito — COMPLETED
     · A2-B0: document_type admite TiqueteElectronico — COMPLETED
     · A2-B1: semántica de fecha de origen y endurecimiento de contratos — COMPLETED
     · A2-B2: vocabulario exacto, docs de FechaEmisionIR y contrato de los golden originales — COMPLETED
-    · A2-C: validación XSD reproducible — NOT STARTED / NEXT
-Next: A2-C. E4-A2 sigue IN PROGRESS porque A2-C no ha empezado. El parser aún no existe.
+    · A2-C: validación XSD reproducible — COMPLETED
+  Parser fiscal de producción — NEXT / NOT STARTED
+Next: el parser de producción. Todavía no existe.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -527,11 +528,11 @@ una migración correctiva.
 Las otras 18 restricciones de forma son fieles a la fuente o deliberadamente más
 permisivas.
 
-### E4-A2 — Real Fixture Expansion · IN PROGRESS
+### E4-A2 — Real Fixture Expansion · COMPLETED
 
-**A2-A, A2-B, A2-B0, A2-B1 y A2-B2 cerradas** — auditoría independiente de Codex
-`CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0`. **A2-C es lo siguiente y no ha empezado**, por
-eso E4-A2 no se marca COMPLETED.
+**Las seis subfases cerradas** —A2-A, A2-B, A2-B0, A2-B1, A2-B2 y A2-C— con auditoría
+independiente de Codex `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0`. **Lo siguiente es el
+parser fiscal de producción, que no ha empezado.**
 
 #### Resultado consolidado del bloque A2-B
 
@@ -615,26 +616,82 @@ Los 24 XML **no** son golden. La distinción es deliberada:
 Nada se elimina: el corpus permanece en Git. Lo que no procede es llamar «golden» a los 24,
 porque solo 10 tienen contrato de bytes verificado.
 
-#### A2-C — Frontera de la evidencia XSD · NOT STARTED
+#### A2-C — Validación XSD reproducible · COMPLETED
 
-**A2-B1 inspeccionó los XSD oficiales v4.4 y registró el hallazgo de `xs:dateTime`.** Esa
-inspección fue real y está transcrita en [ADR-039](DECISIONS.md#adr-039) y en la cabecera
-de la migración de fechas.
-
-**Pero hoy esa evidencia no es reproducible desde un clon limpio del repositorio:**
+**Los esquemas oficiales están versionados en el repositorio**
+([ADR-040](DECISIONS.md#adr-040)). Lo que en A2-B2 era una limitación declarada, ahora es
+un test.
 
 ```
-XSD oficiales v4.4         NO versionados en el repo
-xmldsig-core-schema.xsd    NO versionado (import que impide compilar los XSD)
-CDN oficial                no reproducible desde el entorno de trabajo
+backend/resources/fiscal/xsd/cr/
+├── MANIFEST.json              procedencia · huellas · dependencias
+├── xmldsig-core-schema.xsd    W3C · dependencia de los cinco
+└── esquemas/v4_4/             FE · TE · NC · ND · MH  (Hacienda ATV)
 ```
 
-**A2-C será dueña de:** procedencia oficial de los XSD · copias locales versionadas u otra
-adquisición reproducible · cierre de la dependencia `xmldsig` · hashes e integridad ·
-validación reproducible desde un clon limpio.
+| | |
+|---|---|
+| Procedencia | 5 esquemas de **ATV** (`atv.hacienda.go.cr`, HTTP 200) · XMLDSIG del **W3C** |
+| Integridad | Las 5 huellas **coinciden con las que E0 registró el 2026-08-29** en una descarga independiente |
+| Dependencias | **Cerradas.** Hacienda **no publica** el `xmldsig-core-schema.xsd` que sus propios esquemas importan (HTTP 404): se toma de su autoridad canónica, el W3C |
+| Resolución | La profundidad del paquete reproduce la oficial, así `../../xmldsig-core-schema.xsd` resuelve **sin editar los ficheros** |
+| Validador | `lxml`/libxml2 con `no_network`, `load_dtd` y `resolve_entities` desactivados, **más una política de recursos** que solo admite ficheros del paquete |
+| Resultado | **6/6 esquemas compilan en solitario · 24/24 validan** —FE 11/11 · TE 1/1 · NC 1/1 · MH 11/11—, desde estado limpio, con la red interceptada y **0 intentos de red** |
 
-Esto **no debilita** ninguna conclusión vigente: la inspección ocurrió y quedó registrada.
-Lo que falta es poder repetirla sin depender de un scratchpad ni de un acceso externo.
+**El hallazgo temporal ya es reproducible:** `FechaEmision` y `FechaEmisionIR` son
+`xs:dateTime` puro en los cuatro esquemas de comprobante, sin patrón, sin restricción
+propia y **sin `explicitTimezone` en ninguno**. Requisito de huso del XSD = **OPCIONAL**,
+que es justo lo que sostiene [ADR-039](DECISIONS.md#adr-039). La confirmación conductual:
+**los 4 comprobantes sin desplazamiento validan**.
+
+**Validación XSD ≠ verificación criptográfica.** Que un `ds:Signature` sea conforme al
+esquema no dice nada sobre si la firma es válida; eso exige digest y cadena de
+certificación, y no está en el alcance de A2-C.
+
+**Salvedad de versión.** Los esquemas declaran `vc:minVersion="1.1"` y libxml2 valida
+**XSD 1.0**. Verificado que ninguno usa construcciones exclusivas de 1.1, así que el
+subconjunto que emplean queda cubierto — pero **no se afirma conformidad general con
+1.1**. Por lo mismo, la ausencia de `explicitTimezone` **no** se usa como prueba de nada:
+es faceta de 1.1.
+
+**Puerta de compatibilidad (A2-C-R2).** El paquete está **anclado por fingerprint**: el
+validador está aprobado solo para esos seis artefactos exactos.
+
+```
+cambia un byte  →  cambia el fingerprint  →  FALLO  →  revisión humana
+```
+
+Falla **aunque el paquete nuevo compile, no contenga construcciones conocidas y los 24
+fixtures sigan validando**: se aprueban bytes, no comportamiento.
+
+**Membresía física exacta (A2-C-R3).** La aprobación no cubre solo bytes, sino cuatro
+dimensiones: **conjunto · identidad · ruta relativa · bytes**. La superficie gobernada es
+**todo `*.xsd` bajo la raíz del paquete**, no solo lo declarado en el manifiesto.
+
+```
+añadir un .xsd · quitarlo · renombrarlo · moverlo · cambiar sus bytes  →  FALLO
+```
+
+Un renombrado que conserve id y bytes **y** actualice el manifiesto para ser coherente
+**también falla**: la política vive fuera del manifiesto, que es metadato de procedencia y
+no puede autorizar nada por sí mismo.
+
+**Enlaces simbólicos (A2-C-R4).** Ninguno se admite en el paquete —raíz, directorios,
+ficheros y `MANIFEST.json`—, apunte donde apunte. El recorrido inspecciona el árbol
+**completo** sin seguir enlaces, no solo los `*.xsd`: `rglob` no veía un directorio
+enlazado cuyo nombre no acabara en `.xsd` ni bajaba por él, así que un `linked_dir ->
+/fuera/` con un esquema dentro quedaba invisible y el paquete pasaba. Corregido y fijado
+con ocho tests.
+
+Se afirma exactamente eso, no más: **no** se reclama resistencia frente a enlaces duros,
+*junctions*, montajes ni carreras del sistema de ficheros.
+
+La puerta es una sola función, `verify_approved_schema_bundle(schema_root)`, y las pruebas
+de mutación la ejecutan sobre una **copia temporal real** del paquete, no sobre estructuras
+en memoria. El escáner de construcciones 1.1 queda como **diagnóstico, no exhaustivo**.
+
+**Nota de Débito:** su esquema está incorporado y compila, pero **no hay comprobante real**.
+El hueco sigue **ABIERTO** y no se inventa ningún fixture.
 
 #### A2-B2 — Remediación final de los tres MEDIUM
 
