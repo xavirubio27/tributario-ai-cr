@@ -40,8 +40,11 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
     · A2-B1: semántica de fecha de origen y endurecimiento de contratos — COMPLETED
     · A2-B2: vocabulario exacto, docs de FechaEmisionIR y contrato de los golden originales — COMPLETED
     · A2-C: validación XSD reproducible — COMPLETED
-  Parser fiscal de producción — NEXT / NOT STARTED
-Next: el parser de producción. Todavía no existe.
+Checkpoint E — Fase E4-B · Parser Fiscal de Producción
+  B0  — contrato y arquitectura del parser — COMPLETED
+  B0.1 — nulabilidad de la identificación del receptor — COMPLETED
+  B1  — implementación del parser — NEXT / NOT STARTED
+Next: B1. El parser de producción todavía no existe.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -830,6 +833,69 @@ Auth acumulados. No se borra nada ahora: queda registrado como deuda conocida, f
 alcance de esta fase. Lo que sí está demostrado es que **E4-B0 no aporta crecimiento**:
 sus ejecuciones dejan 0 residuo fiscal, 0 empresas, 0 membresías y 0 usuarios de Auth
 nuevos.
+
+---
+
+## Checkpoint E — Fase E4-B · Parser Fiscal de Producción
+
+### B0 — Contrato y arquitectura · COMPLETED
+
+Diseño, sin implementación. El parser será **puro**: `bytes → resultado tipado`, sin
+tocar la base de datos, sin LLM, sin Tax Engine, y **sin producir una sola cifra
+calculada** —solo `reported_*`—. Entrada: únicamente los bytes; el tipo se deriva de
+`(raíz, namespace)`, nunca del nombre del fichero. `company_id` **no** forma parte de su
+salida: es contexto de tenencia, no un dato del comprobante.
+
+`MensajeHacienda` queda **fuera** del parser de comprobantes: no tiene líneas ni totales,
+y forzarlo en las siete entidades rompería su semántica.
+
+### B0.1 — El receptor puede no estar identificado · COMPLETED
+
+Auditoría independiente de Codex `CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0`.
+
+**B0 destapó una restricción nuestra más estricta que la fuente oficial.** Leído de los
+XSD versionados:
+
+```
+tipo   Emisor/Identificacion   Receptor    Receptor/Identificacion
+FE     obligatoria             min=1       obligatoria
+TE     obligatoria             min=0       OPCIONAL si el receptor existe
+NC     obligatoria             min=0       OPCIONAL si el receptor existe
+ND     obligatoria             min=0       OPCIONAL si el receptor existe
+
+en los cuatro: si Identificacion existe → Tipo y Numero son obligatorios
+por tanto el receptor solo admite dos estados: ambos presentes o ambos ausentes
+```
+
+En Tiquete, Nota de Crédito y Nota de Débito, un `Receptor` **nombrado y sin
+identificar** es válido — coherente con que el tiquete sea el comprobante del consumidor
+final. `document_parties` lo rechazaba por `NOT NULL`.
+
+**Raíz del defecto: el modelo lógico**, que dedujo `1..1` mirando solo la Factura. El
+`NOT NULL` físico implementaba fielmente lo que el modelo decía; el modelo era más
+estricto que el XSD. Corregidos ambos.
+
+Migración `20260906101500_allow_unidentified_receiver_party`: relaja **solo** esas dos
+columnas y añade un `CHECK` que preserva las reglas reales —emisor siempre identificado;
+receptor, entero o nada—, porque `IdentificacionType` exige `Tipo` y `Numero` juntos y un
+estado a medias no existe en la fuente. Intactos: PK, FK compuesta por tenant, UNIQUE por
+rol, los `CHECK` de formato, los índices, RLS y sus tres políticas. `legal_name` sigue
+`NOT NULL`.
+
+**La ausencia se guarda como `NULL`.** No se sintetiza un «consumidor final», ni ceros,
+ni cadena vacía, ni se hereda la identificación del emisor o de la empresa-tenant.
+
+**Modelo físico alineado (R1).** La matriz física seguía describiendo ambas columnas como
+`NOT NULL`, que era el estado anterior a la migración. Corregidas las cuatro filas
+canónicas y añadida **§21.2**, que documenta el invariante real —nullable en la columna,
+obligatoriedad por `role`— y la cadena de garantía de la Factura: su `Receptor/Identificacion`
+es obligatorio **en el XSD**, y esa regla la impone la validación, no un `NOT NULL` que
+duplicaría la misma verdad en dos sitios.
+
+**Hueco de cobertura, explícito:** el caso es oficialmente válido y la base ya lo
+representa, pero **ningún comprobante real del corpus lo contiene** —el único TE no trae
+`Receptor` en absoluto—. No se reclama cobertura de fixture real y no se inventa ninguno;
+un test falla si algún día aparece uno, para obligar a reclasificarlo.
 
 ---
 

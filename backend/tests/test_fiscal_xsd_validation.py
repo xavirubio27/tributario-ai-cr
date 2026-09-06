@@ -967,3 +967,101 @@ def test_el_recorrido_no_sigue_los_enlaces_de_directorio(paquete_temporal, tmp_p
     with pytest.raises(policy.BundleRechazado) as exc:
         policy.rechazar_symlinks(paquete_temporal)
     assert "bucle" in str(exc.value)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# La nulabilidad de la identificación está anclada al XSD oficial (B0.1)
+#
+# La regla de `fiscal.document_parties` no sale de una opinión: sale de la
+# cardinalidad que declaran los esquemas versionados. Si Hacienda la cambiara,
+# estos tests fallarían y obligarían a revisar el esquema físico.
+# ─────────────────────────────────────────────────────────────────────────────
+
+XS = "{http://www.w3.org/2001/XMLSchema}"
+
+# Expectativa declarada aparte de la lectura, para que el test no sea
+# tautológico: se afirma qué esperamos, y se comprueba contra el XSD real.
+CARDINALIDAD_PARTES_ESPERADA = {
+    # schema_id: (Identificacion del Emisor, Identificacion del Receptor)
+    "cr.fe.v4_4": ("1", "1"),
+    "cr.te.v4_4": ("1", "0"),
+    "cr.nc.v4_4": ("1", "0"),
+    "cr.nd.v4_4": ("1", "0"),
+}
+
+
+def _min_occurs_en_tipo(schema_id: str, nombre_tipo: str, hijo: str) -> str | None:
+    """Lee `minOccurs` de un hijo dentro de un `complexType` con nombre."""
+    entrada = next(e for e in fx.entries() if e.id == schema_id)
+    doc = etree.parse(str(fx.BUNDLE / entrada.path), parser=fx._parser())
+    for ct in doc.getroot().iter(f"{XS}complexType"):
+        if ct.get("name") != nombre_tipo:
+            continue
+        for el in ct.iter(f"{XS}element"):
+            if el.get("name") == hijo:
+                return el.get("minOccurs", "1")
+    return None
+
+
+@pytest.mark.parametrize("schema_id", sorted(CARDINALIDAD_PARTES_ESPERADA))
+def test_la_identificacion_del_emisor_es_obligatoria_en_el_xsd(schema_id):
+    """El emisor va identificado en los cuatro tipos: nunca se relaja."""
+    esperado, _ = CARDINALIDAD_PARTES_ESPERADA[schema_id]
+    assert _min_occurs_en_tipo(schema_id, "EmisorType", "Identificacion") == esperado
+
+
+@pytest.mark.parametrize("schema_id", sorted(CARDINALIDAD_PARTES_ESPERADA))
+def test_la_identificacion_del_receptor_sigue_la_cardinalidad_esperada(schema_id):
+    """Obligatoria en FE; **opcional** en TE, NC y ND.
+
+    Es la evidencia que justifica que `identification_type_code` e
+    `identification_number` sean nullable en `fiscal.document_parties`.
+    """
+    _, esperado = CARDINALIDAD_PARTES_ESPERADA[schema_id]
+    assert _min_occurs_en_tipo(schema_id, "ReceptorType", "Identificacion") == esperado
+
+
+@pytest.mark.parametrize("schema_id", sorted(CARDINALIDAD_PARTES_ESPERADA))
+def test_identificacion_exige_tipo_y_numero_juntos(schema_id):
+    """Si el nodo existe, sus dos hijos son obligatorios.
+
+    De ahí que un estado parcial —tipo sin número, o número sin tipo— sea
+    imposible en la fuente, y que el `CHECK` de la base lo impida también.
+    """
+    for hijo in ("Tipo", "Numero"):
+        assert _min_occurs_en_tipo(schema_id, "IdentificacionType", hijo) == "1", (
+            f"{schema_id}: Identificacion/{hijo} dejó de ser obligatorio"
+        )
+
+
+@pytest.mark.parametrize("schema_id", sorted(CARDINALIDAD_PARTES_ESPERADA))
+def test_el_nombre_de_la_parte_es_obligatorio_en_ambas(schema_id):
+    """`Nombre` es minOccurs=1 siempre: por eso `legal_name` sigue NOT NULL."""
+    for tipo_parte in ("EmisorType", "ReceptorType"):
+        assert _min_occurs_en_tipo(schema_id, tipo_parte, "Nombre") == "1"
+
+
+def test_ningun_comprobante_real_ejercita_el_receptor_sin_identificar():
+    """El hueco de cobertura queda explícito, no disimulado.
+
+    El caso es oficialmente válido y la base ya lo representa, pero **ningún
+    comprobante real del corpus lo contiene**: el único TE no trae `Receptor`
+    en absoluto. No se afirma cobertura de fixture real, y no se inventa uno.
+    """
+    import re
+
+    sin_identificar = []
+    for rel in _todos_los_fixtures():
+        datos = (FIXTURES / rel).read_bytes()
+        local, _ = fx.raiz_de(datos)
+        if local == "MensajeHacienda":
+            continue
+        texto = datos.decode("utf-8")
+        m = re.search(r"<Receptor>(.*?)</Receptor>", texto, re.S)
+        if m and "<Identificacion>" not in m.group(1):
+            sin_identificar.append(rel)
+
+    assert sin_identificar == [], (
+        f"Ya existe un comprobante real con receptor sin identificar "
+        f"({sin_identificar}): cierra el hueco de cobertura y reescribe este test"
+    )

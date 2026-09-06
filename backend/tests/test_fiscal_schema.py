@@ -943,3 +943,142 @@ def test_la_data_api_sigue_sin_exponer_el_schema_fiscal(settings, publishable_ke
     assert response.json().get("code") == "PGRST106", (
         f"Se esperaba PGRST106. Recibido {response.status_code}: {response.text[:200]}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Identificación de las partes: el receptor puede no estar identificado (B0.1)
+#
+# Los XSD v4.4 declaran `Receptor/Identificacion` con minOccurs=0 en Tiquete,
+# Nota de Crédito y Nota de Débito. El emisor la lleva obligatoria en los
+# cuatro tipos. Y como `IdentificacionType` exige `Tipo` y `Numero` juntos, un
+# estado a medias es imposible en la fuente.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _insert_party(conn, company_id, doc, role, *, tipo="01", numero="3101123456",
+                  nombre="Nombre de la parte"):
+    """Inserta una parte permitiendo NULL explícito en la identificación."""
+    conn.execute(
+        "insert into fiscal.document_parties "
+        "(company_id, electronic_document_id, role, legal_name, "
+        " identification_type_code, identification_number) "
+        "values (%s,%s,%s,%s,%s,%s)",
+        (company_id, doc, role, nombre, tipo, numero),
+    )
+
+
+def test_emisor_con_identificacion_completa(pool, settings, user_a, clean_fiscal):
+    """Caso A — el emisor identificado es el caso normal."""
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=90, marker="ident-A")
+        _insert_party(conn, user_a.company_id, doc, "issuer")
+
+
+@pytest.mark.parametrize(
+    "tipo, numero, caso",
+    [
+        (None, "3101123456", "sin tipo"),
+        ("01", None, "sin número"),
+        (None, None, "sin identificación alguna"),
+    ],
+)
+def test_el_emisor_siempre_debe_ir_identificado(
+    pool, settings, user_a, tipo, numero, caso, clean_fiscal
+):
+    """Casos B y C — `Emisor/Identificacion` es minOccurs=1 en los cuatro tipos.
+
+    La relajación de B0.1 es solo para el receptor: si alcanzara al emisor,
+    estaríamos admitiendo comprobantes que el XSD no permite.
+    """
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=91, marker="ident-B")
+            _insert_party(conn, user_a.company_id, doc, "issuer",
+                          tipo=tipo, numero=numero)
+    assert exc.value.diag.constraint_name == (
+        "document_parties_identification_presence_check"
+    )
+
+
+def test_receptor_con_identificacion_completa(pool, settings, user_a, clean_fiscal):
+    """Caso D — sigue siendo el caso mayoritario: 12 de 13 comprobantes reales."""
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=92, marker="ident-D")
+        _insert_party(conn, user_a.company_id, doc, "receiver")
+
+
+def test_receptor_sin_identificacion_ahora_es_representable(
+    pool, settings, user_a, clean_fiscal
+):
+    """Caso E — el motivo de B0.1.
+
+    Un `Receptor` con `Nombre` y sin `Identificacion` es XSD-válido en TE, NC
+    y ND. Antes de esta corrección la base lo rechazaba.
+
+    La ausencia se guarda como NULL: **no** se sintetiza un «consumidor
+    final», ni ceros, ni cadena vacía, ni se hereda la del emisor.
+    """
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=93, marker="ident-E")
+        _insert_party(conn, user_a.company_id, doc, "receiver",
+                      tipo=None, numero=None, nombre="Consumidor sin identificar")
+
+        fila = conn.execute(
+            "select identification_type_code, identification_number, legal_name "
+            "from fiscal.document_parties "
+            "where company_id = %s and electronic_document_id = %s and role = 'receiver'",
+            (user_a.company_id, doc),
+        ).fetchone()
+
+    assert fila["identification_type_code"] is None
+    assert fila["identification_number"] is None
+    assert fila["legal_name"] == "Consumidor sin identificar", (
+        "El nombre sigue siendo obligatorio: sin él no habría parte que guardar"
+    )
+
+
+@pytest.mark.parametrize(
+    "tipo, numero, caso",
+    [(None, "3101123456", "número sin tipo"), ("01", None, "tipo sin número")],
+)
+def test_el_receptor_no_puede_ir_identificado_a_medias(
+    pool, settings, user_a, tipo, numero, caso, clean_fiscal
+):
+    """Caso F — `IdentificacionType` exige `Tipo` y `Numero` juntos (min=1).
+
+    Un estado parcial no existe en la fuente, así que tampoco debe existir
+    aquí: o está entera o no está.
+    """
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=94, marker="ident-F")
+            _insert_party(conn, user_a.company_id, doc, "receiver",
+                          tipo=tipo, numero=numero)
+    assert exc.value.diag.constraint_name == (
+        "document_parties_identification_presence_check"
+    )
+
+
+def test_el_nombre_de_la_parte_sigue_siendo_obligatorio(
+    pool, settings, user_a, clean_fiscal
+):
+    """`Nombre` es minOccurs=1 para ambas partes en los cuatro tipos.
+
+    B0.1 relajó la identificación, no el nombre.
+    """
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=95, marker="ident-G")
+            _insert_party(conn, user_a.company_id, doc, "receiver", nombre=None)
+
+
+def test_el_formato_de_la_identificacion_sigue_validandose(
+    pool, settings, user_a, clean_fiscal
+):
+    """Relajar la nulabilidad no relaja el formato cuando el valor existe."""
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=96, marker="ident-H")
+            _insert_party(conn, user_a.company_id, doc, "receiver", tipo="XX")
+    assert exc.value.diag.constraint_name == (
+        "document_parties_identification_type_check"
+    )

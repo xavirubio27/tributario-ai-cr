@@ -327,12 +327,26 @@ regla SQL aquí.
 |---|---|---|
 | `role` | `issuer` | `receiver` |
 | `legal_name` | 1..1 | 1..1 |
-| `identification_type_code` | 1..1 | 1..1 |
-| `identification_number` | 1..1 | 1..1 |
+| `identification_type_code` | 1..1 | **0..1** |
+| `identification_number` | 1..1 | **0..1** |
 | `trade_name` | 0..1 | 0..1 |
 
-**Un modelo común sí representa ambos sin perder semántica** — para estos cinco campos,
-las cardinalidades coinciden. La asimetría real de E0 (§8.1) está en `Ubicacion`
+> **Corregido en E4-B (B0.1).** La primera versión de E1 daba `1..1` a la identificación
+> del receptor. **Era incorrecto**, y se dedujo mirando solo la Factura Electrónica: en
+> **Tiquete, Nota de Crédito y Nota de Débito** el XSD declara
+> `Receptor/Identificacion` con `minOccurs="0"`. Un receptor **nombrado pero no
+> identificado** es válido, y tiene sentido: el tiquete es el comprobante del consumidor
+> final. El `NOT NULL` físico no era más estricto que el modelo lógico — implementaba
+> fielmente lo que el modelo decía; el modelo era más estricto que la fuente.
+>
+> **Los dos son solidarios:** `IdentificacionType` exige `Tipo` y `Numero` con
+> `minOccurs=1`, así que la identificación está entera o no está. Un estado a medias es
+> imposible en la fuente y lo impide un `CHECK`.
+>
+> `Nombre` sigue siendo `1..1` para ambas partes en los cuatro tipos.
+
+**Un modelo común sí representa ambos sin perder semántica** — la asimetría de la
+identificación se expresa con nulabilidad, no con una entidad aparte. La asimetría real de E0 (§8.1) está en `Ubicacion`
 (obligatoria para el emisor, opcional para el receptor), `CorreoElectronico` (`1..4`
 frente a `0..1`) y en los campos exclusivos `Registrofiscal8707` y
 `OtrasSenasExtranjero` — **todos ellos clasificados «normalizar después»**. Es decir:
@@ -1238,9 +1252,9 @@ precisamente porque su lugar no existe en el MVP, y eso es el hallazgo, no una o
 | 12 | `FE/Emisor/NombreComercial` | DocumentParty | trade_name | Opcional |  |
 | 13 | `FE/Receptor` | DocumentParty | — | Obligatorio | Contenedor → una fila con `role = receiver` |
 | 14 | `FE/Receptor/Nombre` | DocumentParty | legal_name | Obligatorio | Misma entidad, distinto `role` |
-| 15 | `FE/Receptor/Identificacion` | DocumentParty | — | Obligatorio | Contenedor |
-| 16 | `FE/Receptor/Identificacion/Tipo` | DocumentParty | identification_type_code | Obligatorio |  |
-| 17 | `FE/Receptor/Identificacion/Numero` | DocumentParty | identification_number | Obligatorio |  |
+| 15 | `FE/Receptor/Identificacion` | DocumentParty | — | **Obligatorio en FE · opcional en TE/NC/ND** | Contenedor. Su ausencia deja ambas columnas a NULL (§5) |
+| 16 | `FE/Receptor/Identificacion/Tipo` | DocumentParty | identification_type_code | **Obligatorio en FE · opcional en TE/NC/ND** | Ver §5: la columna es nullable y la regla la impone un `CHECK` por `role` |
+| 17 | `FE/Receptor/Identificacion/Numero` | DocumentParty | identification_number | **Obligatorio en FE · opcional en TE/NC/ND** | Solidario con el anterior: ambos o ninguno |
 | 18 | `FE/Receptor/NombreComercial` | DocumentParty | trade_name | Opcional |  |
 | 19 | `FE/CondicionVenta` | ElectronicDocument | sale_condition_code | Obligatorio | Código de catálogo (14 valores) |
 | 20 | `FE/PlazoCredito` | ElectronicDocument | credit_term | Opcional | Entero. Tri-estado |

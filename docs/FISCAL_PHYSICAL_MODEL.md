@@ -1068,12 +1068,12 @@ Los 11 nodos estructurales **no aparecen**: son relaciones y cardinalidad, no co
 | 4 | `FE/NumeroConsecutivo` | `electronic_documents` | `consecutive_number` | `text` | NOT NULL | — | `NumeroConsecutivoType` `\d{20}` | `~ '^[0-9]{20}$'` | Ceros significativos; embebido en la clave |
 | 5 | `FE/FechaEmision` | `electronic_documents` | `issued_at_local` · `issued_at` · `issued_at_offset_minutes` · `issued_at_raw` | `timestamp` · `timestamptz` · `smallint` · `text` | NOT NULL · **NULL** · **NULL** · NOT NULL | — | `xs:dateTime` (huso **opcional**) | offset `between -840 and 840` cuando existe · coherencia instante ↔ reloj de pared | **Un campo lógico → cuatro columnas** (§17.2). El instante solo existe si la fuente declara desplazamiento ([ADR-039](DECISIONS.md#adr-039)) |
 | 6 | `FE/Emisor/Nombre` | `document_parties` | `legal_name` | `text` | NOT NULL | — | `string` 5..100 (emisor) | `length between 1 and 100` | Mínimo relajado: emisor 5, receptor 3 |
-| 7 | `FE/Emisor/Identificacion/Tipo` | `document_parties` | `identification_type_code` | `text` | NOT NULL | — | `string` 2, 6 enum | `~ '^[0-9]{2}$'` | Código de catálogo: longitud, no valor (ADR-029) |
-| 8 | `FE/Emisor/Identificacion/Numero` | `document_parties` | `identification_number` | `text` | NOT NULL | — | `string` ≤20 | `length between 1 and 20` | **Texto**: admite alfanuméricos (rev. 2026) |
+| 7 | `FE/Emisor/Identificacion/Tipo` | `document_parties` | `identification_type_code` | `text` | **NULL** | — | `string` 2, 6 enum | `~ '^[0-9]{2}$'` · presencia por `role` (§21.2) | Código de catálogo: longitud, no valor (ADR-029). La columna es nullable; para el **emisor** la obligatoriedad la impone el `CHECK` |
+| 8 | `FE/Emisor/Identificacion/Numero` | `document_parties` | `identification_number` | `text` | **NULL** | — | `string` ≤20 | `length between 1 and 20` · presencia por `role` (§21.2) | **Texto**: admite alfanuméricos (rev. 2026). Nullable en la columna; obligatorio para el **emisor** por `CHECK` |
 | 9 | `FE/Emisor/NombreComercial` | `document_parties` | `trade_name` | `text` | NULL | — | `string` 3..80 `[0..1]` | `length ≤ 80` |  |
 | 10 | `FE/Receptor/Nombre` | `document_parties` | `legal_name` | `text` | NOT NULL | — | `string` 3..100 | misma columna | Misma tabla, `role='receiver'` |
-| 11 | `FE/Receptor/Identificacion/Tipo` | `document_parties` | `identification_type_code` | `text` | NOT NULL | — | `string` 2 | misma columna |  |
-| 12 | `FE/Receptor/Identificacion/Numero` | `document_parties` | `identification_number` | `text` | NOT NULL | — | `string` ≤20 | misma columna |  |
+| 11 | `FE/Receptor/Identificacion/Tipo` | `document_parties` | `identification_type_code` | `text` | **NULL** | — | `string` 2 | misma columna | Obligatorio en el XSD **de la FE**; opcional en TE/NC/ND (§21.2) |
+| 12 | `FE/Receptor/Identificacion/Numero` | `document_parties` | `identification_number` | `text` | **NULL** | — | `string` ≤20 | misma columna | Ídem: la ausencia solo es legal en TE/NC/ND (§21.2) |
 | 13 | `FE/Receptor/NombreComercial` | `document_parties` | `trade_name` | `text` | NULL | — | `string` 3..80 | misma columna |  |
 | 14 | `FE/CondicionVenta` | `electronic_documents` | `sale_condition_code` | `text` | NOT NULL | — | `string` 2, 14 enum | `~ '^[0-9]{2}$'` | Catálogo: longitud, no valor |
 | 15 | `FE/PlazoCredito` | `electronic_documents` | `credit_term` | `integer` | NULL | — | `xs:integer` 5 dígitos | `between 0 and 99999` | Tri-estado: ausente ≠ 0 |
@@ -1170,6 +1170,63 @@ la **hija**, no el índice único de la hoja. Quitar los cinco redundantes elimi
 Si en el futuro alguna de esas tablas gana hijas, añadir la restricción es una migración
 trivial — mucho más barata que mantener hoy cinco índices sin función.
 
+### 21.2 La identificación de la parte: nullable en la columna, obligatoria por `role`
+
+Las dos columnas de identificación son **nullable**, y la obligatoriedad la impone un
+`CHECK` que distingue el papel:
+
+```sql
+check (
+    (role = 'issuer'
+     and identification_type_code is not null
+     and identification_number is not null)
+    or
+    (role = 'receiver'
+     and (identification_type_code is null) = (identification_number is null))
+)
+```
+
+| `role` | `identification_type_code` | `identification_number` |
+|---|---|---|
+| `issuer` | **obligatorio** | **obligatorio** |
+| `receiver` | ambos presentes **o** ambos ausentes | ídem |
+
+**Por qué el receptor puede no ir identificado.** Los XSD v4.4 declaran
+`Receptor/Identificacion` con `minOccurs="0"` en **Tiquete, Nota de Crédito y Nota de
+Débito**; en la Factura Electrónica es `minOccurs="1"`. Un receptor **nombrado y sin
+identificar** es válido, y tiene sentido: el tiquete es el comprobante del consumidor
+final.
+
+**Por qué no puede ir a medias.** `IdentificacionType` declara `Tipo` y `Numero` ambos con
+`minOccurs="1"`: si el nodo existe, existen los dos. Un estado parcial no existe en la
+fuente y el `CHECK` lo impide aquí.
+
+`legal_name` **sigue siendo `NOT NULL`**: `Nombre` es `minOccurs="1"` para ambas partes en
+los cuatro tipos.
+
+**La ausencia se representa como `NULL`.** Nunca un «consumidor final» sintético, ni ceros,
+ni cadena vacía, ni la identificación del emisor o de la empresa-tenant.
+
+#### La obligatoriedad en la Factura no se duplica en la tabla
+
+Para la FE, `Receptor/Identificacion` **sí** es obligatorio — pero eso **no** se expresa
+como un `NOT NULL` físico. La garantía viene por otra vía:
+
+```
+XML fuente de una FE
+  → la validación XSD exige Receptor/Identificacion
+  → el parser solo continúa con documentos XSD-válidos
+  → por tanto el receptor de una FE parseada SIEMPRE llega identificado
+```
+
+Añadir a la tabla una regla condicionada al `document_type` solo duplicaría lo que el XSD
+ya valida, y crearía dos fuentes de verdad para la misma regla. La tabla se queda con lo
+que es invariante en los cuatro tipos; lo específico de cada tipo lo gobierna su esquema
+oficial.
+
+Corregido en **E4-B (B0.1)**: hasta entonces ambas columnas eran `NOT NULL`, más estrictas
+que la fuente.
+
 ---
 
 ## 22. Matriz de claves foráneas
@@ -1241,6 +1298,7 @@ intacta.
 | `reported_* >= 0` | varias | XSD `minInclusive=0` | **BD** |
 | `numeric(p,s)` | varias | Precisión decimal exacta | **BD** |
 | `role IN ('issuer','receiver')` | `document_parties` | Vocabulario propio | **BD** |
+| `role='issuer'` ⇒ identificación completa · `role='receiver'` ⇒ ambas o ninguna | `document_parties` | El XSD hace opcional la identificación del receptor en TE/NC/ND, pero `Tipo` y `Numero` van juntos | **BD** |
 | `UNIQUE (…, electronic_document_id, role)` | `document_parties` | **Máximo** un emisor y un receptor | **BD** |
 | `UNIQUE (…, electronic_document_id, line_number)` | `document_lines` | Orden de origen sin repetir | **BD** |
 | `line_number BETWEEN 1 AND 1000` | `document_lines` | Rango oficial | **BD** |
