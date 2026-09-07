@@ -63,6 +63,7 @@
 | [ADR-038](#adr-038) | Autorización de escritura fiscal | ✅ |
 | [ADR-039](#adr-039) | La fecha de emisión puede no declarar desplazamiento | ✅ |
 | [ADR-040](#adr-040) | Los esquemas oficiales se versionan en el repositorio | ✅ |
+| [ADR-041](#adr-041) | El parser fiscal es puro y solo emite datos reportados | ✅ |
 
 ---
 ---
@@ -2202,8 +2203,8 @@ directorio, sin rutas absolutas, sin depender del orden del manifiesto—:
 3. concatenar `"{artifact_id}:{sha256}\n"`;
 4. SHA-256 de esa secuencia en UTF-8.
 
-El digest aprobado vive en `backend/tests/support/xsd_bundle_policy.py`, **fuera del
-`MANIFEST.json`** y a propósito: si estuviera en los metadatos de procedencia, quien
+El digest aprobado vive en `backend/app/fiscal/xsd/policy.py` —código de **producción**
+desde E4-B/B1—, **fuera del `MANIFEST.json`** y a propósito: si estuviera en los metadatos de procedencia, quien
 regenerase el manifiesto junto a los esquemas abriría la puerta sin darse cuenta. Un test
 comprueba además que el digest **no** aparece en el manifiesto.
 
@@ -2232,6 +2233,52 @@ La aprobación cubre cuatro dimensiones, y cualquiera que cambie cierra la puert
 manifiesto asocie cada id a la misma ruta que la política, y solo entonces valida el
 fingerprint. Opera sobre cualquier raíz, de modo que las pruebas de mutación ejercitan
 **este mismo mecanismo** sobre una copia temporal, no una simulación en memoria.
+
+**Desde E4-B/B1 la puerta está en el camino de producción**, no solo en CI:
+`get_verified_schema_registry()` la invoca antes de compilar nada, y el parser obtiene los
+esquemas **únicamente** de ese registro. Si la verificación falla, no se compila ni se
+valida: se lanza `ValidatorConfigurationError`, que es un fallo **del servidor**, no del
+documento del contribuyente.
+
+**Taxonomía de los fallos de la puerta (E4-B/B1-R2).** Que el paquete esté mal desplegado
+es un estado de **configuración esperado**, no un accidente: puede ser ilegible, venir con
+otra codificación, traer el JSON roto o tener otra estructura. Todos esos fallos se
+normalizan dentro de la política a `BundleRechazado`, con un motivo canónico —texto fijo,
+sin rutas absolutas, sin contenido del manifiesto y sin el mensaje de la excepción
+original—, y el registro los traduce a `ValidatorConfigurationError` /
+`validator_bundle_invalid`. La causa concreta queda encadenada en `__cause__`, disponible
+para depurar el servidor, pero no viaja en el texto público.
+
+Dicho con precisión: se normalizan los **fallos esperados de verificación o configuración
+del paquete**. No se convierte «toda excepción posible de la inicialización del validador».
+La distinción es deliberada — un `AttributeError`, un `NameError` o un fallo de lógica
+nuestro siguen propagándose tal cual, porque etiquetarlos «paquete inválido» mandaría a
+revisar el despliegue en lugar del código y taparía el incidente real. Por eso la captura
+es por clase y por operación, nunca un `except Exception`.
+
+**La clave de enrutado es única, y eso lo impone el registro (R3).** El reparto de
+responsabilidades es explícito: la **política** aprueba *qué ficheros* son el paquete
+—membresía física, identidad, rutas relativas, bytes, symlinks—; el **registro de
+producción** responde de *cómo se elige* un esquema. Cada esquema que enruta comprobantes
+tiene una clave `(raíz, namespace URI)`, y esa clave debe apuntar a **exactamente un**
+esquema aprobado. Cinco en el paquete actual: FE, TE, NC, ND y MH — `w3c.xmldsig` no
+enruta nada, es dependencia compartida.
+
+Como los metadatos de enrutado del manifiesto no entran en el fingerprint, un manifiesto
+podía conservar ids, rutas y bytes aprobados —pasar la puerta— y asignar la misma clave a
+dos esquemas. Al insertarlos en un diccionario el segundo pisaba al primero **en
+silencio**, y el efecto no era quedarse corto de rutas sino **validar contra el esquema
+equivocado**: con el tiquete usurpando la clave de la factura, toda factura se validaba
+contra el esquema de tiquete. Ahora la repetición se detecta al construir el catálogo
+verificado, **antes de compilar nada**, y se rechaza cerrado como
+`validator_bundle_invalid`.
+
+**El fingerprint no cubre el `MANIFEST.json`.** Cubre los bytes de los `*.xsd`. De ahí que
+un manifiesto pueda conservar el mapeo `id → ruta` aprobado —y pasar la puerta— y aun así
+no describir los campos que el catálogo consume (`namespace`, `sha256`, `bytes`). Ese
+consumo se somete a la misma taxonomía, de modo que un manifiesto incompleto sale también
+como `validator_bundle_invalid` en lugar de reventar a medio camino ya con el visto bueno
+dado.
 
 **El `MANIFEST.json` no define qué es el paquete aprobado.** Es metadato de procedencia e
 integridad: debe concordar con la política y con el disco, pero no puede autorizar nada por
@@ -2294,3 +2341,86 @@ esa revisión sea detectable en lugar de silenciosa —el mismo razonamiento de
 | Usar un espejo no oficial | Ningún tercero es autoridad fiscal. Solo valdría como contraste |
 | Editar el `schemaLocation` de los XSD | Rompe la huella y convierte un artefacto oficial en uno nuestro |
 | Reescribir el XMLDSIG para quitarle el DOCTYPE | Misma objeción, y además innecesario: sus entidades no se usan |
+
+---
+
+<a id="adr-041"></a>
+## ADR-041 — El parser fiscal es puro y solo emite datos reportados
+
+**Estado:** ✅ Aceptada (Día 3, fase E4-B · subfase B1) · **Criticidad: alta**
+
+### Contexto
+
+El parser es la puerta por donde entran los datos fiscales reales. Todo lo que decida ahí
+se propaga al resto del sistema, y algunas decisiones son fáciles de tomar mal sin notarlo:
+rellenar un hueco con un cero, deducir un huso horario, o «aprovechar» que ya se tiene el
+XML delante para calcular un total.
+
+El principio rector del proyecto —`LLM ≠ Tax Engine`— tiene aquí su equivalente:
+**parser ≠ Tax Engine**, y también **parser ≠ persistencia**.
+
+### Decisión
+
+**1. Puro.** `parse_fiscal_document(raw_xml: bytes) -> ParsedFiscalDocument`. Sin base de
+datos, sin usuario autenticado, sin `company_id`, sin red. Se puede ejecutar y probar
+aisladamente, y eso no es comodidad: es lo que impide que la persistencia se acople a él.
+
+**2. El contenido es la autoridad.** Solo bytes de entrada. Ni nombre de fichero, ni tipo
+esperado, ni carpeta. En E4-A2 un fichero llamado «…Estado procesando.xml» resultó ser una
+Factura y el único Tiquete se llamaba «Comprobante_Electronico_…»: clasificar por nombre
+habría fallado en ambos.
+
+**3. Identidad por `(namespace, local-name)`.** Los prefijos XML no son semántica. Una
+raíz conocida con namespace de otra versión **no** se acepta.
+
+**4. Solo `reported_*`.** Ningún `computed_*` sale del parser. No calcula impuestos, no
+reconcilia totales, no interpreta catálogos y no juzga deducibilidad. Eso es del Tax
+Engine, que no existe todavía.
+
+**5. `Decimal` desde el literal.** Nunca `float`. `455.14000` conserva su escala porque la
+escala es información de la fuente.
+
+**6. Ausente ≠ vacío ≠ cero.** Un elemento que no aparece da `None`, jamás `Decimal("0")`.
+El corpus real obliga: `TotalDescuentos` falta en unos comprobantes y vale cero explícito
+en otros, y `<Registrofiscal8707 />` está presente y vacío.
+
+**7. La validación XSD va dentro del contrato público.** Podría haberse exigido «entrada ya
+validada», pero eso delegaría en quien llame la responsabilidad de no saltarse la única
+puerta que no debe saltarse. El orden es: parseo seguro → identidad → ¿soportado? →
+validación XSD → extracción.
+
+**8. Errores tipados, sin filtrar el documento.** `MalformedXML`, `UnsupportedDocument`,
+`XSDValidationError`, `SemanticParseError`, cada uno con código estable. Ninguna excepción
+de lxml cruza la frontera, y el detalle de un error de esquema va **acotado**: libxml2 cita
+contenido del XML, y estos documentos llevan nombres, correos y direcciones de terceros.
+
+**9. `MensajeHacienda` queda fuera.** Tiene esquema oficial, pero no es un comprobante: sin
+líneas ni totales, forzarlo en las siete entidades rompería su semántica. Tendrá parser
+propio cuando se necesite.
+
+**10. Soporte semántico solo con comprobante real.** FE, TE y NC se parsean; la **Nota de
+Débito** se reconoce y su esquema está versionado, pero **no existe ningún comprobante real
+con el que probar la extracción**, así que se rechaza explícitamente. Aceptarla sería
+afirmar una cobertura que no tenemos.
+
+### Consecuencias
+
+El parser se prueba sin infraestructura: 13 comprobantes reales, sin una sola conexión a la
+base de datos. La persistencia recibirá `(resultado + contexto de tenant)` y será la única
+que sepa de `company_id`, huellas y deduplicación.
+
+**El coste** es que el parser no puede «arreglar» un documento raro: si la fuente no dice
+algo, aguas abajo tampoco. Es exactamente lo que se busca —un dato ausente debe verse como
+ausente, no como un cero plausible—, pero significa que la capa semántica futura tendrá que
+tratar con nulos reales en lugar de con valores cómodos.
+
+### Alternativas descartadas
+
+| Alternativa | Por qué no |
+|---|---|
+| Parser que también persiste | Ata los tests a la base de datos y mezcla dos responsabilidades con ciclos de vida distintos |
+| Aceptar entrada «ya validada» | Hace saltable la validación XSD, que es la garantía estructural |
+| Rellenar ausentes con `0` | Destruye la distinción ausente/cero, que el modelo físico conserva a propósito |
+| Inferir el huso cuando falta | Inventa un dato fiscal. Ver [ADR-039](#adr-039) |
+| Pydantic para el dominio interno | Coacciona tipos; el parser existe para *no* transformar la fuente |
+| Devolver `lines=[]` en B1 | Fingiría que se buscaron líneas y no había, en vez de que no está implementado |

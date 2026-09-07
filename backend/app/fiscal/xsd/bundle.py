@@ -1,30 +1,35 @@
-"""Carga y selección de los esquemas oficiales v4.4, para tests.
+"""Carga y compilación de los esquemas oficiales v4.4 — código de producción.
 
-**Esto NO es el parser de producción.** Solo resuelve tres cosas:
+Resuelve tres cosas:
 
 1. localizar el paquete de esquemas versionado en el repositorio;
 2. elegir el esquema correcto a partir de `(raíz, namespace)` del XML;
-3. compilar y validar **sin red, sin DTD y sin entidades externas**.
+3. compilar **sin red, sin DTD y sin entidades externas**.
 
-El mapeo de tipos a nuestro vocabulario interno (`invoice`, `ticket`, …) y la
-extracción de campos fiscales pertenecen a la fase siguiente, no aquí.
+**No se usa directamente desde el parser.** La vía de producción es
+`app.fiscal.xsd.registry.get_verified_schema_registry()`, que primero somete
+el paquete a la puerta *fail-closed* de `policy` y solo entonces compila. Usar
+`compilar()` por su cuenta saltaría esa verificación.
+
+El mapeo a nuestro vocabulario interno y la extracción de campos viven en
+`app.fiscal.parser`.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from lxml import etree
 
-# El paquete vive fuera de `tests/`: son recursos de dominio reutilizables, no
-# material de prueba. El parser de producción usará estos mismos ficheros.
+# El paquete vive en `backend/resources/`: son recursos de dominio, no material
+# de prueba. Este módulo es el ÚNICO validador del proyecto — los tests
+# consumen esta misma implementación, para que no puedan divergir.
 BUNDLE = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
     / "resources" / "fiscal" / "xsd" / "cr"
 )
 MANIFEST = BUNDLE / "MANIFEST.json"
@@ -167,22 +172,23 @@ def limpiar_cache() -> None:
 
 @lru_cache(maxsize=8)
 def compilar(schema_id: str, politica: "PoliticaDeRecursos | None" = None) -> etree.XMLSchema:
-    """Compila un esquema resolviendo sus imports **por ruta relativa local**.
+    """Compila un esquema resolviendo sus imports dentro del paquete.
 
     Los ficheros oficiales importan `../../xmldsig-core-schema.xsd`. La
-    disposición del paquete reproduce esa profundidad, de modo que el import
-    resuelve dentro del repositorio sin tocar los ficheros ni instalar un
-    resolutor a medida.
+    disposición del paquete reproduce esa profundidad, así que el import
+    resuelve localmente sin tocar los ficheros ni instalar un resolutor a
+    medida.
+
+    **Sin `os.chdir`.** El directorio de trabajo es estado global del proceso:
+    cambiarlo aunque sea un instante corrompe cualquier otro hilo que esté
+    resolviendo rutas, y un servidor concurrente los tiene. Se pasa la **ruta
+    absoluta** a `etree.parse`, con lo que libxml2 fija la URI base del
+    documento y resuelve los imports relativos contra ella.
     """
     entrada = next(e for e in entries() if e.id == schema_id)
-    destino = BUNDLE / entrada.path
-    previo = os.getcwd()
-    try:
-        os.chdir(destino.parent)
-        doc = etree.parse(destino.name, parser=_parser(politica))
-        return etree.XMLSchema(doc)
-    finally:
-        os.chdir(previo)
+    destino = (BUNDLE / entrada.path).resolve()
+    doc = etree.parse(str(destino), parser=_parser(politica))
+    return etree.XMLSchema(doc)
 
 
 def validar(data: bytes, politica: "PoliticaDeRecursos | None" = None) -> tuple[bool, str | None, SchemaEntry | None]:

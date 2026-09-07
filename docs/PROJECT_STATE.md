@@ -43,8 +43,9 @@ Checkpoint E — CR Electronic Invoice Domain Foundation
 Checkpoint E — Fase E4-B · Parser Fiscal de Producción
   B0  — contrato y arquitectura del parser — COMPLETED
   B0.1 — nulabilidad de la identificación del receptor — COMPLETED
-  B1  — implementación del parser — NEXT / NOT STARTED
-Next: B1. El parser de producción todavía no existe.
+  B1  — parser: sobre del comprobante y partes — COMPLETED
+  B2  — líneas, impuestos, descuentos y referencias — NEXT / NOT STARTED
+Next: B2.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -848,6 +849,97 @@ salida: es contexto de tenencia, no un dato del comprobante.
 
 `MensajeHacienda` queda **fuera** del parser de comprobantes: no tiene líneas ni totales,
 y forzarlo en las siete entidades rompería su semántica.
+
+### B1 — Parser de producción: sobre y partes · COMPLETED
+
+**Existe el primer parser fiscal de producción.**
+[ADR-041](DECISIONS.md#adr-041): puro y solo `reported_*`.
+
+```
+backend/app/fiscal/
+├── errors.py            taxonomía tipada, sin filtrar el documento
+├── models.py            dataclasses congelados, sin identidad de BD
+├── parser/document.py   contrato público
+└── xsd/                 bundle · policy · registry
+```
+
+**El validador de A2-C es ahora código de producción**, en `app/fiscal/xsd/`, y **los
+tests consumen esa misma implementación**: no hay dos validadores que puedan divergir.
+
+**La puerta *fail-closed* está en el camino de producción (R1).** Antes la verificación del
+paquete solo la ejercitaba CI mientras el parser compilaba por su cuenta: la garantía
+existía, pero el punto de entrada real no dependía de ella.
+`get_verified_schema_registry()` verifica el paquete —conjunto físico, identidad, rutas,
+bytes, fingerprint y symlinks— y **solo entonces** compila; el parser obtiene los esquemas
+únicamente de ese registro, ya compilados y cacheados, sin reabrir el paquete en cada
+llamada. Un paquete alterado produce `ValidatorConfigurationError`, que es un fallo **del
+servidor** y no se confunde con un XML inválido del contribuyente.
+
+**Selección de esquema determinista (R3).** La clave de enrutado `(raíz, namespace URI)`
+apunta a exactamente un esquema aprobado — cinco rutas: FE, TE, NC, ND y MH. Un manifiesto
+que repita una clave se rechaza cerrado antes de compilar: los metadatos de enrutado no
+entran en el fingerprint, así que un paquete con ids, rutas y bytes aprobados podía colar
+un enrutado ambiguo y hacer que un tipo de comprobante se validara contra el esquema de
+otro.
+
+**Una sola taxonomía para los fallos del paquete (R2).** Los estados **esperados** de un
+paquete inválido, ilegible, mal codificado o malformado —incluido un `MANIFEST.json` que
+pasa la puerta pero no describe el catálogo, porque el fingerprint cubre los `*.xsd` y no
+el manifiesto— se exponen en la frontera del parser como `ValidatorConfigurationError` /
+`validator_bundle_invalid`, con un mensaje sin rutas ni contenido del paquete. Los
+**defectos de programación** no entran en esa normalización: siguen viéndose como lo que
+son, para que un bug nuestro no se lea como un problema de despliegue.
+
+| | |
+|---|---|
+| Contrato | `parse_fiscal_document(raw_xml: bytes) -> ParsedFiscalDocument` |
+| Entrada | **solo bytes**; el contenido es la autoridad, nunca el nombre del fichero |
+| Identidad | `(namespace, local-name)`; los prefijos XML no son semántica |
+| Orden | parseo seguro → identidad → ¿soportado? → **XSD oficial** → extracción |
+| Alcance | `ElectronicDocument` (22 campos del sobre) y `DocumentParty` |
+| Soporte semántico | **FE · TE · NC**. ND se reconoce pero se rechaza: sin comprobante real no hay cobertura que afirmar |
+| Fuera | `MensajeHacienda`: tiene esquema, pero no es comprobante |
+
+**Resultado sobre los 13 comprobantes reales: 13/13** — 11 `invoice`, 1 `ticket`,
+1 `credit_note`. Los 11 `MensajeHacienda` se rechazan con `UnsupportedDocument`.
+
+**Lo que B1 NO hace, y no finge hacer:** líneas, impuestos, descuentos y referencias. El
+resultado **no** lleva listas vacías de esos campos: devolverlas sugeriría que se buscaron
+y no había, en vez de que no están implementados. Tampoco crea `SourceDocument` ni escribe
+en la base: eso es de la ingesta, que no existe todavía.
+
+**Campos válidos que el MVP no normaliza** —`MedioPago` en 13/13,
+`TotalDesgloseImpuesto` en 13/13, `OtrosCargos`, `CodigoComercial`,
+`Registrofiscal8707`, `TipoTransaccion`, `UnidadMedidaComercial`— **no impiden el
+parseo**, y un test comprueba que el modelo tampoco pretende haberlos normalizado.
+
+**0 migraciones · 0 cambios en DEV · 0 escrituras fiscales.** El parser se prueba sin base
+de datos, sin usuario autenticado y sin `company_id`.
+
+**Estado formal al cerrar B1** (auditoría independiente: 0 CRITICAL · 0 HIGH · 0 MEDIUM ·
+0 LOW · 1 INFORMATIONAL no bloqueante):
+
+| Tipo de comprobante | Estado |
+|---|---|
+| FacturaElectronica | soportado — sobre y partes |
+| TiqueteElectronico | soportado — sobre y partes |
+| NotaCreditoElectronica | soportado — sobre y partes |
+| NotaDebitoElectronica | reconocido · esquema disponible · **parseo semántico aún no soportado** |
+| MensajeHacienda | fuera del parser de comprobantes |
+
+| Componente | Estado |
+|---|---|
+| Persistencia | NOT STARTED |
+| `DocumentLine` | NOT STARTED |
+| `LineDiscount` | NOT STARTED |
+| `LineTax` | NOT STARTED |
+| `DocumentReference` | NOT STARTED |
+| Tax Engine | NOT STARTED |
+
+**Huecos de fixture, abiertos y no bloqueantes:** Nota de Débito real · `Exoneracion` ·
+descuentos múltiples · tarifa 0 %/exento · venta a crédito · receptor presente sin
+identificación. No se fabrican comprobantes de aspecto auténtico para cerrarlos: un fixture
+inventado probaría el parser contra nuestra propia suposición, no contra la fuente.
 
 ### B0.1 — El receptor puede no estar identificado · COMPLETED
 

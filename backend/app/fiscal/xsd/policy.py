@@ -1,5 +1,7 @@
 """Política de compatibilidad del validador con el paquete de esquemas.
 
+Código de PRODUCCIÓN: el parser depende de esta puerta, no solo los tests.
+
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  MODIFICAR `APPROVED_VALIDATOR_BUNDLE_SHA256` SIGNIFICA:                 ║
 ║                                                                          ║
@@ -53,8 +55,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Mapping
+from typing import Iterator, Mapping
 
 # ─────────────────────────────────────────────────────────────────────────────
 # El paquete aprobado. Revisado en A2-C y endurecido en A2-C-R1.
@@ -118,6 +121,80 @@ class BundleRechazado(AssertionError):
     """La puerta se cerró: el paquete no es el aprobado."""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# NORMALIZACIÓN DE FALLOS ESPERADOS
+#
+# Un paquete mal desplegado —ilegible, con otra codificación, con el JSON roto
+# o con un manifiesto de otra forma— es un estado de CONFIGURACIÓN esperado,
+# no un defecto de programación. Debe salir por la misma puerta que el resto
+# de rechazos: `BundleRechazado`.
+#
+# **Deliberadamente NO se captura `Exception`.** Un `AttributeError`, un
+# `NameError` o un fallo de lógica nuestro siguen siendo bugs y tienen que
+# poder verse como tales: etiquetarlos «paquete inválido» los escondería
+# detrás de un diagnóstico falso y mandaría a revisar el despliegue en lugar
+# del código.
+#
+# Cada categoría envuelve **una sola operación**, de modo que las clases
+# capturadas solo puedan provenir del estado no confiable que esa operación
+# toca. Ese acotamiento es lo que separa «manifiesto malformado» de «bug».
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Acceso al sistema de ficheros: no se puede abrir, leer o recorrer.
+FALLOS_DE_LECTURA: tuple[type[BaseException], ...] = (OSError,)
+
+#: Los bytes del manifiesto no son UTF-8. `UnicodeDecodeError` hereda de aquí.
+FALLOS_DE_DECODIFICACION: tuple[type[BaseException], ...] = (UnicodeError,)
+
+#: El manifiesto no es JSON. `JSONDecodeError` hereda de `ValueError`.
+FALLOS_DE_SINTAXIS: tuple[type[BaseException], ...] = (json.JSONDecodeError,)
+
+#: JSON válido, pero sin la forma acordada: falta una clave, o un campo no es
+#: del tipo que el manifiesto declara. `KeyError` y `TypeError` se capturan
+#: SOLO alrededor del acceso al documento no confiable, nunca en general.
+FALLOS_DE_ESTRUCTURA: tuple[type[BaseException], ...] = (KeyError, TypeError)
+
+#: Rutas del paquete inconsistentes entre sí —una entrada que, ya resuelta,
+#: cae fuera de la raíz gobernada— además del acceso al disco.
+FALLOS_DE_RUTA: tuple[type[BaseException], ...] = (OSError, ValueError)
+
+#: Todo lo que puede fallar al leer y consumir el manifiesto.
+FALLOS_DEL_MANIFIESTO: tuple[type[BaseException], ...] = (
+    FALLOS_DE_LECTURA + FALLOS_DE_DECODIFICACION
+    + FALLOS_DE_SINTAXIS + FALLOS_DE_ESTRUCTURA
+)
+
+# Motivos canónicos. Son texto FIJO: ni rutas absolutas, ni contenido del
+# manifiesto, ni el mensaje de la excepción original. La causa concreta queda
+# encadenada en `__cause__` para quien depure el servidor.
+RAZON_ARBOL_ILEGIBLE = "No se pudo inspeccionar el árbol del paquete gobernado."
+RAZON_MANIFIESTO_ILEGIBLE = "No se pudo leer MANIFEST.json."
+RAZON_MANIFIESTO_NO_UTF8 = "MANIFEST.json no está codificado en UTF-8."
+RAZON_MANIFIESTO_NO_JSON = "MANIFEST.json no es JSON válido."
+RAZON_MANIFIESTO_INCOMPLETO = "MANIFEST.json no tiene la estructura acordada."
+RAZON_ESQUEMA_ILEGIBLE = "No se pudo leer un esquema del paquete gobernado."
+
+
+@contextmanager
+def rechazar_si_falla(
+    razon: str, clases: tuple[type[BaseException], ...]
+) -> Iterator[None]:
+    """Convierte fallos ESPERADOS del paquete en `BundleRechazado`.
+
+    `razon` es un motivo canónico de los de arriba: texto fijo y seguro. La
+    excepción original se encadena con `from`, así que sigue disponible en
+    `__cause__` sin viajar en el texto.
+
+    `BundleRechazado` hereda de `AssertionError` y por tanto **no** está en
+    ninguna de las tuplas de arriba: un rechazo que ya venía formado atraviesa
+    este gestor intacto y no se vuelve a envolver.
+    """
+    try:
+        yield
+    except clases as exc:
+        raise BundleRechazado(f"{razon}\n{MENSAJE_DE_FALLO}") from exc
+
+
 def rechazar_symlinks(schema_root: Path) -> None:
     """Recorre el árbol COMPLETO y rechaza cualquier enlace simbólico.
 
@@ -134,7 +211,13 @@ def rechazar_symlinks(schema_root: Path) -> None:
     La política es deliberadamente simple: **ningún symlink**, apunte donde
     apunte. No se distingue interno de externo.
     """
-    raiz = Path(schema_root)
+    with rechazar_si_falla(RAZON_ARBOL_ILEGIBLE, FALLOS_DE_LECTURA):
+        _rechazar_symlinks(Path(schema_root))
+
+
+def _rechazar_symlinks(raiz: Path) -> None:
+    """El recorrido en sí. Separado para que el gestor de arriba acote qué
+    operaciones pueden fallar por disco sin envolver nada más."""
     if raiz.is_symlink():
         raise BundleRechazado(
             f"governed schema root must not be a symlink: {raiz}\n"
@@ -161,15 +244,18 @@ def descubrir_xsd(schema_root: Path) -> dict[str, Path]:
 
     Presupone que `rechazar_symlinks` ya se ejecutó: aquí no quedan enlaces.
     """
-    raiz = schema_root.resolve()
-    encontrados: dict[str, Path] = {}
-    for ruta in sorted(raiz.rglob(f"*{GOVERNED_SUFFIX}")):
-        if not ruta.is_file():
-            raise BundleRechazado(
-                f"Un esquema no es un fichero regular: {ruta}\n{MENSAJE_DE_FALLO}"
-            )
-        real = ruta.resolve()
-        encontrados[real.relative_to(raiz).as_posix()] = real
+    # `BundleRechazado` hereda de `AssertionError`: los rechazos de política
+    # que se levantan aquí dentro atraviesan el gestor sin re-envolverse.
+    with rechazar_si_falla(RAZON_ARBOL_ILEGIBLE, FALLOS_DE_RUTA):
+        raiz = schema_root.resolve()
+        encontrados: dict[str, Path] = {}
+        for ruta in sorted(raiz.rglob(f"*{GOVERNED_SUFFIX}")):
+            if not ruta.is_file():
+                raise BundleRechazado(
+                    f"Un esquema no es un fichero regular: {ruta}\n{MENSAJE_DE_FALLO}"
+                )
+            real = ruta.resolve()
+            encontrados[real.relative_to(raiz).as_posix()] = real
     return encontrados
 
 
@@ -218,8 +304,18 @@ def verify_approved_schema_bundle(schema_root: Path) -> str:
         raise BundleRechazado(
             f"Falta MANIFEST.json o no es un fichero regular\n{MENSAJE_DE_FALLO}"
         )
-    manifiesto = json.loads(ruta_manifiesto.read_text(encoding="utf-8"))
-    del_manifiesto = {e["id"]: e["path"] for e in manifiesto["schemas"]}
+    # Leer, decodificar, parsear y consumir son cuatro fallos DISTINTOS sobre
+    # un fichero no confiable. Se separan para que cada uno capture exactamente
+    # sus clases y ninguna de más: `read_text` mezclaría OSError y
+    # UnicodeDecodeError en una sola operación.
+    with rechazar_si_falla(RAZON_MANIFIESTO_ILEGIBLE, FALLOS_DE_LECTURA):
+        crudo = ruta_manifiesto.read_bytes()
+    with rechazar_si_falla(RAZON_MANIFIESTO_NO_UTF8, FALLOS_DE_DECODIFICACION):
+        texto = crudo.decode("utf-8")
+    with rechazar_si_falla(RAZON_MANIFIESTO_NO_JSON, FALLOS_DE_SINTAXIS):
+        manifiesto = json.loads(texto)
+    with rechazar_si_falla(RAZON_MANIFIESTO_INCOMPLETO, FALLOS_DE_ESTRUCTURA):
+        del_manifiesto = {e["id"]: e["path"] for e in manifiesto["schemas"]}
     if del_manifiesto != APPROVED_SCHEMA_ARTIFACTS:
         raise BundleRechazado(
             "El manifiesto y la política aprobada discrepan en artifact_id -> ruta.\n"
@@ -228,10 +324,11 @@ def verify_approved_schema_bundle(schema_root: Path) -> str:
         )
 
     # 3 · Bytes.
-    digests = {
-        aid: hashlib.sha256((raiz / ruta).read_bytes()).hexdigest()
-        for aid, ruta in APPROVED_SCHEMA_ARTIFACTS.items()
-    }
+    with rechazar_si_falla(RAZON_ESQUEMA_ILEGIBLE, FALLOS_DE_LECTURA):
+        digests = {
+            aid: hashlib.sha256((raiz / ruta).read_bytes()).hexdigest()
+            for aid, ruta in APPROVED_SCHEMA_ARTIFACTS.items()
+        }
     obtenido = fingerprint(digests)
     if obtenido != APPROVED_VALIDATOR_BUNDLE_SHA256:
         raise BundleRechazado(

@@ -23,8 +23,10 @@ from pathlib import Path
 import pytest
 from lxml import etree
 
-from tests.support import fiscal_xsd as fx
-from tests.support import xsd_bundle_policy as policy
+# El validador vive en PRODUCCIÓN: los tests consumen esa misma
+# implementación, para que no puedan divergir del parser.
+from app.fiscal.xsd import bundle as fx
+from app.fiscal.xsd import policy
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fiscal" / "real" / "v4_4"
 
