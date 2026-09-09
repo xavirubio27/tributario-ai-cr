@@ -345,6 +345,27 @@ regla SQL aquí.
 >
 > `Nombre` sigue siendo `1..1` para ambas partes en los cuatro tipos.
 
+**Corrección de fidelidad a la fuente (E4-B · B2-R3).** Que los dos elementos sean
+obligatorios **no** significa que sus textos no puedan ser vacíos, y ahí difieren:
+
+| elemento | tipo XSD | ¿cadena vacía legal? |
+|---|---|---|
+| `Tipo` | `xs:string` con **6 enumeraciones** (`01`…`06`) | **no** — el vacío no está entre ellas |
+| `Numero` | `xs:string`, `maxLength=20`, **sin `minLength`** | **sí** |
+
+De modo que hay tres estados de origen, no dos:
+
+| Estado en el XML | Modelo de dominio | `document_parties` |
+|---|---|---|
+| `Identificacion` ausente | `identificacion = None` | ambas columnas `NULL` |
+| `Identificacion` con `Numero` vacío | `Identificacion(tipo, "")` | tipo `NOT NULL`, número `''` |
+| `Identificacion` con `Numero` con texto | `Identificacion(tipo, "…")` | tipo `NOT NULL`, número = texto |
+
+Colapsar el segundo en el primero diría que el emisor **no identificó** a la parte, cuando
+sí la identificó — con un número vacío. La regla de solidaridad de B0.1 no se debilita: en
+PostgreSQL `''` es `NOT NULL`, así que una parte con tipo válido y número vacío sigue en el
+estado «ambos presentes».
+
 **Un modelo común sí representa ambos sin perder semántica** — la asimetría de la
 identificación se expresa con nulabilidad, no con una entidad aparte. La asimetría real de E0 (§8.1) está en `Ubicacion`
 (obligatoria para el emisor, opcional para el receptor), `CorreoElectronico` (`1..4`
@@ -652,16 +673,35 @@ componente aplanado. Tres razones de fondo, no de elegancia relacional:
 | Campo | Notas |
 |---|---|
 | `referenced_document_type_code` | Obligatorio. Catálogo de **20** valores tras la revisión 2026 |
-| `reported_number` | **Opcional** — el punto crítico |
+| `reported_number` | **Opcional** — el punto crítico. `[0..1]` y, si viene, su valor léxico **puede ser vacío** |
 | `reported_reference_date_local` | **Obligatorio** — el reloj de pared siempre existe |
 | `reported_reference_date` · `reported_reference_offset_minutes` | **Opcionales y ligados**: solo si el XML declara desplazamiento ([ADR-039](DECISIONS.md#adr-039)) |
 | `reported_reference_date_raw` | **Obligatorio** — el literal exacto del XML |
 | `reference_code` | Opcional. **Determina el periodo contable** |
-| `reason` | Opcional |
+| `reason` | Opcional. `[0..1]` y, si viene, su valor léxico **puede ser vacío** |
 | `sequence` | Orden dentro del documento |
 
 **`reported_number` es opcional, luego no puede existir una clave foránea obligatoria.**
 Un diseño que la exija contradice el esquema oficial y rechazaría documentos válidos.
+
+**Corrección de fidelidad a la fuente (E4-B · B2-R1).** `Numero` y `Razon` se declaran en
+los cuatro XSD oficiales como `minOccurs="0"` y `xs:string` **sin `minLength`**. Al no
+haber mínimo, la cadena vacía es un valor léxico legal, y la fuente distingue **tres**
+estados, no dos:
+
+| Estado en el XML | Representación |
+|---|---|
+| el elemento no viene | `NULL` |
+| el elemento viene vacío — `<Razon/>` | `''` |
+| el elemento viene con texto | el texto reportado |
+
+La distinción es deliberada: `NULL` significa que el emisor no incluyó el elemento y `''`
+que lo incluyó vacío. No se normaliza uno en otro, ni al leer ni al guardar. Verificado
+contra el validador oficial: los tres casos son XSD-válidos.
+
+La asimetría con `reference_code` es de la fuente, no nuestra: `CodigoReferenciaType`
+declara `minLength = maxLength = 2`, así que para él el vacío **no** es un estado legal y
+se sigue rechazando.
 
 ### 10.6 Referencia reportada ≠ relación resuelta
 

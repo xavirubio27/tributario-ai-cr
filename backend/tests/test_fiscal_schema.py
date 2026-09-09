@@ -1082,3 +1082,266 @@ def test_el_formato_de_la_identificacion_sigue_validandose(
     assert exc.value.diag.constraint_name == (
         "document_parties_identification_type_check"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B2-R1 · `Numero` y `Razon` de la referencia admiten la cadena vacía
+#
+# Los cuatro XSD oficiales declaran ambos 0..1 y `xs:string` SIN `minLength`.
+# Al no haber mínimo, el vacío es un valor legal, y la fuente distingue tres
+# estados: ausente (NULL), presente-vacío ('') y con texto.
+#
+# Los CHECK exigían `char_length >= 1` y rechazaban el del medio. La migración
+# `20260908090000_allow_empty_reference_text` baja el mínimo a 0 **sin**
+# normalizar '' a NULL: son estados distintos y se conservan como tales.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REF_COLUMNAS = (
+    "(company_id, electronic_document_id, sequence, referenced_document_type_code, "
+    " reported_reference_date_local, reported_reference_date, "
+    " reported_reference_offset_minutes, reported_reference_date_raw, "
+    " reported_number, reason)"
+)
+_REF_FECHA = (
+    "timestamp '2026-08-01 05:24:09', timestamptz '2026-08-01T11:24:09+00:00', -360, 'x'"
+)
+
+
+def _insert_reference(conn, company_id, edoc_id, *, sequence, numero, razon):
+    conn.execute(
+        f"insert into fiscal.document_references {_REF_COLUMNAS} "
+        f"values (%s, %s, %s, '01', {_REF_FECHA}, %s, %s)",
+        (company_id, edoc_id, sequence, numero, razon),
+    )
+
+
+@pytest.mark.parametrize(
+    ("semilla", "etiqueta", "numero"),
+    [(900, "nulo", None), (901, "vacio", ""),
+     (902, "corto", "x"), (903, "limite_50", "x" * 50)],
+    ids=lambda v: v if isinstance(v, str) and not v.startswith("x") else "",
+)
+def test_reported_number_admite_nulo_vacio_y_hasta_50(
+    semilla, etiqueta, numero, pool, settings, user_a, clean_fiscal
+):
+    # Cada caso necesita su propia Clave: es UNIQUE por empresa.
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=semilla, marker=etiqueta)
+        _insert_reference(
+            conn, user_a.company_id, doc, sequence=1, numero=numero, razon=None
+        )
+        fila = conn.execute(
+            "select reported_number, (reported_number is null) as es_nulo "
+            "from fiscal.document_references where electronic_document_id = %s",
+            (doc,),
+        ).fetchone()
+
+    assert fila["reported_number"] == numero
+    # NULL y '' se conservan DISTINTOS: la base no normaliza uno en otro.
+    assert fila["es_nulo"] is (numero is None)
+
+
+def test_reported_number_rechaza_mas_de_50(pool, settings, user_a, clean_fiscal):
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=920, marker="largo")
+            _insert_reference(
+                conn, user_a.company_id, doc, sequence=1,
+                numero="x" * 51, razon=None,
+            )
+    assert exc.value.sqlstate == "23514"
+    assert exc.value.diag.constraint_name == "document_references_number_check"
+
+
+@pytest.mark.parametrize(
+    ("semilla", "etiqueta", "razon"),
+    [(910, "nulo", None), (911, "vacio", ""),
+     (912, "corta", "x"), (913, "limite_180", "x" * 180)],
+    ids=lambda v: v if isinstance(v, str) and not v.startswith("x") else "",
+)
+def test_reason_admite_nulo_vacio_y_hasta_180(
+    semilla, etiqueta, razon, pool, settings, user_a, clean_fiscal
+):
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=semilla, marker=etiqueta)
+        _insert_reference(
+            conn, user_a.company_id, doc, sequence=1, numero=None, razon=razon
+        )
+        fila = conn.execute(
+            "select reason, (reason is null) as es_nulo "
+            "from fiscal.document_references where electronic_document_id = %s",
+            (doc,),
+        ).fetchone()
+
+    assert fila["reason"] == razon
+    assert fila["es_nulo"] is (razon is None)
+
+
+def test_reason_rechaza_mas_de_180(pool, settings, user_a, clean_fiscal):
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=930, marker="larga")
+            _insert_reference(
+                conn, user_a.company_id, doc, sequence=1,
+                numero=None, razon="x" * 181,
+            )
+    assert exc.value.sqlstate == "23514"
+    assert exc.value.diag.constraint_name == "document_references_reason_check"
+
+
+def test_el_vacio_y_el_nulo_conviven_como_estados_distintos(
+    pool, settings, user_a, clean_fiscal
+):
+    """Dos referencias del mismo documento, una con '' y otra con NULL."""
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=940, marker="mixto")
+        _insert_reference(conn, user_a.company_id, doc, sequence=1, numero="", razon="")
+        _insert_reference(
+            conn, user_a.company_id, doc, sequence=2, numero=None, razon=None
+        )
+        filas = conn.execute(
+            "select sequence, reported_number, reason "
+            "from fiscal.document_references "
+            "where electronic_document_id = %s order by sequence",
+            (doc,),
+        ).fetchall()
+
+    assert [(f["reported_number"], f["reason"]) for f in filas] == [("", ""), (None, None)]
+
+
+def test_las_demas_restricciones_de_la_referencia_siguen_activas(
+    pool, settings, user_a, clean_fiscal
+):
+    """La migración relaja SOLO las dos longitudes. Los códigos de longitud
+    fija y la secuencia siguen exigiendo lo mismo."""
+    # 1 · tipo de documento con formato inválido
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=950, marker="tipo")
+            conn.execute(
+                f"insert into fiscal.document_references {_REF_COLUMNAS} "
+                f"values (%s, %s, 1, '0X', {_REF_FECHA}, null, null)",
+                (user_a.company_id, doc),
+            )
+    assert exc.value.diag.constraint_name == "document_references_type_code_check"
+
+    # 2 · `Codigo` vacío: NO es un estado legal, su tipo XSD tiene longitud fija 2
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=960, marker="codigo")
+            conn.execute(
+                f"insert into fiscal.document_references "
+                f"(company_id, electronic_document_id, sequence, "
+                f" referenced_document_type_code, reported_reference_date_local, "
+                f" reported_reference_date, reported_reference_offset_minutes, "
+                f" reported_reference_date_raw, reference_code) "
+                f"values (%s, %s, 1, '01', {_REF_FECHA}, '')",
+                (user_a.company_id, doc),
+            )
+    assert exc.value.diag.constraint_name == "document_references_reference_code_check"
+
+    # 3 · secuencia fuera de 1..10
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=970, marker="seq")
+            _insert_reference(
+                conn, user_a.company_id, doc, sequence=11, numero=None, razon=None
+            )
+    assert exc.value.diag.constraint_name == "document_references_sequence_check"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B2-R3 · `Identificacion/Numero` admite la cadena vacía
+#
+# `Numero` es `minOccurs=1` y `xs:string` con `maxLength=20` y SIN `minLength`
+# en los cuatro esquemas oficiales: el elemento es obligatorio, su texto puede
+# ser vacío. El CHECK exigía `char_length >= 1` y rechazaba ese estado.
+#
+# La regla de solidaridad de B0.1 NO se debilita: en PostgreSQL `''` es NOT
+# NULL, así que una parte con `tipo` válido y `numero = ''` sigue estando en el
+# estado «ambos presentes».
+#
+#     NULL  =  Identificacion ausente (solo receptor de TE/NC/ND)
+#     ''    =  Identificacion presente con Numero vacío
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("semilla", "caso", "numero"),
+    [(1000, "vacio", ""), (1001, "espacios", "   "),
+     (1002, "normal", "3101123456"), (1003, "limite_20", "x" * 20)],
+    ids=lambda v: v if isinstance(v, str) and not v.startswith("x") else "",
+)
+def test_identification_number_admite_vacio_espacios_y_hasta_20(
+    semilla, caso, numero, pool, settings, user_a, clean_fiscal
+):
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        doc = _insert_document(conn, user_a.company_id, seed=semilla, marker=caso)
+        _insert_party(conn, user_a.company_id, doc, "issuer", numero=numero)
+        fila = conn.execute(
+            "select identification_number as n, (identification_number is null) as es_nulo "
+            "from fiscal.document_parties where electronic_document_id = %s",
+            (doc,),
+        ).fetchone()
+
+    assert fila["n"] == numero
+    # `''` es NOT NULL: no se confunde con la ausencia del nodo.
+    assert fila["es_nulo"] is False
+
+
+def test_identification_number_rechaza_mas_de_20(pool, settings, user_a, clean_fiscal):
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=1004, marker="largo")
+            _insert_party(conn, user_a.company_id, doc, "issuer", numero="x" * 21)
+    assert exc.value.sqlstate == "23514"
+    assert exc.value.diag.constraint_name == (
+        "document_parties_identification_number_check"
+    )
+
+
+@pytest.mark.parametrize(
+    ("semilla", "caso", "rol", "tipo", "numero", "valido"),
+    [
+        # Receptor: la identificación entera puede faltar (TE/NC/ND).
+        (1010, "receptor_sin_identificacion", "receiver", None, None, True),
+        (1011, "receptor_numero_vacio",       "receiver", "01", "",   True),
+        (1012, "receptor_tipo_nulo_num_vacio","receiver", None, "",   False),
+        (1013, "receptor_tipo_sin_numero",    "receiver", "01", None, False),
+        # Emisor: la identificación es obligatoria en los cuatro tipos.
+        (1014, "emisor_numero_vacio",         "issuer",   "01", "",   True),
+        (1015, "emisor_sin_identificacion",   "issuer",   None, None, False),
+    ],
+    ids=lambda v: v if isinstance(v, str) and len(v) > 6 else "",
+)
+def test_la_solidaridad_por_rol_sigue_intacta_con_el_vacio(
+    semilla, caso, rol, tipo, numero, valido, pool, settings, user_a, clean_fiscal
+):
+    """`''` cuenta como PRESENTE, no como ausente: es lo que hace que la regla
+    de B0.1 siga funcionando sin tocarla."""
+    def insertar():
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=semilla, marker=caso)
+            _insert_party(
+                conn, user_a.company_id, doc, rol, tipo=tipo, numero=numero
+            )
+
+    if valido:
+        insertar()
+    else:
+        with pytest.raises(psycopg.errors.CheckViolation) as exc:
+            insertar()
+        assert exc.value.diag.constraint_name == (
+            "document_parties_identification_presence_check"
+        )
+
+
+def test_el_tipo_de_identificacion_no_se_relajo(pool, settings, user_a, clean_fiscal):
+    """`Tipo` es enumerado (01..06) en el XSD: el vacío no es un estado legal
+    y su CHECK de formato sigue rechazándolo."""
+    with pytest.raises(psycopg.errors.CheckViolation) as exc:
+        with fiscal_transaction(pool, settings, user_a.identity) as conn:
+            doc = _insert_document(conn, user_a.company_id, seed=1020, marker="tipo")
+            _insert_party(conn, user_a.company_id, doc, "issuer", tipo="", numero="1")
+    assert exc.value.diag.constraint_name == (
+        "document_parties_identification_type_check"
+    )

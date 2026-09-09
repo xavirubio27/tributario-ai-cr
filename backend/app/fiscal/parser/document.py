@@ -12,9 +12,11 @@ se llamaba «Comprobante_Electronico_…»—.
 totales, no interpreta catálogos y no juzga la corrección fiscal más allá de
 lo estructural. Los `computed_*` son del futuro Tax Engine.
 
-Alcance de B1: `ElectronicDocument` y `DocumentParty`. Líneas, impuestos,
-descuentos y referencias llegan en cortes posteriores; aquí **no** se
-implementan a medias.
+Alcance: el comprobante completo tal y como lo declara la fuente —
+`ElectronicDocument`, `DocumentParty` (B1) y el cuerpo de la transacción:
+`DocumentLine` con sus `LineDiscount` y `LineTax`, más `DocumentReference`
+(B2)—. Lo que el modelo aprobado no normaliza se deja diferido de forma
+explícita, no a medias.
 """
 
 from __future__ import annotations
@@ -36,9 +38,13 @@ from app.fiscal.models import (
     TIPO_POR_RAIZ,
     FechaFiscal,
     Identificacion,
+    ParsedDocumentLine,
     ParsedDocumentParty,
+    ParsedDocumentReference,
     ParsedElectronicDocument,
     ParsedFiscalDocument,
+    ParsedLineDiscount,
+    ParsedLineTax,
 )
 from app.fiscal.xsd import bundle
 from app.fiscal.xsd.registry import get_verified_schema_registry
@@ -102,6 +108,18 @@ def _hijo(padre: etree._Element | None, nombre: str) -> etree._Element | None:
     return None
 
 
+def _hijos(padre: etree._Element | None, nombre: str) -> list[etree._Element]:
+    """TODOS los hijos directos con ese local-name, **en orden de documento**.
+
+    El orden es evidencia: `lxml` recorre los hijos como aparecen en el XML,
+    así que no hace falta ordenar nada — y ordenar sería precisamente el
+    error, porque impondría un criterio nuestro sobre el del emisor.
+    """
+    if padre is None:
+        return []
+    return [h for h in padre if isinstance(h.tag, str) and _local(h) == nombre]
+
+
 def _ruta(raiz: etree._Element, *nombres: str) -> etree._Element | None:
     actual: etree._Element | None = raiz
     for n in nombres:
@@ -111,19 +129,55 @@ def _ruta(raiz: etree._Element, *nombres: str) -> etree._Element | None:
     return actual
 
 
-def _texto(elemento: etree._Element | None) -> str | None:
-    """Texto de un elemento, distinguiendo AUSENTE de VACÍO.
+def _texto_colapsado(elemento: etree._Element | None) -> str | None:
+    """Texto con la normalización `whiteSpace="collapse"` de XML Schema.
+
+    **Solo para tipos cuya faceta `whiteSpace` es realmente `collapse`**, que
+    en los campos modelados son `xs:decimal`, `xs:positiveInteger` y
+    `xs:dateTime`. Para ellos la normalización no es una comodidad nuestra: la
+    define el propio tipo, y el espacio en los extremos no forma parte del
+    valor.
+
+    `collapse` no es `strip`: además de recortar los extremos, funde cada
+    secuencia interna de espacios en uno solo. Se implementa tal cual, en vez
+    de aproximarlo, para no volver a inventar una normalización.
 
     - elemento ausente        → `None`
     - elemento presente vacío → `""`
-    - elemento con contenido  → el texto, sin espacios en los extremos
-
-    La distinción importa: el corpus real contiene `<Registrofiscal8707 />`,
-    un elemento presente y vacío, que no es lo mismo que no estar.
     """
     if elemento is None:
         return None
-    return (elemento.text or "").strip()
+    return " ".join((elemento.text or "").split())
+
+
+def _texto_literal(elemento: etree._Element | None) -> str | None:
+    """Texto EXACTO, sin normalizar, distinguiendo los TRES estados de origen.
+
+    - elemento ausente        → `None`
+    - elemento presente vacío → `""`
+    - elemento con contenido  → el texto **tal cual**, sin recortar
+
+    **Es el accesor por defecto de todo campo de texto modelado.** Se auditó
+    la cadena de tipos de los veinte campos de cadena que B1 y B2 normalizan y
+    **todos** derivan de `xs:string`, cuya faceta es `whiteSpace="preserve"`.
+    Ninguno es `xs:token` ni `xs:normalizedString`. Es decir: el esquema
+    oficial **no define** normalización de espacios para ninguno de ellos, y
+    recortarlos era una invención nuestra.
+
+    El argumento de que «tiene enumeración o patrón, luego recortar es
+    inocuo» no vale, y por dos motivos. Uno: la faceta de espacios no se
+    deduce de las demás facetas, viene del tipo. Y dos: era falso en la
+    práctica — `Detalle`, `Nombre`, `NombreComercial`,
+    `Identificacion/Numero` y `CodigoActividadEmisor` admiten espacios en un
+    documento XSD-válido, y con `Numero` el recorte llegaba a **rechazar**
+    el comprobante.
+
+    Que un valor con espacios sea legal o no lo decide el XSD por longitud,
+    patrón o enumeración — y lo comprueba antes de que lleguemos aquí.
+    """
+    if elemento is None:
+        return None
+    return elemento.text if elemento.text is not None else ""
 
 
 def _decimal(elemento: etree._Element | None, campo: str) -> Decimal | None:
@@ -132,7 +186,7 @@ def _decimal(elemento: etree._Element | None, campo: str) -> Decimal | None:
     Un ausente devuelve `None`, no `Decimal("0")`: el modelo físico distingue
     ambos estados y colapsarlos perdería información fiscal.
     """
-    crudo = _texto(elemento)
+    crudo = _texto_colapsado(elemento)
     if crudo is None or crudo == "":
         return None
     try:
@@ -144,7 +198,7 @@ def _decimal(elemento: etree._Element | None, campo: str) -> Decimal | None:
 
 
 def _entero(elemento: etree._Element | None, campo: str) -> int | None:
-    crudo = _texto(elemento)
+    crudo = _texto_colapsado(elemento)
     if crudo is None or crudo == "":
         return None
     try:
@@ -158,6 +212,20 @@ def _obligatorio(valor: str | None, campo: str) -> str:
     esquema oficial cambió y el modelo dejó de ser fiel."""
     if valor is None or valor == "":
         raise SemanticParseError("Campo obligatorio ausente o vacío", campo=campo)
+    return valor
+
+
+def _elemento_obligatorio(valor: str | None, campo: str) -> str:
+    """Exige que el ELEMENTO exista, no que su texto sea no vacío.
+
+    `_obligatorio` trata `""` como ausente, y eso vale para los campos cuyo
+    tipo XSD no admite la cadena vacía. Pero `Identificacion/Numero` es
+    `minOccurs=1` y `xs:string` **sin `minLength`**: el elemento es
+    obligatorio y su valor puede ser vacío. Son dos exigencias distintas, y
+    confundirlas hacía que un comprobante XSD-válido acabara rechazado.
+    """
+    if valor is None:
+        raise SemanticParseError("Elemento obligatorio ausente", campo=campo)
     return valor
 
 
@@ -209,26 +277,160 @@ def _fecha(literal: str, campo: str) -> FechaFiscal:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parte(nodo: etree._Element, role: str) -> ParsedDocumentParty:
-    nombre = _obligatorio(_texto(_hijo(nodo, "Nombre")), f"{role}/Nombre")
+    nombre = _obligatorio(_texto_literal(_hijo(nodo, "Nombre")), f"{role}/Nombre")
 
     ident_nodo = _hijo(nodo, "Identificacion")
     identificacion = None
     if ident_nodo is not None:
         identificacion = Identificacion(
             tipo=_obligatorio(
-                _texto(_hijo(ident_nodo, "Tipo")), f"{role}/Identificacion/Tipo"
+                _texto_literal(_hijo(ident_nodo, "Tipo")), f"{role}/Identificacion/Tipo"
             ),
-            numero=_obligatorio(
-                _texto(_hijo(ident_nodo, "Numero")), f"{role}/Identificacion/Numero"
+            # `Numero` es `minOccurs=1` pero `xs:string` SIN `minLength`: el
+            # elemento tiene que estar, su contenido puede ser vacío.
+            numero=_elemento_obligatorio(
+                _texto_literal(_hijo(ident_nodo, "Numero")),
+                f"{role}/Identificacion/Numero",
             ),
         )
 
-    comercial = _texto(_hijo(nodo, "NombreComercial"))
+    comercial = _texto_literal(_hijo(nodo, "NombreComercial"))
     return ParsedDocumentParty(
         role=role,
         legal_name=nombre,
         identificacion=identificacion,
         trade_name=comercial or None,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cuerpo de la transacción (B2)
+#
+# Todo lo de aquí se lee del árbol que YA se parseó de forma segura y YA pasó
+# el esquema oficial. No se vuelve a llamar a `etree.fromstring`: un segundo
+# parseo sería una segunda configuración que mantener, y la tentación de
+# relajarla «solo para las líneas» es exactamente cómo se pierde el
+# endurecimiento.
+#
+# Las rutas de error son ESTRUCTURALES —`LineaDetalle[3]/Impuesto[1]/Monto`—
+# y no llevan contenido: ni descripciones, ni identificadores, ni importes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _impuesto(nodo: etree._Element, ruta: str) -> ParsedLineTax:
+    return ParsedLineTax(
+        tax_code=_obligatorio(_texto_literal(_hijo(nodo, "Codigo")), f"{ruta}/Codigo"),
+        reported_amount=_decimal_obligatorio(_hijo(nodo, "Monto"), f"{ruta}/Monto"),
+        # Opcionales en el XSD: ausente es `None`. No se convierte un ausente
+        # en «0 %» ni en «exento» — eso sería una conclusión fiscal.
+        vat_rate_code=_texto_literal(_hijo(nodo, "CodigoTarifaIVA")),
+        reported_rate=_decimal(_hijo(nodo, "Tarifa"), f"{ruta}/Tarifa"),
+    )
+
+
+def _descuento(nodo: etree._Element, ruta: str) -> ParsedLineDiscount:
+    return ParsedLineDiscount(
+        reported_amount=_decimal_obligatorio(
+            _hijo(nodo, "MontoDescuento"), f"{ruta}/MontoDescuento"
+        ),
+        discount_code=_obligatorio(
+            _texto_literal(_hijo(nodo, "CodigoDescuento")), f"{ruta}/CodigoDescuento"
+        ),
+    )
+
+
+def _linea(nodo: etree._Element, posicion: int) -> ParsedDocumentLine:
+    """Una `LineaDetalle`. `posicion` es 1-based y **solo** sirve para la ruta
+    de diagnóstico: el número de línea del modelo sale de `NumeroLinea`."""
+    ruta = f"LineaDetalle[{posicion}]"
+
+    numero = _entero(_hijo(nodo, "NumeroLinea"), f"{ruta}/NumeroLinea")
+    if numero is None:
+        raise SemanticParseError(
+            "Campo obligatorio ausente o vacío", campo=f"{ruta}/NumeroLinea"
+        )
+
+    return ParsedDocumentLine(
+        line_number=numero,
+        cabys_code=_obligatorio(
+            _texto_literal(_hijo(nodo, "CodigoCABYS")), f"{ruta}/CodigoCABYS"
+        ),
+        description=_obligatorio(_texto_literal(_hijo(nodo, "Detalle")), f"{ruta}/Detalle"),
+        unit_of_measure_code=_obligatorio(
+            _texto_literal(_hijo(nodo, "UnidadMedida")), f"{ruta}/UnidadMedida"
+        ),
+        reported_quantity=_decimal_obligatorio(
+            _hijo(nodo, "Cantidad"), f"{ruta}/Cantidad"
+        ),
+        reported_unit_price=_decimal_obligatorio(
+            _hijo(nodo, "PrecioUnitario"), f"{ruta}/PrecioUnitario"
+        ),
+        reported_gross_amount=_decimal_obligatorio(
+            _hijo(nodo, "MontoTotal"), f"{ruta}/MontoTotal"
+        ),
+        reported_subtotal=_decimal_obligatorio(
+            _hijo(nodo, "SubTotal"), f"{ruta}/SubTotal"
+        ),
+        reported_taxable_base=_decimal_obligatorio(
+            _hijo(nodo, "BaseImponible"), f"{ruta}/BaseImponible"
+        ),
+        reported_net_tax=_decimal_obligatorio(
+            _hijo(nodo, "ImpuestoNeto"), f"{ruta}/ImpuestoNeto"
+        ),
+        reported_line_total=_decimal_obligatorio(
+            _hijo(nodo, "MontoTotalLinea"), f"{ruta}/MontoTotalLinea"
+        ),
+        # 0..5 en el XSD. Una línea sin `Descuento` da una tupla VACÍA, no un
+        # descuento sintético de cero: ausente y cero no son lo mismo.
+        discounts=tuple(
+            _descuento(d, f"{ruta}/Descuento[{i}]")
+            for i, d in enumerate(_hijos(nodo, "Descuento"), start=1)
+        ),
+        # 1..1000 en el XSD. Se recorren todos: aplanar a un solo impuesto por
+        # línea perdería documentos legítimos con varios.
+        taxes=tuple(
+            _impuesto(t, f"{ruta}/Impuesto[{i}]")
+            for i, t in enumerate(_hijos(nodo, "Impuesto"), start=1)
+        ),
+    )
+
+
+def _lineas(arbol: etree._Element) -> tuple[ParsedDocumentLine, ...]:
+    """`DetalleServicio` es 0..1 en FE, TE y NC: si no está, no hay líneas."""
+    detalle = _hijo(arbol, "DetalleServicio")
+    return tuple(
+        _linea(n, i) for i, n in enumerate(_hijos(detalle, "LineaDetalle"), start=1)
+    )
+
+
+def _referencia(nodo: etree._Element, posicion: int) -> ParsedDocumentReference:
+    ruta = f"InformacionReferencia[{posicion}]"
+    literal = _obligatorio(
+        _texto_colapsado(_hijo(nodo, "FechaEmisionIR")), f"{ruta}/FechaEmisionIR"
+    )
+    return ParsedDocumentReference(
+        referenced_document_type_code=_obligatorio(
+            _texto_literal(_hijo(nodo, "TipoDocIR")), f"{ruta}/TipoDocIR"
+        ),
+        # Mismo tratamiento que `FechaEmision` del sobre (ADR-039): reloj de
+        # pared siempre; instante y desplazamiento solo si la fuente los da.
+        fecha=_fecha(literal, f"{ruta}/FechaEmisionIR"),
+        # `Numero` y `Razon` son 0..1 y `xs:string` SIN `minLength`, así que
+        # la fuente distingue tres estados: ausente, presente-vacío y con
+        # texto. `… or None` fundía los dos primeros y perdía información.
+        reported_number=_texto_literal(_hijo(nodo, "Numero")),
+        reason=_texto_literal(_hijo(nodo, "Razon")),
+        # `Codigo` es `CodigoReferenciaType`, con `minLength=maxLength=2`: un
+        # presente-vacío NO es un estado legal, así que aquí sí se colapsa.
+        reference_code=_texto_literal(_hijo(nodo, "Codigo")),
+    )
+
+
+def _referencias(arbol: etree._Element) -> tuple[ParsedDocumentReference, ...]:
+    """0..10 en FE y TE; **1..10 en NC**, que exige al menos una. El mínimo lo
+    impone el esquema oficial, así que aquí no hace falta repetirlo."""
+    return tuple(
+        _referencia(n, i)
+        for i, n in enumerate(_hijos(arbol, "InformacionReferencia"), start=1)
     )
 
 
@@ -307,6 +509,8 @@ def parse_fiscal_document(raw_xml: bytes) -> ParsedFiscalDocument:
     return ParsedFiscalDocument(
         document=_sobre(arbol, TIPO_POR_RAIZ[raiz]),
         parties=_partes(arbol),
+        lines=_lineas(arbol),
+        references=_referencias(arbol),
     )
 
 
@@ -328,25 +532,25 @@ def _sobre(arbol: etree._Element, document_type: str) -> ParsedElectronicDocumen
         raise SemanticParseError("Falta ResumenFactura", campo="ResumenFactura")
 
     moneda = _ruta(resumen, "CodigoTipoMoneda")
-    fecha_literal = _obligatorio(_texto(_hijo(arbol, "FechaEmision")), "FechaEmision")
+    fecha_literal = _obligatorio(_texto_colapsado(_hijo(arbol, "FechaEmision")), "FechaEmision")
 
     return ParsedElectronicDocument(
         document_type=document_type,
-        clave=_obligatorio(_texto(_hijo(arbol, "Clave")), "Clave"),
+        clave=_obligatorio(_texto_literal(_hijo(arbol, "Clave")), "Clave"),
         consecutive_number=_obligatorio(
-            _texto(_hijo(arbol, "NumeroConsecutivo")), "NumeroConsecutivo"
+            _texto_literal(_hijo(arbol, "NumeroConsecutivo")), "NumeroConsecutivo"
         ),
         fecha=_fecha(fecha_literal, "FechaEmision"),
         issuer_activity_code=_obligatorio(
-            _texto(_hijo(arbol, "CodigoActividadEmisor")), "CodigoActividadEmisor"
+            _texto_literal(_hijo(arbol, "CodigoActividadEmisor")), "CodigoActividadEmisor"
         ),
-        receiver_activity_code=_texto(_hijo(arbol, "CodigoActividadReceptor")) or None,
+        receiver_activity_code=_texto_literal(_hijo(arbol, "CodigoActividadReceptor")),
         sale_condition_code=_obligatorio(
-            _texto(_hijo(arbol, "CondicionVenta")), "CondicionVenta"
+            _texto_literal(_hijo(arbol, "CondicionVenta")), "CondicionVenta"
         ),
         credit_term=_entero(_hijo(arbol, "PlazoCredito"), "PlazoCredito"),
         currency_code=_obligatorio(
-            _texto(_hijo(moneda, "CodigoMoneda")), "CodigoMoneda"
+            _texto_literal(_hijo(moneda, "CodigoMoneda")), "CodigoMoneda"
         ),
         reported_exchange_rate=_decimal_obligatorio(
             _hijo(moneda, "TipoCambio"), "TipoCambio"

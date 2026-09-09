@@ -10,6 +10,8 @@ prueba aquí porque no existe: no se finge cobertura.
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import json
 import re
 import socket
@@ -20,6 +22,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from lxml import etree
 
 from app.fiscal.errors import (
     FiscalParseError,
@@ -277,12 +280,21 @@ def test_el_documento_no_expone_identidad_de_base_de_datos():
 # Alcance de B1: lo que NO se normaliza, no se finge
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_el_resultado_no_finge_normalizar_lineas_ni_impuestos():
-    """B1 cubre sobre y partes. Devolver listas vacías de líneas sugeriría
-    que se intentó y no había, que es distinto de no haberlo implementado."""
+def test_el_resultado_no_finge_normalizar_lo_que_no_normaliza():
+    """En B1 este test comprobaba que `lines` y `references` NO existían:
+    devolver listas vacías habría sugerido «se buscó y no había» en vez de
+    «no está implementado». B2 los implementa de verdad, así que ahora
+    existen — y lo que se comprueba es lo que sigue siendo cierto: el
+    agregado no finge cubrir lo que el modelo aprobado deja fuera.
+
+    Los hijos de línea viven en la línea, no aplanados en el agregado.
+    """
     resultado = parse_fiscal_document(_bytes(_comprobantes()[0]))
-    for ausente in ("lines", "taxes", "discounts", "references"):
-        assert ausente not in resultado.__dataclass_fields__
+    campos = resultado.__dataclass_fields__
+    assert "lines" in campos and "references" in campos
+    # Ni `taxes` ni `discounts` cuelgan del documento: son de cada línea.
+    for aplanado in ("taxes", "discounts", "tax_code", "tax_rate", "tax_amount"):
+        assert aplanado not in campos
 
 
 def test_no_se_emiten_valores_calculados():
@@ -851,11 +863,21 @@ from app.fiscal.models import FechaFiscal, Identificacion, ParsedDocumentParty
 
 
 @pytest.mark.parametrize(
-    "tipo, numero", [("", "3101123456"), ("01", ""), ("", "")],
+    "tipo, numero", [("", "3101123456"), ("", "")],
 )
-def test_la_identificacion_no_admite_campos_vacios(tipo, numero):
+def test_la_identificacion_no_admite_un_tipo_vacio(tipo, numero):
+    """En B1 este test exigía también `numero` no vacío. B2-R3 lo corrigió:
+    `Tipo` es enumerado (01..06) y el vacío no está entre sus valores, pero
+    `Numero` es `xs:string` con `maxLength=20` y **sin `minLength`**, así que
+    para él la cadena vacía sí es un estado legal de la fuente.
+
+    La asimetría es del esquema oficial, no nuestra."""
     with pytest.raises(ValueError):
         Identificacion(tipo=tipo, numero=numero)
+
+
+def test_la_identificacion_si_admite_un_numero_vacio():
+    assert Identificacion(tipo="01", numero="").numero == ""
 
 
 def test_la_identificacion_completa_se_construye():
@@ -1333,3 +1355,1242 @@ def test_la_unicidad_se_comprueba_sin_construir_el_diccionario_primero():
     fuente = Path(registry_modulo.__file__).read_text(encoding="utf-8")
     assert "vistas" in fuente
     assert "if clave in vistas:" in fuente
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# B2 · Cuerpo de la transacción: líneas, descuentos, impuestos y referencias
+# ═════════════════════════════════════════════════════════════════════════════
+
+from app.fiscal.models import (          # noqa: E402
+    REFERENCIAS_POR_TIPO,
+    ParsedDocumentLine,
+    ParsedDocumentReference,
+    ParsedLineDiscount,
+    ParsedLineTax,
+)
+from app.fiscal.models import ParsedElectronicDocument  # noqa: E402
+from app.fiscal.parser.document import RAICES_SOPORTADAS  # noqa: E402
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tabla de expectativas ESTÁTICA.
+#
+# Estos números NO salen del parser. Se obtuvieron inspeccionando el XML de
+# cada comprobante directamente con lxml, contando `LineaDetalle`,
+# `Descuento`, `Impuesto` e `InformacionReferencia`. Si el parser se
+# equivocara, esta tabla no se equivocaría con él — que es justamente para lo
+# que está.
+#
+#                                         líneas, descuentos, impuestos, refs
+# ─────────────────────────────────────────────────────────────────────────────
+COBERTURA_REAL: dict[str, tuple[str, int, int, int, int]] = {
+    "003101354271-FC-00300045010000126295":         ("invoice",     6, 0, 6, 0),
+    "50601082600310161019803900001010004596121100": ("invoice",     7, 1, 7, 0),
+    "50602082600310161019800100024010059940227200": ("invoice",     1, 0, 1, 0),
+    "50603082600060362024500100002010000010585199": ("invoice",     1, 0, 1, 0),
+    "50607072600310100718611000011010000006677144": ("invoice",     2, 0, 2, 0),
+    "50619062600310111260300100008010000004706367": ("invoice",     2, 0, 2, 0),
+    "50621052600310192688300100031010000000011134": ("invoice",     4, 0, 4, 0),
+    "FACTURA_TC_S1505447W":                         ("invoice",     1, 0, 1, 0),
+    "FE-50614082600020768066800100001010000000021": ("invoice",     1, 0, 1, 0),
+    "FE-50627072600011276035800100001010000000741": ("invoice",     1, 0, 1, 0),
+    "fe-50626052600310295087500100001010000000033": ("invoice",     1, 0, 1, 0),
+    "NC-50631082600310181576400100001030000001522": ("credit_note", 1, 0, 1, 1),
+    "Comprobante_Electronico_50630062600310174582": ("ticket",      1, 0, 1, 0),
+}
+
+#: Totales agregados del corpus, contados a mano sobre la tabla de arriba.
+TOTALES_REALES = {"lineas": 29, "descuentos": 1, "impuestos": 29, "referencias": 1}
+
+
+def _fixture(prefijo: str) -> Path:
+    """Localiza un comprobante por prefijo de nombre.
+
+    Se busca SOLO entre `fe/`, `te/` y `nc/`: cada comprobante comparte los
+    primeros 44 caracteres de su nombre con el `MensajeHacienda` que responde
+    a su Clave, así que un `rglob` sobre todo el corpus devolvía a veces el MH
+    —que no es un comprobante— según el orden del sistema de ficheros.
+    """
+    candidatos = [
+        FIXTURES / rel for rel in _comprobantes()
+        if Path(rel).name.startswith(prefijo)
+    ]
+    if len(candidatos) != 1:
+        raise AssertionError(
+            f"el prefijo {prefijo!r} identifica {len(candidatos)} comprobantes"
+        )
+    return candidatos[0]
+
+
+def _parseado(prefijo: str):
+    return parse_fiscal_document(_fixture(prefijo).read_bytes())
+
+
+def test_la_tabla_de_expectativas_cubre_los_trece_comprobantes():
+    """Guardia de la propia tabla: si entra un fixture nuevo, este test avisa
+    antes de que los demás lo ignoren en silencio."""
+    assert len(COBERTURA_REAL) == 13
+    assert len(_comprobantes()) == 13
+    for prefijo in COBERTURA_REAL:
+        assert _fixture(prefijo).exists()
+    assert sum(v[1] for v in COBERTURA_REAL.values()) == TOTALES_REALES["lineas"]
+    assert sum(v[2] for v in COBERTURA_REAL.values()) == TOTALES_REALES["descuentos"]
+    assert sum(v[3] for v in COBERTURA_REAL.values()) == TOTALES_REALES["impuestos"]
+    assert sum(v[4] for v in COBERTURA_REAL.values()) == TOTALES_REALES["referencias"]
+
+
+@pytest.mark.parametrize("prefijo", sorted(COBERTURA_REAL), ids=lambda p: p[:28])
+def test_cada_comprobante_real_produce_el_cuerpo_esperado(prefijo):
+    """Contrato sobre el corpus real, contra números inspeccionados aparte."""
+    tipo, n_lineas, n_desc, n_imp, n_refs = COBERTURA_REAL[prefijo]
+    doc = _parseado(prefijo)
+
+    # B1 sigue intacto.
+    assert doc.document.document_type == tipo
+    assert doc.issuer is not None and doc.issuer.legal_name
+
+    assert len(doc.lines) == n_lineas
+    assert sum(len(l.discounts) for l in doc.lines) == n_desc
+    assert sum(len(l.taxes) for l in doc.lines) == n_imp
+    assert len(doc.references) == n_refs
+
+
+def test_totales_y_maximos_del_corpus_real():
+    """Los agregados que la ronda declara, medidos sobre los 13 comprobantes."""
+    lineas = desc = imp = refs = 0
+    max_lineas = max_desc = max_imp = max_refs = 0
+    for prefijo in COBERTURA_REAL:
+        doc = _parseado(prefijo)
+        lineas += len(doc.lines); refs += len(doc.references)
+        max_lineas = max(max_lineas, len(doc.lines))
+        max_refs = max(max_refs, len(doc.references))
+        for l in doc.lines:
+            desc += len(l.discounts); imp += len(l.taxes)
+            max_desc = max(max_desc, len(l.discounts))
+            max_imp = max(max_imp, len(l.taxes))
+
+    assert (lineas, desc, imp, refs) == (
+        TOTALES_REALES["lineas"], TOTALES_REALES["descuentos"],
+        TOTALES_REALES["impuestos"], TOTALES_REALES["referencias"],
+    )
+    # Máximos observados. Que el máximo de descuentos, impuestos y referencias
+    # sea 1 es un HUECO DE CORPUS declarado, no una cota del formato: el XSD
+    # admite 0..5, 1..1000 y 0..10 respectivamente.
+    assert (max_lineas, max_desc, max_imp, max_refs) == (7, 1, 1, 1)
+
+
+# ── Valores exactos, leídos del XML fuente ───────────────────────────────────
+
+def test_valores_exactos_de_una_linea_con_descuento():
+    """FE 50601… línea 6: la única línea del corpus con `Descuento`."""
+    doc = _parseado("50601082600310161019803900001010004596121100")
+    linea = doc.lines[5]
+
+    assert linea.line_number == 6
+    assert linea.cabys_code == "8422200000000"
+    assert linea.description == "500MBPS/500MBPS_FTTH_LY_2025_FMC"
+    assert linea.unit_of_measure_code == "Os"
+    assert linea.reported_quantity == Decimal("1")
+    assert linea.reported_unit_price == Decimal("58210.99")
+    assert linea.reported_gross_amount == Decimal("58210.99")
+    assert linea.reported_subtotal == Decimal("19110.90")
+    assert linea.reported_taxable_base == Decimal("19110.90")
+    assert linea.reported_net_tax == Decimal("2484.42")
+    assert linea.reported_line_total == Decimal("21595.32")
+
+    assert len(linea.discounts) == 1
+    assert linea.discounts[0] == ParsedLineDiscount(
+        reported_amount=Decimal("39100.09"), discount_code="07"
+    )
+
+    assert len(linea.taxes) == 1
+    assert linea.taxes[0] == ParsedLineTax(
+        tax_code="01", reported_amount=Decimal("2484.42"),
+        vat_rate_code="08", reported_rate=Decimal("13"),
+    )
+
+
+def test_valores_exactos_del_tiquete():
+    doc = _parseado("Comprobante_Electronico_50630062600310174582")
+    linea = doc.lines[0]
+
+    assert (linea.line_number, linea.cabys_code) == (1, "9723000000200")
+    assert linea.unit_of_measure_code == "Os"
+    assert linea.reported_unit_price == Decimal("100")
+    assert linea.reported_subtotal == Decimal("100")
+    assert linea.reported_taxable_base == Decimal("100")
+    assert linea.reported_net_tax == Decimal("13")
+    assert linea.reported_line_total == Decimal("113")
+    assert linea.discounts == ()
+    assert linea.taxes[0].tax_code == "01"
+    assert linea.taxes[0].vat_rate_code == "08"
+    assert linea.taxes[0].reported_amount == Decimal("13")
+
+
+def test_el_literal_decimal_se_conserva_tal_cual():
+    """`Decimal` desde el literal, no vía `float`: la escala de la fuente
+    sobrevive. El corpus escribe la misma tarifa como '13', '13.00' y
+    '13.00000', y las tres deben distinguirse aunque valgan lo mismo."""
+    te = _parseado("Comprobante_Electronico_50630062600310174582")
+    nc = _parseado("NC-50631082600310181576400100001030000001522")
+
+    assert str(te.lines[0].taxes[0].reported_rate) == "13"
+    assert str(nc.lines[0].taxes[0].reported_rate) == "13.00"
+    # Numéricamente iguales, textualmente distintos: eso es preservar la fuente.
+    assert te.lines[0].taxes[0].reported_rate == nc.lines[0].taxes[0].reported_rate
+    assert str(te.lines[0].taxes[0].reported_rate) != str(
+        nc.lines[0].taxes[0].reported_rate
+    )
+
+
+def test_ningun_importe_de_linea_pasa_por_float():
+    """Guardia sobre la fuente del parser."""
+    fuente = Path(parse_fiscal_document.__module__.replace(".", "/") + ".py")
+    texto = (Path(__file__).parents[1] / "app/fiscal/parser/document.py").read_text(
+        encoding="utf-8"
+    )
+    assert "float(" not in texto
+
+
+# ── Orden y numeración de la fuente ──────────────────────────────────────────
+
+def test_se_conserva_el_orden_del_documento_y_el_numero_declarado():
+    """El orden es el del XML; `line_number` sale de `NumeroLinea`, no de la
+    posición. En este corpus coinciden — y el test lo comprueba sin **derivar**
+    uno del otro."""
+    doc = _parseado("50601082600310161019803900001010004596121100")
+    assert [l.line_number for l in doc.lines] == [1, 2, 3, 4, 5, 6, 7]
+    # La línea con descuento es la 6ª del documento: si el parser reordenara,
+    # el descuento aparecería en otra posición.
+    assert [i for i, l in enumerate(doc.lines) if l.discounts] == [5]
+
+
+def test_el_parser_no_renumera_ni_repara_la_numeracion():
+    """Sobre un documento cuyo `NumeroLinea` no sigue la posición, el parser
+    reporta lo que dice la fuente. Se construye en MEMORIA a partir de un
+    comprobante real: no se toca ningún byte versionado."""
+    crudo = _fixture("50607072600310100718611000011010000006677144").read_bytes()
+    arbol = etree.fromstring(crudo)
+    ns = arbol.tag[1:].split("}")[0]
+    lineas = arbol.findall(f".//{{{ns}}}LineaDetalle")
+    assert len(lineas) == 2
+    # Se intercambian los NumeroLinea sin mover los elementos.
+    a = lineas[0].find(f"{{{ns}}}NumeroLinea")
+    b = lineas[1].find(f"{{{ns}}}NumeroLinea")
+    a.text, b.text = b.text, a.text
+
+    doc = parse_fiscal_document(etree.tostring(arbol))
+    # Orden del documento intacto; numeración tal y como quedó en la fuente.
+    assert [l.line_number for l in doc.lines] == [2, 1]
+
+
+# ── Multiplicidad ────────────────────────────────────────────────────────────
+
+def test_el_modelo_admite_varios_descuentos_e_impuestos_por_linea():
+    """**Cobertura de contrato, no de fixture real.**
+
+    El corpus real no contiene ninguna línea con más de un descuento ni con
+    más de un impuesto — máximo observado: 1 y 1—. El XSD sí los admite
+    (0..5 y 1..1000), así que el modelo y el bucle de extracción deben
+    soportarlos. Esto se prueba a nivel de MODELO, sin fabricar un
+    comprobante de aspecto auténtico que fingiera cobertura real.
+    """
+    linea = ParsedDocumentLine(
+        line_number=1, cabys_code="8422200000000", description="x",
+        unit_of_measure_code="Os", reported_quantity=Decimal("1"),
+        reported_unit_price=Decimal("1"), reported_gross_amount=Decimal("1"),
+        reported_subtotal=Decimal("1"), reported_taxable_base=Decimal("1"),
+        reported_net_tax=Decimal("0"), reported_line_total=Decimal("1"),
+        discounts=(
+            ParsedLineDiscount(reported_amount=Decimal("1.00"), discount_code="01"),
+            ParsedLineDiscount(reported_amount=Decimal("2.00"), discount_code="07"),
+        ),
+        taxes=(
+            ParsedLineTax(tax_code="01", reported_amount=Decimal("1")),
+            ParsedLineTax(tax_code="07", reported_amount=Decimal("2")),
+        ),
+    )
+    assert len(linea.discounts) == 2 and len(linea.taxes) == 2
+    # El orden de la fuente se conserva; no se ordena por código ni por importe.
+    assert [d.discount_code for d in linea.discounts] == ["01", "07"]
+    assert [t.tax_code for t in linea.taxes] == ["01", "07"]
+
+
+def test_el_bucle_de_extraccion_recorre_todos_los_descuentos_e_impuestos():
+    """Multiplicidad en la EXTRACCIÓN, no solo en el modelo. Se duplica en
+    memoria el `Descuento` y el `Impuesto` de un comprobante real —el XSD
+    admite hasta 5 y hasta 1000—, sin tocar ningún byte versionado."""
+    crudo = _fixture("50601082600310161019803900001010004596121100").read_bytes()
+    arbol = etree.fromstring(crudo)
+    ns = arbol.tag[1:].split("}")[0]
+    linea = arbol.findall(f".//{{{ns}}}LineaDetalle")[5]
+
+    desc = linea.find(f"{{{ns}}}Descuento")
+    linea.insert(list(linea).index(desc) + 1, copy.deepcopy(desc))
+    imp = linea.find(f"{{{ns}}}Impuesto")
+    linea.insert(list(linea).index(imp) + 1, copy.deepcopy(imp))
+
+    doc = parse_fiscal_document(etree.tostring(arbol))
+    assert len(doc.lines[5].discounts) == 2
+    assert len(doc.lines[5].taxes) == 2
+    assert doc.lines[5].discounts[0] == doc.lines[5].discounts[1]
+
+
+def test_una_linea_sin_descuento_no_inventa_un_descuento_de_cero():
+    """Ausente no es cero. Un descuento sintético de `Decimal("0")` haría
+    creer que el emisor declaró un descuento nulo."""
+    doc = _parseado("Comprobante_Electronico_50630062600310174582")
+    assert doc.lines[0].discounts == ()
+    assert doc.lines[0].discounts is not None
+    assert not any(d.reported_amount == 0 for d in doc.lines[0].discounts)
+
+
+# ── Referencias ──────────────────────────────────────────────────────────────
+
+def test_la_referencia_real_de_la_nota_de_credito():
+    """La NC referencia una FE que **no está en el corpus**. Debe parsear."""
+    doc = _parseado("NC-50631082600310181576400100001030000001522")
+    assert len(doc.references) == 1
+    ref = doc.references[0]
+
+    assert ref.referenced_document_type_code == "01"
+    assert ref.reported_number == (
+        "50630082600310181576400100001010000022472103888064"
+    )
+    assert len(ref.reported_number) == 50
+    assert ref.reference_code == "01"
+    assert ref.reason == "Factura erronea"
+
+
+def test_la_fecha_de_la_referencia_sigue_adr_039():
+    doc = _parseado("NC-50631082600310181576400100001030000001522")
+    fecha = doc.references[0].fecha
+
+    assert fecha.raw == "2026-08-31T08:48:19-06:00"
+    assert fecha.local == datetime(2026, 8, 31, 8, 48, 19)
+    assert fecha.local.tzinfo is None
+    assert fecha.offset_minutos == -360
+    assert fecha.instante == datetime(2026, 8, 31, 14, 48, 19, tzinfo=timezone.utc)
+
+
+def test_una_referencia_sin_desplazamiento_no_inventa_zona_horaria():
+    """El XSD declara `FechaEmisionIR` como `xs:dateTime`, cuyo desplazamiento
+    es opcional. Sin él: reloj de pared y literal; instante y offset a `None`.
+    Se prepara en memoria sobre el comprobante real."""
+    crudo = _fixture("NC-50631082600310181576400100001030000001522").read_bytes()
+    arbol = etree.fromstring(crudo)
+    ns = arbol.tag[1:].split("}")[0]
+    nodo = arbol.find(f".//{{{ns}}}InformacionReferencia/{{{ns}}}FechaEmisionIR")
+    nodo.text = "2026-08-31T08:48:19"
+
+    fecha = parse_fiscal_document(etree.tostring(arbol)).references[0].fecha
+    assert fecha.raw == "2026-08-31T08:48:19"
+    assert fecha.local == datetime(2026, 8, 31, 8, 48, 19)
+    assert fecha.instante is None
+    assert fecha.offset_minutos is None
+
+
+def test_el_parser_no_resuelve_la_referencia():
+    """Sin `resolved_document_id` ni nada que se le parezca: resolver es de la
+    persistencia (ADR-028), y aquí no hay base de datos."""
+    ref = _parseado("NC-50631082600310181576400100001030000001522").references[0]
+    campos = {f.name for f in dataclasses.fields(ref)}
+    assert campos == {
+        "referenced_document_type_code", "fecha",
+        "reported_number", "reference_code", "reason",
+    }
+    assert not any("resolved" in c or "_id" in c for c in campos)
+
+
+def test_varias_referencias_se_conservan_en_orden():
+    """El XSD admite 0..10 (1..10 en NC). El corpus real solo tiene una, así
+    que la multiplicidad se prueba duplicando en memoria — cobertura de
+    contrato, no de fixture real."""
+    crudo = _fixture("NC-50631082600310181576400100001030000001522").read_bytes()
+    arbol = etree.fromstring(crudo)
+    ns = arbol.tag[1:].split("}")[0]
+    ref = arbol.find(f".//{{{ns}}}InformacionReferencia")
+    copia = copy.deepcopy(ref)
+    copia.find(f"{{{ns}}}Razon").text = "Segunda razon"
+    ref.getparent().insert(list(ref.getparent()).index(ref) + 1, copia)
+
+    refs = parse_fiscal_document(etree.tostring(arbol)).references
+    assert len(refs) == 2
+    assert [r.reason for r in refs] == ["Factura erronea", "Segunda razon"]
+
+
+def test_un_documento_sin_referencias_devuelve_tupla_vacia():
+    doc = _parseado("FACTURA_TC_S1505447W")
+    assert doc.references == ()
+
+
+# ── Campos diferidos ─────────────────────────────────────────────────────────
+
+def test_los_campos_diferidos_no_se_normalizan_ni_hacen_fallar():
+    """`CodigoComercial` está en 27 de 29 líneas reales, `TipoTransaccion` en
+    14 y `UnidadMedidaComercial` en 5. No están en el modelo aprobado: su
+    presencia no rompe nada, y el modelo no finge haberlos normalizado."""
+    campos = {f.name for f in dataclasses.fields(ParsedDocumentLine)}
+    for diferido in (
+        "commercial_code", "codigo_comercial", "transaction_type",
+        "commercial_unit", "unidad_medida_comercial", "vin", "medicine_registry",
+        "pharmaceutical_form", "assorted_detail", "factory_vat",
+        "factory_assumed_tax",
+    ):
+        assert diferido not in campos
+
+    # Y sin embargo los 13 comprobantes —que los traen— parsean.
+    for prefijo in COBERTURA_REAL:
+        assert _parseado(prefijo) is not None
+
+
+def test_la_exoneracion_no_esta_modelada_y_no_se_finge():
+    """`Exoneracion` es 0..1 dentro de `Impuesto` en el XSD, pero **no** está
+    en el modelo físico aprobado de `line_taxes`, y **no se observa** en
+    ninguno de los 29 impuestos del corpus. Queda diferida, declarada."""
+    campos = {f.name for f in dataclasses.fields(ParsedLineTax)}
+    assert campos == {"tax_code", "reported_amount", "vat_rate_code", "reported_rate"}
+    assert not any("exon" in c for c in campos)
+
+    vistos = 0
+    for prefijo in COBERTURA_REAL:
+        crudo = _fixture(prefijo).read_bytes()
+        arbol = etree.fromstring(crudo)
+        ns = arbol.tag[1:].split("}")[0]
+        vistos += len(arbol.findall(f".//{{{ns}}}Exoneracion"))
+    assert vistos == 0, "el corpus ya contiene Exoneracion: hay que revisar el modelo"
+
+
+# ── Invariantes de modelo ────────────────────────────────────────────────────
+
+def test_invariantes_estructurales_de_los_modelos_hijos():
+    base = dict(
+        line_number=1, cabys_code="8422200000000", description="x",
+        unit_of_measure_code="Os", reported_quantity=Decimal("1"),
+        reported_unit_price=Decimal("1"), reported_gross_amount=Decimal("1"),
+        reported_subtotal=Decimal("1"), reported_taxable_base=Decimal("1"),
+        reported_net_tax=Decimal("0"), reported_line_total=Decimal("1"),
+        # `Impuesto` es 1..1000 en el XSD: una línea sin impuesto no es un
+        # estado que la fuente pueda expresar (R1).
+        taxes=(ParsedLineTax(tax_code="01", reported_amount=Decimal("0")),),
+    )
+    ParsedDocumentLine(**base)                       # válido
+
+    with pytest.raises(ValueError):
+        ParsedDocumentLine(**{**base, "line_number": 0})
+    for campo in ("cabys_code", "description", "unit_of_measure_code"):
+        with pytest.raises(ValueError):
+            ParsedDocumentLine(**{**base, campo: ""})
+    with pytest.raises(TypeError):
+        ParsedDocumentLine(**{**base, "taxes": []})   # lista, no tupla
+
+    with pytest.raises(ValueError):
+        ParsedLineTax(tax_code="", reported_amount=Decimal("1"))
+    with pytest.raises(ValueError):
+        ParsedLineTax(tax_code="01", reported_amount=Decimal("1"), vat_rate_code="")
+    with pytest.raises(ValueError):
+        ParsedLineDiscount(reported_amount=Decimal("1"), discount_code="")
+    with pytest.raises(ValueError):
+        ParsedDocumentReference(
+            referenced_document_type_code="", fecha=FechaFiscal(
+                local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"
+            ),
+        )
+
+
+def test_el_parser_no_valida_aritmetica_fiscal():
+    """Un modelo cuyos importes no cuadran **se construye igual**: reconciliar
+    totales es del Tax Engine. Si el parser lo rechazara, estaría emitiendo un
+    juicio fiscal disfrazado de invariante estructural."""
+    linea = ParsedDocumentLine(
+        line_number=1, cabys_code="8422200000000", description="x",
+        unit_of_measure_code="Os", reported_quantity=Decimal("2"),
+        reported_unit_price=Decimal("10"),
+        reported_gross_amount=Decimal("999"),     # ≠ 2 × 10
+        reported_subtotal=Decimal("1"), reported_taxable_base=Decimal("1"),
+        reported_net_tax=Decimal("500"), reported_line_total=Decimal("0"),
+        taxes=(ParsedLineTax(
+            tax_code="01", reported_amount=Decimal("0"),
+            reported_rate=Decimal("13"),          # 1 × 13% ≠ 0
+        ),),
+    )
+    assert linea.reported_gross_amount == Decimal("999")
+    assert linea.taxes[0].reported_amount == Decimal("0")
+
+
+def test_las_colecciones_del_agregado_son_inmutables():
+    doc = _parseado("50601082600310161019803900001010004596121100")
+    assert isinstance(doc.lines, tuple)
+    assert isinstance(doc.references, tuple)
+    assert isinstance(doc.lines[5].discounts, tuple)
+    assert isinstance(doc.lines[5].taxes, tuple)
+
+    with pytest.raises(AttributeError):
+        doc.lines.append(doc.lines[0])            # type: ignore[attr-defined]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        doc.lines[0].line_number = 99             # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        doc.lines[5].taxes[0].tax_code = "99"     # type: ignore[misc]
+
+
+def test_el_agregado_exige_lineas_y_referencias():
+    """No tienen valor por defecto: «no se extrajeron» no puede confundirse
+    con «no había»."""
+    obligatorios = {
+        f.name for f in dataclasses.fields(ParsedFiscalDocument)
+        if f.default is dataclasses.MISSING
+        and f.default_factory is dataclasses.MISSING  # type: ignore[misc]
+    }
+    assert {"document", "parties", "lines", "references"} <= obligatorios
+
+
+def test_ningun_modelo_del_cuerpo_lleva_identidad_de_base_de_datos():
+    prohibidos = ("id", "uuid", "company_id", "electronic_document_id",
+                  "document_line_id", "resolved_document_id", "tenant")
+    for modelo in (ParsedDocumentLine, ParsedLineDiscount, ParsedLineTax,
+                   ParsedDocumentReference, ParsedFiscalDocument):
+        campos = {f.name for f in dataclasses.fields(modelo)}
+        for p in prohibidos:
+            assert p not in campos, f"{modelo.__name__} expone {p}"
+
+
+# ── Privacidad del diagnóstico semántico ─────────────────────────────────────
+
+def test_el_error_semantico_de_linea_no_filtra_contenido():
+    """La ruta es estructural —`LineaDetalle[6]/Detalle`—, sin el texto del
+    contribuyente. Se vacía en memoria un campo obligatorio."""
+    crudo = _fixture("50601082600310161019803900001010004596121100").read_bytes()
+    arbol = etree.fromstring(crudo)
+    ns = arbol.tag[1:].split("}")[0]
+    linea = arbol.findall(f".//{{{ns}}}LineaDetalle")[5]
+    detalle = linea.find(f"{{{ns}}}Detalle")
+    original = detalle.text
+    detalle.text = ""
+
+    with pytest.raises((SemanticParseError, XSDValidationError)) as exc:
+        parse_fiscal_document(etree.tostring(arbol))
+
+    publico = str(exc.value)
+    assert original not in publico
+    assert "500MBPS" not in publico
+    assert "<" not in publico
+
+
+def test_la_ruta_del_error_semantico_identifica_la_posicion():
+    """Se ataca directamente al extractor: el XSD atraparía antes casi
+    cualquier documento inválido, así que probar la ruta a través de un XML
+    completo exigiría fabricar un caso irreal."""
+    from app.fiscal.parser import document as modulo
+
+    nodo = etree.fromstring(b"<LineaDetalle><NumeroLinea>3</NumeroLinea></LineaDetalle>")
+    with pytest.raises(SemanticParseError) as exc:
+        modulo._linea(nodo, 3)
+    assert exc.value.contexto["campo"] == "LineaDetalle[3]/CodigoCABYS"
+
+    imp = etree.fromstring(b"<Impuesto><Codigo>01</Codigo></Impuesto>")
+    with pytest.raises(SemanticParseError) as exc:
+        modulo._impuesto(imp, "LineaDetalle[3]/Impuesto[1]")
+    assert exc.value.contexto["campo"] == "LineaDetalle[3]/Impuesto[1]/Monto"
+
+
+# ── Integridad del corpus y del pipeline ─────────────────────────────────────
+
+def test_no_se_ha_tocado_ningun_byte_de_los_fixtures():
+    """B2 muta SOLO en memoria. Los ficheros del corpus quedan intactos."""
+    import subprocess
+    salida = subprocess.run(
+        ["git", "status", "--porcelain", "backend/tests/fixtures/fiscal/"],
+        cwd=Path(__file__).parents[2], capture_output=True, text=True,
+    ).stdout.strip()
+    assert salida == "", f"fixtures modificados: {salida}"
+
+
+def test_b2_no_introduce_un_segundo_parseo_de_xml():
+    """La extracción trabaja sobre el árbol ya validado. Un `fromstring` por
+    línea sería una segunda configuración de parseo que mantener."""
+    texto = (Path(__file__).parents[1] / "app/fiscal/parser/document.py").read_text(
+        encoding="utf-8"
+    )
+    assert texto.count("etree.fromstring(") == 1
+    assert "etree.parse(" not in texto
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# B2-R1 · Fidelidad del estado vacío en la referencia, y cardinalidades
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEDIUM · `Numero` y `Razon` distinguen TRES estados
+#
+# Los cuatro XSD oficiales declaran ambos como 0..1 y `xs:string` **sin
+# `minLength`**. Al no haber mínimo, la cadena vacía es un valor legal, así que
+# la fuente puede decir tres cosas y no dos:
+#
+#     ausente          → None
+#     presente vacío   → ""
+#     con texto        → el texto reportado
+#
+# El parser fundía los dos primeros con `… or None`, y la base de datos
+# rechazaba el vacío con `char_length >= 1`. Los dos extremos discrepaban de la
+# fuente, y entre ellos no discrepaban — que es lo que lo hacía invisible.
+#
+# **Cobertura de contrato/XSD, no de fixture real.** El único comprobante con
+# referencia del corpus la trae con texto en los dos campos. Estos casos se
+# preparan mutando en memoria, y cada uno se valida contra el esquema oficial
+# ANTES de afirmar nada.
+# ─────────────────────────────────────────────────────────────────────────────
+
+NS_NC = "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/notaCreditoElectronica"
+
+
+def _nc_con_referencia(campo: str, estado: str) -> bytes:
+    """Devuelve la NC real con `campo` en el estado pedido. Solo en memoria."""
+    arbol = etree.fromstring(
+        _fixture("NC-50631082600310181576400100001030000001522").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    ref = arbol.find(f".//{{{ns}}}InformacionReferencia")
+    nodo = ref.find(f"{{{ns}}}{campo}")
+    if estado == "ausente":
+        ref.remove(nodo)
+    elif estado == "vacio":
+        nodo.text = None
+    elif estado != "con_texto":
+        raise AssertionError(estado)
+    return etree.tostring(arbol)
+
+
+def _valida_contra_el_esquema_oficial(datos: bytes) -> bool:
+    _entrada, esquema = get_verified_schema_registry().para(
+        "NotaCreditoElectronica", NS_NC
+    )
+    return bool(esquema.validate(etree.fromstring(datos).getroottree()))
+
+
+@pytest.mark.parametrize("campo", ["Numero", "Razon"])
+@pytest.mark.parametrize("estado", ["ausente", "vacio", "con_texto"])
+def test_los_tres_estados_son_xsd_validos(campo, estado):
+    """Primero la premisa: el esquema oficial acepta los tres. Sin esto, el
+    resto del apartado estaría probando una situación imposible."""
+    assert _valida_contra_el_esquema_oficial(_nc_con_referencia(campo, estado))
+
+
+@pytest.mark.parametrize(
+    ("campo", "estado", "esperado"),
+    [
+        ("Numero", "ausente",   None),
+        ("Numero", "vacio",     ""),
+        ("Numero", "con_texto", "50630082600310181576400100001010000022472103888064"),
+        ("Razon",  "ausente",   None),
+        ("Razon",  "vacio",     ""),
+        ("Razon",  "con_texto", "Factura erronea"),
+    ],
+    ids=lambda v: v if isinstance(v, str) and len(v) < 12 else "",
+)
+def test_el_parser_conserva_los_tres_estados(campo, estado, esperado):
+    doc = parse_fiscal_document(_nc_con_referencia(campo, estado))
+    obtenido = (
+        doc.references[0].reported_number if campo == "Numero"
+        else doc.references[0].reason
+    )
+    assert obtenido == esperado
+    # La distinción es de identidad, no solo de valor: `""` no es `None`.
+    if estado == "vacio":
+        assert obtenido is not None
+        assert obtenido == ""
+    if estado == "ausente":
+        assert obtenido is None
+
+
+def test_el_vacio_no_se_colapsa_por_veracidad():
+    """`"" or None` da `None`. La extracción es consciente de la PRESENCIA del
+    elemento, no de si su texto es «verdadero»."""
+    vacio = parse_fiscal_document(_nc_con_referencia("Razon", "vacio")).references[0]
+    ausente = parse_fiscal_document(_nc_con_referencia("Razon", "ausente")).references[0]
+    assert vacio.reason == "" and ausente.reason is None
+    assert vacio.reason != ausente.reason
+
+    fuente = (Path(__file__).parents[1] / "app/fiscal/parser/document.py").read_text(
+        encoding="utf-8"
+    )
+    assert '_texto(_hijo(nodo, "Numero")) or None' not in fuente
+    assert '_texto(_hijo(nodo, "Razon")) or None' not in fuente
+
+
+def test_el_texto_del_contribuyente_no_se_recorta():
+    """`xs:string` tiene `whiteSpace=preserve` y estos campos no traen patrón:
+    recortar alteraría el valor reportado."""
+    arbol = etree.fromstring(
+        _fixture("NC-50631082600310181576400100001030000001522").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    ref = arbol.find(f".//{{{ns}}}InformacionReferencia")
+    ref.find(f"{{{ns}}}Razon").text = "  Factura erronea  "
+    datos = etree.tostring(arbol)
+
+    assert _valida_contra_el_esquema_oficial(datos)
+    assert parse_fiscal_document(datos).references[0].reason == "  Factura erronea  "
+
+
+def test_el_codigo_de_referencia_no_admite_vacio():
+    """La asimetría es de la fuente: `CodigoReferenciaType` declara
+    `minLength=maxLength=2`, así que ahí el vacío no es un estado legal."""
+    with pytest.raises(ValueError):
+        ParsedDocumentReference(
+            referenced_document_type_code="01",
+            fecha=FechaFiscal(local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"),
+            reference_code="",
+        )
+    # Y sin embargo `Numero` y `Razon` vacíos SÍ se aceptan.
+    ref = ParsedDocumentReference(
+        referenced_document_type_code="01",
+        fecha=FechaFiscal(local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"),
+        reported_number="", reason="",
+    )
+    assert ref.reported_number == "" and ref.reason == ""
+
+
+def test_todo_estado_del_parser_cabe_en_el_modelo_fisico():
+    """Contrato de representabilidad: parser y modelo físico ya no discrepan.
+
+    Se comprueban los límites del CHECK **sin persistir nada** — B2 no
+    implementa persistencia—: para cada estado que el parser puede producir
+    existe un valor que la restricción física acepta.
+    """
+    limites = {"reported_number": 50, "reason": 180}
+    for campo, maximo in limites.items():
+        for valor in (None, "", "x", "x" * maximo):
+            ref = ParsedDocumentReference(
+                referenced_document_type_code="01",
+                fecha=FechaFiscal(local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"),
+                **{campo: valor},
+            )
+            obtenido = getattr(ref, campo)
+            assert obtenido == valor
+            # La regla física es: NULL, o longitud entre 0 y el máximo.
+            assert obtenido is None or 0 <= len(obtenido) <= maximo
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOW · Cardinalidades estructurales en la construcción directa
+#
+# Por el contrato público no se puede llegar aquí: el XSD ya rechazó el
+# documento. Estas guardas protegen la OTRA puerta —construir el modelo a
+# mano—, que no pasa por ningún validador.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _linea_valida(**cambios):
+    base = dict(
+        line_number=1, cabys_code="8422200000000", description="x",
+        unit_of_measure_code="Os", reported_quantity=Decimal("1"),
+        reported_unit_price=Decimal("1"), reported_gross_amount=Decimal("1"),
+        reported_subtotal=Decimal("1"), reported_taxable_base=Decimal("1"),
+        reported_net_tax=Decimal("0"), reported_line_total=Decimal("1"),
+        taxes=(ParsedLineTax(tax_code="01", reported_amount=Decimal("0")),),
+    )
+    return ParsedDocumentLine(**{**base, **cambios})
+
+
+@pytest.mark.parametrize(
+    ("numero", "valido"), [(0, False), (1, True), (1000, True), (1001, False)]
+)
+def test_cardinalidad_de_numero_de_linea(numero, valido):
+    """`NumeroLinea`: `minInclusive=1`, `maxInclusive=1000` en el XSD."""
+    if valido:
+        assert _linea_valida(line_number=numero).line_number == numero
+    else:
+        with pytest.raises(ValueError):
+            _linea_valida(line_number=numero)
+
+
+@pytest.mark.parametrize("cuantos", [0, 1, 5, 6])
+def test_cardinalidad_de_descuentos(cuantos):
+    """`Descuento` es 0..5 por línea. Cero es válido: no se exige que haya."""
+    descuentos = tuple(
+        ParsedLineDiscount(reported_amount=Decimal("1"), discount_code="01")
+        for _ in range(cuantos)
+    )
+    if cuantos <= 5:
+        assert len(_linea_valida(discounts=descuentos).discounts) == cuantos
+    else:
+        with pytest.raises(ValueError):
+            _linea_valida(discounts=descuentos)
+
+
+@pytest.mark.parametrize("cuantos", [0, 1, 1000, 1001])
+def test_cardinalidad_de_impuestos(cuantos):
+    """`Impuesto` es 1..1000: al menos uno. Es cardinalidad estructural, no
+    lógica de Tax Engine — no se dice nada sobre su importe."""
+    impuestos = tuple(
+        ParsedLineTax(tax_code="01", reported_amount=Decimal("0"))
+        for _ in range(cuantos)
+    )
+    if 1 <= cuantos <= 1000:
+        assert len(_linea_valida(taxes=impuestos).taxes) == cuantos
+    else:
+        with pytest.raises(ValueError):
+            _linea_valida(taxes=impuestos)
+
+
+def test_las_guardas_de_cardinalidad_no_son_aritmetica_fiscal():
+    """Una línea con cardinalidades correctas y aritmética absurda se
+    construye igual: reconciliar importes sigue siendo del Tax Engine."""
+    linea = _linea_valida(
+        reported_quantity=Decimal("2"), reported_unit_price=Decimal("10"),
+        reported_gross_amount=Decimal("999"),        # ≠ 2 × 10
+        reported_line_total=Decimal("0"),
+        discounts=(ParsedLineDiscount(
+            reported_amount=Decimal("999999"), discount_code="01"),),  # > bruto
+        taxes=(ParsedLineTax(
+            tax_code="01", reported_amount=Decimal("0"),
+            reported_rate=Decimal("13")),),                            # ≠ base×tarifa
+    )
+    assert linea.reported_gross_amount == Decimal("999")
+    assert linea.discounts[0].reported_amount == Decimal("999999")
+
+
+def test_las_lineas_reales_siguen_dentro_de_las_cardinalidades():
+    """Las guardas nuevas no pueden rechazar ninguna de las 29 líneas reales."""
+    total = 0
+    for prefijo in COBERTURA_REAL:
+        for linea in _parseado(prefijo).lines:
+            assert 1 <= linea.line_number <= 1000
+            assert len(linea.discounts) <= 5
+            assert 1 <= len(linea.taxes) <= 1000
+            total += 1
+    assert total == TOTALES_REALES["lineas"]
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# B2-R2 · Fidelidad léxica y cardinalidad de referencias en el agregado
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEDIUM · El parser no inventa normalización de espacios
+#
+# Se auditó la cadena de tipos de los VEINTE campos de cadena que B1 y B2
+# normalizan, y todos derivan de `xs:string`, cuya faceta es
+# `whiteSpace="preserve"`. Ninguno es `xs:token` ni `xs:normalizedString`. El
+# esquema oficial NO define normalización de espacios para ninguno de ellos.
+#
+# El razonamiento «tiene enumeración o patrón, luego recortar es inocuo» no
+# vale: la faceta de espacios viene del tipo, no de las demás facetas. Y era
+# falso en la práctica — cinco campos admiten espacios en documentos
+# XSD-válidos, y en uno el recorte llegaba a RECHAZAR el comprobante.
+# ─────────────────────────────────────────────────────────────────────────────
+
+NS_FE = "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica"
+
+
+def _fe_con(elemento: str, valor: str, contenedor: str | None = None) -> bytes:
+    """FE real con `elemento` puesto a `valor`. Solo en memoria."""
+    arbol = etree.fromstring(
+        _fixture("50601082600310161019803900001010004596121100").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    padre = (
+        arbol.find(f".//{{{ns}}}{contenedor}") if contenedor else arbol
+    )
+    nodo = (
+        padre.find(f"{{{ns}}}{elemento}") if contenedor
+        else arbol.find(f".//{{{ns}}}{elemento}")
+    )
+    nodo.text = valor
+    return etree.tostring(arbol)
+
+
+def _fe_es_xsd_valida(datos: bytes) -> bool:
+    _entrada, esquema = get_verified_schema_registry().para("FacturaElectronica", NS_FE)
+    return bool(esquema.validate(etree.fromstring(datos).getroottree()))
+
+
+#: Los cinco campos que un documento XSD-válido puede traer con espacios.
+#: `valor` está elegido para respetar las facetas de longitud de cada tipo.
+CAMPOS_CON_ESPACIOS = [
+    ("Detalle",               None,             "  Servicio ejemplo  ",
+     lambda d: d.lines[0].description),
+    ("Nombre",                "Emisor",         "  Nombre emisor  ",
+     lambda d: d.issuer.legal_name),
+    ("NombreComercial",       "Emisor",         "  Comercial  ",
+     lambda d: d.issuer.trade_name),
+    ("Numero",                "Identificacion", "   ",
+     lambda d: d.issuer.identificacion.numero),
+    ("CodigoActividadEmisor", None,             " 1234 ",
+     lambda d: d.document.issuer_activity_code),
+]
+
+
+@pytest.mark.parametrize(
+    ("elemento", "contenedor", "valor", "leer"),
+    CAMPOS_CON_ESPACIOS,
+    ids=[c[0] for c in CAMPOS_CON_ESPACIOS],
+)
+def test_el_espacio_del_literal_xsd_valido_se_conserva(
+    elemento, contenedor, valor, leer
+):
+    """Primero la premisa —el esquema oficial acepta el literal—, y solo
+    entonces qué hace el parser con él."""
+    datos = _fe_con(elemento, valor, contenedor)
+    assert _fe_es_xsd_valida(datos), f"{elemento} con {valor!r} no es XSD-válido"
+
+    assert leer(parse_fiscal_document(datos)) == valor
+
+
+def test_un_numero_de_identificacion_de_solo_espacios_ya_no_rechaza_el_documento():
+    """El caso más grave: `.strip()` convertía `'   '` en `''` y el documento
+    XSD-válido acababa rechazado con `SemanticParseError`."""
+    datos = _fe_con("Numero", "   ", "Identificacion")
+    assert _fe_es_xsd_valida(datos)
+
+    doc = parse_fiscal_document(datos)          # no lanza
+    assert doc.issuer.identificacion.numero == "   "
+
+
+def test_el_parser_no_recorta_ningun_campo_de_cadena_modelado():
+    """Guardia sobre el fuente: no queda ningún `_texto(` genérico, y el único
+    `.strip()` desapareció en favor de accesores con semántica explícita."""
+    fuente = (Path(__file__).parents[1] / "app/fiscal/parser/document.py").read_text(
+        encoding="utf-8"
+    )
+    sin_helpers = fuente.replace("_texto_literal(", "").replace("_texto_colapsado(", "")
+    assert "_texto(" not in sin_helpers, "queda un llamante del recorte genérico"
+    assert ".strip()" not in fuente, "queda un recorte genérico"
+
+
+def test_el_colapso_se_aplica_solo_donde_el_tipo_xsd_lo_define():
+    """`xs:decimal`, `xs:positiveInteger` y `xs:dateTime` sí declaran
+    `whiteSpace="collapse"`: ahí la normalización la define el tipo, no
+    nosotros. Y `collapse` no es `strip` — también funde los espacios
+    interiores—, así que se implementa tal cual."""
+    from app.fiscal.parser import document as modulo
+
+    nodo = etree.fromstring(b"<X>  1  234  </X>")
+    assert modulo._texto_colapsado(nodo) == "1 234"
+    assert modulo._texto_literal(nodo) == "  1  234  "
+    # Ausente y presente-vacío se distinguen en ambos accesores.
+    vacio = etree.fromstring(b"<X></X>")
+    assert modulo._texto_colapsado(vacio) == ""
+    assert modulo._texto_literal(vacio) == ""
+    assert modulo._texto_colapsado(None) is None
+    assert modulo._texto_literal(None) is None
+
+
+def test_los_decimales_conservan_su_semantica_exacta():
+    """El refactor de cadenas no toca los números: `Decimal` desde el literal,
+    sin `float`, con la escala de la fuente intacta."""
+    doc = _parseado("50601082600310161019803900001010004596121100")
+    assert doc.lines[5].reported_unit_price == Decimal("58210.99")
+    assert str(doc.lines[5].taxes[0].reported_rate) == "13"
+    te = _parseado("Comprobante_Electronico_50630062600310174582")
+    assert str(te.lines[0].taxes[0].reported_rate) == "13"
+    nc = _parseado("NC-50631082600310181576400100001030000001522")
+    assert str(nc.lines[0].taxes[0].reported_rate) == "13.00"
+
+
+def test_los_valores_reales_no_cambian_al_dejar_de_recortar():
+    """Ningún comprobante real trae espacios en los extremos, así que el
+    arreglo no altera un solo valor del corpus. Si algún día los trajera,
+    ahora se conservarían."""
+    doc = _parseado("50601082600310161019803900001010004596121100")
+    assert doc.lines[5].description == "500MBPS/500MBPS_FTTH_LY_2025_FMC"
+
+    # El código de actividad se contrasta contra el LITERAL de la fuente, leído
+    # aparte: fijarlo a mano fue un error —este comprobante trae `6110.0`, que
+    # además confirma que el XSD pide seis caracteres y no seis dígitos—.
+    arbol = etree.fromstring(
+        _fixture("50601082600310161019803900001010004596121100").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    literal = arbol.find(f".//{{{ns}}}CodigoActividadEmisor").text
+    assert doc.document.issuer_activity_code == literal
+
+    for prefijo in COBERTURA_REAL:
+        d = _parseado(prefijo)
+        assert d.document.clave == d.document.clave.strip()
+        assert d.issuer.legal_name == d.issuer.legal_name.strip()
+        for linea in d.lines:
+            assert linea.description == linea.description.strip()
+            assert linea.cabys_code == linea.cabys_code.strip()
+
+
+# ── §14 · R1 sigue en pie ────────────────────────────────────────────────────
+
+def test_r1_no_regresiona_con_el_refactor_de_accesores():
+    """Los tres estados de `Numero` y `Razon` siguen distinguiéndose, y ahora
+    además el texto con espacios se conserva."""
+    assert parse_fiscal_document(
+        _nc_con_referencia("Numero", "ausente")
+    ).references[0].reported_number is None
+    assert parse_fiscal_document(
+        _nc_con_referencia("Numero", "vacio")
+    ).references[0].reported_number == ""
+    assert parse_fiscal_document(
+        _nc_con_referencia("Razon", "ausente")
+    ).references[0].reason is None
+    assert parse_fiscal_document(
+        _nc_con_referencia("Razon", "vacio")
+    ).references[0].reason == ""
+
+    arbol = etree.fromstring(
+        _fixture("NC-50631082600310181576400100001030000001522").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    arbol.find(f".//{{{ns}}}InformacionReferencia/{{{ns}}}Razon").text = "  Razon  "
+    datos = etree.tostring(arbol)
+    assert _valida_contra_el_esquema_oficial(datos)
+    assert parse_fiscal_document(datos).references[0].reason == "  Razon  "
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOW · Cardinalidad de referencias en el agregado, según el tipo
+#
+# Verificado elemento por elemento en los cuatro esquemas oficiales:
+#
+#     invoice 0..10 · ticket 0..10 · credit_note 1..10 · debit_note 1..10
+#
+# El agregado puede comprobarlo porque conoce su propio `document_type`. Esta
+# guarda NO significa que el parser soporte la Nota de Débito: sigue sin
+# soporte semántico. Solo dice qué estados del MODELO son representables.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _agregado(document_type: str, n_referencias: int) -> ParsedFiscalDocument:
+    sobre = ParsedElectronicDocument(
+        document_type=document_type, clave="5" * 50, consecutive_number="0" * 20,
+        fecha=FechaFiscal(local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"),
+        issuer_activity_code="620100", sale_condition_code="01", currency_code="CRC",
+        reported_exchange_rate=Decimal("1"), reported_total_sale=Decimal("1"),
+        reported_total_net_sale=Decimal("1"), reported_total_document=Decimal("1"),
+    )
+    emisor = ParsedDocumentParty(
+        role="issuer", legal_name="Emisor",
+        identificacion=Identificacion(tipo="01", numero="1"),
+    )
+    referencia = ParsedDocumentReference(
+        referenced_document_type_code="01",
+        fecha=FechaFiscal(local=datetime(2026, 1, 1), raw="2026-01-01T00:00:00"),
+    )
+    return ParsedFiscalDocument(
+        document=sobre, parties=(emisor,), lines=(),
+        references=tuple(referencia for _ in range(n_referencias)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("tipo", "cuantas", "valido"),
+    [
+        ("invoice", 0, True), ("invoice", 10, True), ("invoice", 11, False),
+        ("ticket", 0, True), ("ticket", 10, True), ("ticket", 11, False),
+        ("credit_note", 0, False), ("credit_note", 1, True),
+        ("credit_note", 10, True), ("credit_note", 11, False),
+        ("debit_note", 0, False), ("debit_note", 1, True),
+        ("debit_note", 10, True), ("debit_note", 11, False),
+    ],
+    ids=lambda v: str(v),
+)
+def test_cardinalidad_de_referencias_por_tipo(tipo, cuantas, valido):
+    if valido:
+        assert len(_agregado(tipo, cuantas).references) == cuantas
+    else:
+        with pytest.raises(ValueError):
+            _agregado(tipo, cuantas)
+
+
+def test_la_tabla_de_cardinalidad_coincide_con_los_esquemas_oficiales():
+    """La tabla del modelo no puede divergir del XSD: se lee del paquete."""
+    from lxml import etree as _etree
+    XS = "{http://www.w3.org/2001/XMLSchema}"
+    esperado = {
+        "FacturaElectronica_V4.4.xsd": "invoice",
+        "TiqueteElectronico_V4.4.xsd": "ticket",
+        "NotaCreditoElectronica_V4.4.xsd": "credit_note",
+        "NotaDebitoElectronica_V4.4.xsd": "debit_note",
+    }
+    for fichero, tipo in esperado.items():
+        raiz = _etree.parse(
+            str(bundle.BUNDLE / "esquemas" / "v4_4" / fichero)
+        ).getroot()
+        el = next(
+            e for e in raiz.iter(f"{XS}element")
+            if e.get("name") == "InformacionReferencia"
+        )
+        del_xsd = (int(el.get("minOccurs", "1")), int(el.get("maxOccurs", "1")))
+        assert REFERENCIAS_POR_TIPO[tipo] == del_xsd, tipo
+
+
+def test_la_guarda_de_referencias_no_implica_soporte_de_nota_de_debito():
+    """Construir el modelo con `debit_note` es representable; PARSEAR una ND
+    sigue sin estar soportado."""
+    assert _agregado("debit_note", 1).document.document_type == "debit_note"
+    assert "NotaDebitoElectronica" not in RAICES_SOPORTADAS
+
+
+def test_la_nota_de_credito_real_cumple_su_cardinalidad():
+    doc = _parseado("NC-50631082600310181576400100001030000001522")
+    assert doc.document.document_type == "credit_note"
+    assert len(doc.references) == 1
+    minimo, maximo = REFERENCIAS_POR_TIPO["credit_note"]
+    assert minimo <= len(doc.references) <= maximo
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# B2-R3 · `Identificacion/Numero` presente y vacío
+#
+# Tercer caso del mismo patrón: un elemento OBLIGATORIO cuyo TEXTO puede ser
+# vacío. `Numero` es `minOccurs=1` y `xs:string` con `maxLength=20` y SIN
+# `minLength` en los cuatro esquemas. `_obligatorio` trataba `""` como ausente
+# y el comprobante XSD-válido acababa rechazado.
+#
+# La distinción que importa NO es vacío/no vacío:
+#
+#     Identificacion ausente        → identificacion is None
+#     Identificacion con Numero=""  → Identificacion(tipo, "")
+#
+# Colapsar la segunda en la primera diría que el emisor no identificó a la
+# parte, cuando sí la identificó — con un número vacío.
+#
+# Cobertura de contrato/XSD: el corpus real no trae ningún número vacío.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _fe_identificacion(parte: str, valor: str | None) -> bytes:
+    """FE real con `<parte>/Identificacion/Numero` puesto a `valor`."""
+    arbol = etree.fromstring(
+        _fixture("50601082600310161019803900001010004596121100").read_bytes()
+    )
+    ns = arbol.tag[1:].split("}")[0]
+    nodo = arbol.find(f".//{{{ns}}}{parte}/{{{ns}}}Identificacion/{{{ns}}}Numero")
+    nodo.text = valor
+    return etree.tostring(arbol)
+
+
+@pytest.mark.parametrize("parte", ["Emisor", "Receptor"])
+@pytest.mark.parametrize(
+    ("caso", "valor", "esperado"),
+    [("vacio", None, ""), ("espacios", "   ", "   "), ("texto", "3101123456", "3101123456")],
+    ids=lambda v: v if isinstance(v, str) and len(v) <= 9 else "",
+)
+def test_el_numero_de_identificacion_conserva_su_estado(parte, caso, valor, esperado):
+    datos = _fe_identificacion(parte, valor)
+    assert _fe_es_xsd_valida(datos), f"{parte}/Numero {caso} no es XSD-válido"
+
+    doc = parse_fiscal_document(datos)
+    quien = doc.issuer if parte == "Emisor" else doc.receiver
+    assert quien.identificacion is not None
+    assert quien.identificacion.numero == esperado
+    # Presente-vacío NO es ausente: la identificación existe.
+    assert quien.identificacion.tipo
+
+
+def test_un_numero_vacio_ya_no_rechaza_el_comprobante():
+    """El defecto exacto de R3: `''` se leía como campo obligatorio ausente."""
+    datos = _fe_identificacion("Emisor", None)
+    assert _fe_es_xsd_valida(datos)
+    doc = parse_fiscal_document(datos)          # no lanza
+    assert doc.issuer.identificacion.numero == ""
+
+
+def test_elemento_obligatorio_no_es_lo_mismo_que_cadena_no_vacia():
+    """Si el ELEMENTO falta, sigue siendo un fallo semántico. Se ataca al
+    extractor: el XSD no dejaría llegar aquí un documento sin `Numero`."""
+    from app.fiscal.parser import document as modulo
+
+    nodo = etree.fromstring(
+        b"<Emisor><Nombre>X</Nombre>"
+        b"<Identificacion><Tipo>01</Tipo></Identificacion></Emisor>"
+    )
+    with pytest.raises(SemanticParseError) as exc:
+        modulo._parte(nodo, "issuer")
+    assert exc.value.contexto["campo"] == "issuer/Identificacion/Numero"
+
+    # Con el elemento presente y vacío, en cambio, se construye sin problema.
+    nodo = etree.fromstring(
+        b"<Emisor><Nombre>X</Nombre>"
+        b"<Identificacion><Tipo>01</Tipo><Numero></Numero></Identificacion></Emisor>"
+    )
+    assert modulo._parte(nodo, "issuer").identificacion.numero == ""
+
+
+def test_una_identificacion_ausente_no_se_confunde_con_una_vacia():
+    """Los dos estados son distintos y ambos representables."""
+    ausente = ParsedDocumentParty(role="receiver", legal_name="X", identificacion=None)
+    vacia = ParsedDocumentParty(
+        role="receiver", legal_name="X",
+        identificacion=Identificacion(tipo="01", numero=""),
+    )
+    assert ausente.identificacion is None
+    assert vacia.identificacion is not None and vacia.identificacion.numero == ""
+    assert ausente.identificacion != vacia.identificacion
+
+
+def test_invariantes_de_identificacion():
+    """`Tipo` es enumerado (01..06): el vacío no es legal. `Numero` no lo es:
+    la asimetría viene de la fuente, no de nosotros."""
+    assert Identificacion(tipo="01", numero="").numero == ""
+    assert Identificacion(tipo="01", numero=" ").numero == " "
+    assert Identificacion(tipo="01", numero="x" * 20).numero == "x" * 20
+
+    with pytest.raises(ValueError):
+        Identificacion(tipo="", numero="1")
+    # `numero=None` sigue prohibido: si `Identificacion` existe, `Numero` existe.
+    with pytest.raises(ValueError):
+        Identificacion(tipo="01", numero=None)          # type: ignore[arg-type]
+
+
+def test_no_se_sintetiza_identificacion_cuando_el_nodo_falta():
+    """El receptor sin `Identificacion` da `None`, nunca un objeto con
+    valores inventados. Se prueba sobre el extractor porque el XSD de la FE
+    exige la identificación del receptor — la ausencia es legal en TE/NC/ND."""
+    from app.fiscal.parser import document as modulo
+
+    nodo = etree.fromstring(b"<Receptor><Nombre>Consumidor</Nombre></Receptor>")
+    parte = modulo._parte(nodo, "receiver")
+    assert parte.identificacion is None
+    assert parte.legal_name == "Consumidor"
+
+
+def test_representabilidad_de_los_estados_de_identificacion():
+    """§11 · cada estado fuente→parser cabe en el modelo físico.
+
+    Regla física tras la migración de R3:
+      NULL                     → Identificacion ausente
+      longitud 0..20           → Identificacion presente
+    Y la solidaridad de B0.1: emisor siempre ambos; receptor ambos o ninguno.
+    """
+    estados = [
+        ("receptor sin identificación", None),
+        ("Numero vacío",                Identificacion(tipo="01", numero="")),
+        ("Numero con espacios",         Identificacion(tipo="01", numero="   ")),
+        ("Numero normal",               Identificacion(tipo="01", numero="3101123456")),
+        ("Numero de 20",                Identificacion(tipo="01", numero="x" * 20)),
+    ]
+    for etiqueta, ident in estados:
+        parte = ParsedDocumentParty(
+            role="receiver", legal_name="X", identificacion=ident
+        )
+        if ident is None:
+            tipo_col, numero_col = None, None
+        else:
+            tipo_col, numero_col = ident.tipo, ident.numero
+        # CHECK de longitud
+        assert numero_col is None or 0 <= len(numero_col) <= 20, etiqueta
+        # CHECK de solidaridad del receptor: ambos NULL o ninguno
+        assert (tipo_col is None) == (numero_col is None), etiqueta
+        assert parte.identificacion is ident
+
+    # El emisor exige ambos, y el vacío cuenta como presente.
+    emisor = ParsedDocumentParty(
+        role="issuer", legal_name="X",
+        identificacion=Identificacion(tipo="01", numero=""),
+    )
+    assert emisor.identificacion.numero == ""
+
+
+def test_las_identidades_reales_no_cambian():
+    """El corpus real no trae ningún número vacío: el arreglo no altera nada."""
+    vacios = 0
+    for prefijo in COBERTURA_REAL:
+        doc = _parseado(prefijo)
+        assert doc.issuer.identificacion is not None
+        assert doc.issuer.identificacion.numero != ""
+        for parte in doc.parties:
+            if parte.identificacion is not None and parte.identificacion.numero == "":
+                vacios += 1
+    assert vacios == 0, "el corpus ya trae identificaciones vacías: revisar"

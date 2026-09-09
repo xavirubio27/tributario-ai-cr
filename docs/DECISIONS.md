@@ -2424,3 +2424,64 @@ tratar con nulos reales en lugar de con valores cómodos.
 | Inferir el huso cuando falta | Inventa un dato fiscal. Ver [ADR-039](#adr-039) |
 | Pydantic para el dominio interno | Coacciona tipos; el parser existe para *no* transformar la fuente |
 | Devolver `lines=[]` en B1 | Fingiría que se buscaron líneas y no había, en vez de que no está implementado |
+| Aplanar impuesto y descuento en la línea (B2) | El XSD admite 0..5 descuentos y 1..1000 impuestos por línea; un solo juego de campos perdería documentos legítimos |
+| `lines` y `references` con valor por defecto (B2) | Un defecto por omisión vuelve a confundir «no se extrajeron» con «no había» |
+| Listas mutables para las colecciones hijas (B2) | Dejarían el agregado mutable por dentro pese al `frozen=True` |
+| Inventar un descuento de cero cuando no hay `Descuento` (B2) | Haría creer que el emisor declaró un descuento nulo; ausente no es cero |
+| Deducir «exento» de la ausencia de `Impuesto` (B2) | Es una conclusión fiscal. La ausencia de una entidad es ausencia en la fuente |
+
+### Extensión en B2 — el cuerpo de la transacción
+
+B2 no introduce ninguna decisión arquitectónica nueva: **instancia** las de este ADR sobre
+`DocumentLine`, `LineDiscount`, `LineTax` y `DocumentReference`. Por eso no se abre un ADR
+propio.
+
+Lo que sí conviene dejar escrito, porque es donde el principio se pone a prueba:
+
+- **`LineTax` es evidencia, no cálculo.** No se multiplica base por tarifa, no se recalcula
+  `Monto`, no se deduce la tarifa del código ni el código de la tarifa, y no se compara lo
+  reportado con lo que «debería» salir. Un modelo cuyos importes no cuadran se construye
+  igual: reconciliar es del Tax Engine.
+- **`line_number` es el `NumeroLinea` de la fuente**, no la posición en la colección. Si un
+  documento numerase sus líneas de forma inesperada, el parser lo reporta tal cual — un
+  test lo comprueba sobre un caso preparado en memoria. El orden del documento se conserva
+  aparte, y no se ordena por ningún criterio nuestro.
+- **`CodigoCABYS` se conserva literal.** No se resuelve contra el catálogo del BCCR, no se
+  infiere clasificación y no se decide tratamiento fiscal. El contrato de 13 dígitos es del
+  modelo aprobado, no del XSD, que solo exige 13 caracteres — ver el hueco H-3.
+- **`UnidadMedida` se conserva como código.** No se traduce, no se resuelve catálogo y no
+  se juzga si la combinación cantidad/unidad tiene sentido fiscal.
+- **Las referencias no se resuelven.** El parser no busca el documento referido ni exige
+  que exista: la NC real del corpus apunta a una FE que no está, y parsea. La resolución es
+  diferida y pertenece a la persistencia ([ADR-028](#adr-028)).
+
+**Regla de texto, precisada en B2-R2.** El parser reporta cada valor de cadena según la
+**semántica de espacios que define su tipo XSD**, y el recorte genérico está prohibido.
+
+Se auditó la cadena de tipos de los veinte campos de cadena modelados y **todos** derivan
+de `xs:string`, cuya faceta es `whiteSpace="preserve"`. Ninguno es `xs:token` ni
+`xs:normalizedString`. Por tanto, para todos ellos el literal se conserva **tal cual**.
+
+El razonamiento que había detrás del recorte —«tiene enumeración, patrón o longitud fija,
+luego recortar es inocuo»— era inválido por partida doble. La faceta de espacios viene del
+tipo, no se deduce de las demás facetas; y en la práctica era falso: `Detalle`, `Nombre`,
+`NombreComercial`, `Identificacion/Numero` y `CodigoActividadEmisor` admiten espacios en un
+documento XSD-válido, y con `Numero` el recorte llegaba a **rechazar** el comprobante —
+convertía `'   '` en `''` y lo trataba como campo obligatorio ausente.
+
+La única normalización que se aplica es la que el propio tipo declara: `xs:decimal`,
+`xs:positiveInteger` y `xs:dateTime` tienen `whiteSpace="collapse"`, y ahí se implementa
+`collapse` de verdad —recorta los extremos **y** funde los espacios interiores—, no un
+`strip` que lo aproxime.
+
+Esto **no** significa que todo literal del XML se conserve byte a byte: significa que se
+conserva el valor que el tipo XSD define. Los dos accesores llevan la semántica en el
+nombre, `_texto_literal` y `_texto_colapsado`, y no queda ningún ayudante genérico que
+recorte por comodidad.
+
+**Cardinalidad de referencias en el agregado (B2-R2).** `InformacionReferencia` es 0..10 en
+Factura y Tiquete, y **1..10 en Nota de Crédito y Nota de Débito** —verificado elemento por
+elemento en los cuatro esquemas—. El agregado conoce su `document_type`, así que puede
+imponerlo al construirse a mano, que es la puerta que no pasa por el validador. La guarda
+describe qué estados del modelo son representables; **no** añade soporte de parseo para la
+Nota de Débito, que sigue sin él.

@@ -44,8 +44,9 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
   B0  — contrato y arquitectura del parser — COMPLETED
   B0.1 — nulabilidad de la identificación del receptor — COMPLETED
   B1  — parser: sobre del comprobante y partes — COMPLETED
-  B2  — líneas, impuestos, descuentos y referencias — NEXT / NOT STARTED
-Next: B2.
+  B2  — líneas, impuestos, descuentos y referencias — COMPLETED
+  C1  — persistencia fiscal transaccional — NEXT / NOT STARTED
+Next: C1.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -930,16 +931,163 @@ de datos, sin usuario autenticado y sin `company_id`.
 | Componente | Estado |
 |---|---|
 | Persistencia | NOT STARTED |
-| `DocumentLine` | NOT STARTED |
-| `LineDiscount` | NOT STARTED |
-| `LineTax` | NOT STARTED |
-| `DocumentReference` | NOT STARTED |
+| `DocumentLine` | IMPLEMENTADO en B2 |
+| `LineDiscount` | IMPLEMENTADO en B2 |
+| `LineTax` | IMPLEMENTADO en B2 |
+| `DocumentReference` | IMPLEMENTADO en B2 |
 | Tax Engine | NOT STARTED |
 
 **Huecos de fixture, abiertos y no bloqueantes:** Nota de Débito real · `Exoneracion` ·
 descuentos múltiples · tarifa 0 %/exento · venta a crédito · receptor presente sin
 identificación. No se fabrican comprobantes de aspecto auténtico para cerrarlos: un fixture
 inventado probaría el parser contra nuestra propia suposición, no contra la fuente.
+
+### B2 — Cuerpo de la transacción · COMPLETED
+
+Completa el comprobante: `DocumentLine`, con sus `LineDiscount` y `LineTax`, más
+`DocumentReference`. Sigue siendo **parseo puro** — 0 persistencia, 0 ingesta, 0 escrituras,
+0 migraciones, 0 Tax Engine— y sigue emitiendo **solo valores reportados**
+([ADR-041](DECISIONS.md#adr-041), que B2 instancia sin necesitar un ADR nuevo).
+
+```
+ParsedFiscalDocument
+├── document        ElectronicDocument   (B1)
+├── parties[]       DocumentParty        (B1)
+├── lines[]         DocumentLine         (B2)
+│   ├── discounts[] LineDiscount
+│   └── taxes[]     LineTax
+└── references[]    DocumentReference    (B2)
+```
+
+**Cardinalidades, verificadas en el XSD oficial vendorizado:**
+
+| Estructura | XSD v4.4 | Modelo físico |
+|---|---|---|
+| `DetalleServicio` | 0..1 (FE · TE · NC) | — |
+| `LineaDetalle` | 1..1000 | `line_number` CHECK 1..1000 |
+| `Descuento` | 0..5 | `sequence` CHECK 1..5 |
+| `Impuesto` | 1..1000 | `sequence` CHECK 1..1000 |
+| `InformacionReferencia` | **0..10 en FE y TE · 1..10 en NC** | `sequence` CHECK 1..10 |
+
+**Colecciones obligatorias e inmutables.** `lines` y `references` son campos **sin valor
+por defecto**: un defecto por omisión convertiría «no se extrajeron» en «no había», que es
+la confusión que este parser existe para evitar. Son **tuplas**, no listas: los modelos son
+congelados y una lista dejaría el agregado mutable por dentro pese al `frozen=True`.
+
+**Multiplicidad de verdad, no aplanada.** Los impuestos y descuentos cuelgan de la línea
+como entidades hijas; no hay `tax_code`/`tax_rate`/`tax_amount` sueltos en la línea. El
+corpus real no llega a ejercitarlo —máximo 1 y 1—, pero el formato lo admite y aplanarlo
+perdería documentos legítimos.
+
+**Referencias sin resolver.** La NC real apunta a una FE que **no está en el corpus**, y
+parsea sin problema: el parser conserva lo que la referencia dice y no busca el documento
+referido ni rellena identidad alguna. Resolver es de la persistencia (ADR-028).
+
+**Cobertura real medida sobre los 13 comprobantes** —contada por inspección directa del
+XML, no con el propio parser—:
+
+| | total | máximo |
+|---|---|---|
+| `DocumentLine` | 29 | 7 por documento |
+| `LineDiscount` | 1 | 1 por línea |
+| `LineTax` | 29 | 1 por línea |
+| `DocumentReference` | 1 | 1 por documento |
+
+**Huecos de corpus que B2 deja abiertos y declarados** —no se fabrica ningún comprobante
+de aspecto auténtico para cerrarlos—: varios descuentos por línea · varios impuestos por
+línea · varias referencias por documento · tarifa 0 %/exenta · `Exoneracion` · Nota de
+Débito real · receptor presente sin identificación. La multiplicidad se prueba como
+**cobertura de contrato** (modelo y bucle de extracción), etiquetada como tal y nunca
+presentada como cobertura de fixture real.
+
+`Exoneracion` es 0..1 dentro de `Impuesto` en el XSD, **no** está en el modelo físico
+aprobado de `line_taxes` y **no aparece en ninguno** de los 29 impuestos del corpus: queda
+diferida. Un test lo vigila y avisará si algún día entra un comprobante que la traiga.
+
+**Campos diferidos que el corpus sí trae** —presentes en el XSD, fuera del modelo
+aprobado—: `CodigoComercial` (27/29 líneas), `TipoTransaccion` (14/29),
+`UnidadMedidaComercial` (5/29), `ImpuestoAsumidoEmisorFabrica` (29/29),
+`NaturalezaDescuento`, `CodigoDescuentoOTRO`, `CodigoImpuestoOTRO`, `FactorCalculoIVA`,
+`DatosImpuestoEspecifico`, `TipoDocRefOTRO` y `CodigoReferenciaOTRO`. No se normalizan, no
+hacen fallar el parseo y el modelo no pretende haberlos cubierto.
+
+**Corrección de fidelidad a la fuente (R1) y migración 17.** `Numero` y `Razon` de
+`InformacionReferencia` son `[0..1]` y `xs:string` **sin `minLength`** en los cuatro
+esquemas oficiales: la cadena vacía es un valor legal, así que la fuente distingue **tres**
+estados y no dos.
+
+| Estado en el XML | Parser | Base de datos |
+|---|---|---|
+| elemento ausente | `None` | `NULL` |
+| elemento presente vacío | `""` | `''` |
+| elemento con texto | el texto reportado | el texto |
+
+El parser los fundía con `… or None` y la base los rechazaba con `char_length >= 1`. Los
+dos extremos discrepaban de la fuente **y coincidían entre sí**, que es lo que lo hacía
+invisible. Corregido en ambos: extracción consciente de la presencia del elemento —no de
+si su texto es «verdadero»— y migración aditiva
+`20260908090000_allow_empty_reference_text`, que baja el mínimo de longitud de 1 a 0 **sin
+normalizar `''` a `NULL`**. `reference_code` no se relaja: su tipo declara longitud fija 2.
+El texto del contribuyente tampoco se recorta: `xs:string` es `whiteSpace=preserve`.
+
+**Cardinalidades estructurales en la construcción directa (R1).** `ParsedDocumentLine`
+impone ahora lo que el XSD ya exige, para la puerta que no pasa por el validador —construir
+el modelo a mano—: `1 ≤ line_number ≤ 1000`, `≤ 5` descuentos y `1 ≤ impuestos ≤ 1000`. Es
+cardinalidad estructural, no aritmética fiscal: una línea cuyos importes no cuadran se
+sigue construyendo sin problema.
+
+**Fidelidad léxica (R2).** El parser reporta cada cadena según la semántica de espacios
+que define su tipo XSD; el recorte genérico está prohibido. Los veinte campos de cadena
+modelados derivan de `xs:string` → `whiteSpace="preserve"`, así que se conservan tal cual.
+`.strip()` no era inocuo: cinco campos admiten espacios en documentos XSD-válidos
+—`Detalle`, `Nombre`, `NombreComercial`, `Identificacion/Numero` y `CodigoActividadEmisor`—
+y con `Numero` el recorte llegaba a **rechazar** un comprobante válido. La única
+normalización que queda es la que declara el tipo: `collapse` en `xs:decimal`,
+`xs:positiveInteger` y `xs:dateTime`, implementado de verdad y no como un `strip`.
+
+**Cardinalidad de referencias por tipo (R2).** Verificada en los cuatro esquemas:
+`invoice` 0..10 · `ticket` 0..10 · `credit_note` **1..10** · `debit_note` **1..10**. El
+agregado lo impone al construirse a mano, porque conoce su `document_type`. No implica
+soporte de parseo para la Nota de Débito.
+
+**`Identificacion/Numero` presente y vacío (R3) y migración 18.** Tercer caso del mismo
+patrón: un elemento **obligatorio** cuyo **texto** puede ser vacío. `Numero` es
+`minOccurs=1` y `xs:string` con `maxLength=20` y **sin `minLength`** en los cuatro
+esquemas; `Tipo`, en cambio, es enumerado (`01`…`06`) y ahí el vacío no es legal. La
+asimetría es de la fuente.
+
+| Estado en el XML | Parser | `document_parties` |
+|---|---|---|
+| `Identificacion` ausente | `identificacion = None` | ambas columnas `NULL` |
+| `Numero` vacío | `Identificacion(tipo, "")` | tipo `NOT NULL`, número `''` |
+| `Numero` con texto | `Identificacion(tipo, "…")` | tipo `NOT NULL`, número = texto |
+
+`_obligatorio` leía `""` como campo ausente y **rechazaba el comprobante**. Se separó
+«el elemento tiene que existir» de «su texto no puede ser vacío», que son dos exigencias
+distintas. Migración aditiva `20260908150000_allow_empty_identification_number`: el CHECK
+de longitud baja de 1 a 0. **La regla de solidaridad de B0.1 no se toca** — en PostgreSQL
+`''` es `NOT NULL`, así que una parte con tipo válido y número vacío sigue en el estado
+«ambos presentes».
+
+**Estado formal al cerrar B2** (auditoría independiente: 0 CRITICAL · 0 HIGH · 0 MEDIUM ·
+0 LOW · 0 INFORMATIONAL):
+
+| Entidad del parser | Estado |
+|---|---|
+| `ElectronicDocument` · `DocumentParty` | IMPLEMENTADO (B1) |
+| `DocumentLine` · `LineDiscount` · `LineTax` · `DocumentReference` | IMPLEMENTADO (B2) |
+| Persistencia · Ingesta · Subida · Ingesta por correo · Tax Engine | NOT STARTED |
+
+**Las tres rondas de remediación encontraron la misma clase de defecto en tres campos
+distintos**: un elemento cuyo tipo `xs:string` no declara `minLength`, donde habíamos
+confundido «obligatorio» o «no vacío» con lo que el esquema realmente dice. R2 cerró la
+parte léxica de forma general —auditando los veinte campos de cadena modelados— y los
+estados vacíos se cerraron campo a campo en R1 y R3. Queda escrito porque es el error que
+más probablemente se repita al normalizar campos nuevos.
+
+**Soporte semántico sin cambios:** FE · TE · NC. La Nota de Débito sigue reconocida y sin
+soporte semántico —no hay comprobante real con el que probarla, e implementarla solo desde
+el XSD sería afirmar cobertura que no existe—. `MensajeHacienda` sigue fuera.
 
 ### B0.1 — El receptor puede no estar identificado · COMPLETED
 
