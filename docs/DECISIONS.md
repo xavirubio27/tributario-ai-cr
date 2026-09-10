@@ -64,6 +64,8 @@
 | [ADR-039](#adr-039) | La fecha de emisión puede no declarar desplazamiento | ✅ |
 | [ADR-040](#adr-040) | Los esquemas oficiales se versionan en el repositorio | ✅ |
 | [ADR-041](#adr-041) | El parser fiscal es puro y solo emite datos reportados | ✅ |
+| [ADR-042](#adr-042) | Deduplicación conservadora por huella en el MVP | ✅ |
+| [ADR-043](#adr-043) | Los documentos externos no entran en el dominio fiscal costarricense | ✅ |
 
 ---
 ---
@@ -1539,6 +1541,14 @@ nuestro registro identifica *lo que esa empresa tiene*.
   comprobante: es lo correcto, para una es venta y para otra compra.
 - No fija ninguna restricción de unicidad concreta: eso es E2.
 
+> **Restringido en el MVP por [ADR-042](#adr-042).** Este ADR permite fusionar cuando el
+> contenido fiscal autoritativo es equivalente, pero no existe todavía componente capaz de
+> establecer esa equivalencia — `ParsedFiscalDocument` no normaliza todos los campos
+> fiscalmente relevantes. Mientras tanto, el MVP solo acepta como prueba de equivalencia la
+> **igualdad de la huella del artefacto**, y trata misma `clave` + huella distinta como
+> conflicto visible. Es deliberadamente más estricto que lo que este ADR autoriza. El texto
+> de arriba **no se modifica**: sigue describiendo la arquitectura objetivo.
+
 
 ---
 
@@ -2485,3 +2495,193 @@ elemento en los cuatro esquemas—. El agregado conoce su `document_type`, así 
 imponerlo al construirse a mano, que es la puerta que no pasa por el validador. La guarda
 describe qué estados del modelo son representables; **no** añade soporte de parseo para la
 Nota de Débito, que sigue sin él.
+
+
+---
+
+<a id="adr-042"></a>
+## ADR-042 — Deduplicación conservadora por huella en el MVP
+
+**Estado:** ✅ Aceptada (Día 3, fase C1 · subfase C1-A2) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-031](#adr-031) · [ADR-035](#adr-035) · [ADR-041](#adr-041)
+
+### Contexto
+
+[ADR-031](#adr-031) fija cuatro casos de duplicado y admite fusionar cuando dos artefactos
+de la misma empresa comparten `clave` y **contenido fiscal autoritativo equivalente**. Y es
+explícito en que una huella de bytes distinta es una **observación sobre artefactos**,
+mientras que el conflicto es una **conclusión sobre el documento**: pasar de una a otra
+exige comparar el contenido reportado.
+
+El problema aparece al implementar la persistencia: **hoy no existe con qué hacer esa
+comparación.**
+
+`ParsedFiscalDocument` no normaliza todos los campos fiscalmente relevantes del XSD. B2 dejó
+diferidos, de forma deliberada y documentada, `CodigoComercial`, `TipoTransaccion`,
+`UnidadMedidaComercial`, `ImpuestoAsumidoEmisorFabrica`, `NaturalezaDescuento`,
+`FactorCalculoIVA`, `DatosImpuestoEspecifico`, `Exoneracion` y otros. Comparar el
+subconjunto que sí normalizamos —consecutivo, totales, moneda, fechas— **respondería a una
+pregunta distinta de la que ADR-031 plantea**: diría que coinciden los campos que miramos,
+no que los documentos sean fiscalmente equivalentes.
+
+Dos documentos pueden coincidir en todos los campos normalizados y diferir en una
+`Exoneracion`, que cambia el tratamiento fiscal por completo. Fusionarlos sería contar una
+sola vez algo que son dos hechos distintos, que es exactamente el daño que ADR-031 existe
+para evitar.
+
+### Decisión
+
+**Mientras no exista un componente de equivalencia canónica, la única prueba de
+equivalencia que el MVP acepta es la igualdad de la huella del artefacto.**
+
+| Caso | Respuesta | Estado devuelto |
+|---|---|---|
+| Misma empresa · misma `clave` · **misma** `content_sha256` | Equivalencia establecida. Se reutiliza el `ElectronicDocument` y se enlaza el nuevo `SourceDocument` | `linked_existing` |
+| Misma empresa · misma `clave` · **distinta** `content_sha256` | Equivalencia **no** establecida. **No fusionar** | `ClaveConflict` |
+
+**Precisión que no debe perderse.** Una huella distinta **no significa** «se ha probado que
+el contenido fiscal difiere». Significa **«el MVP no puede probar la equivalencia
+automática»**. La afirmación es sobre nuestra capacidad, no sobre el documento. Redactarlo
+al revés convertiría una limitación nuestra en una acusación sobre la evidencia del
+contribuyente.
+
+Esta política es **más estricta** que lo que ADR-031 permite: renuncia a fusiones que
+ADR-031 consideraría legítimas —dos serializaciones del mismo comprobante que difieren en
+espaciado, orden de atributos o envoltura de firma— a cambio de no fusionar nunca de más.
+
+### Por qué se elige errar en esta dirección
+
+Los dos errores posibles no son simétricos:
+
+- **Fusionar de más** mezcla dos hechos fiscales distintos en un registro, destruye la
+  evidencia de la discrepancia y falsea importes en los informes. Es silencioso.
+- **Fusionar de menos** produce un conflicto visible que alguien revisa. Es ruidoso y
+  reversible.
+
+Ante datos tributarios, el error ruidoso y reversible es preferible.
+
+### Evolución futura
+
+La regla de huella **puede sustituirse o ampliarse** por un mecanismo de equivalencia
+canónica diseñado explícitamente. Entre las posibilidades: una representación fiscal
+canónica, comparación insensible a la firma, o comparación completa de campos
+autoritativos.
+
+**Nada de eso se diseña aquí.** Hasta que exista: misma `clave` + huella distinta =
+conflicto visible.
+
+### Consecuencias
+
+- La persistencia no necesita motor de equivalencia semántica para el MVP.
+- El mismo comprobante recibido dos veces por canales distintos, si llega con bytes
+  idénticos, se deduplica correctamente.
+- Si llega con bytes distintos, hará falta intervención humana hasta que exista la
+  canonicalización. Es un coste operativo conocido y aceptado.
+- No cambia ninguna restricción física: `(company_id, clave)` sigue siendo la unicidad, y
+  el índice de huella sigue siendo **no único** ([ADR-035](#adr-035)).
+
+
+---
+
+<a id="adr-043"></a>
+## ADR-043 — Los documentos externos no entran en el dominio fiscal costarricense
+
+**Estado:** ✅ Aceptada (Día 3, fase C1 · subfase C1-A2) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-021](#adr-021) · [ADR-023](#adr-023) · [ADR-027](#adr-027)
+
+### Contexto
+
+Una empresa costarricense gasta en proveedores que **no emiten comprobante electrónico de
+Hacienda**: recibos de Uber, facturas de AWS, Adobe, Meta, Epic, SaaS extranjero,
+proveedores internacionales. Son gastos reales, con impacto contable y tributario, y el
+producto tendrá que tratarlos.
+
+Esos documentos **no tienen** `Clave` de 50 dígitos, ni `NumeroConsecutivo` costarricense,
+ni CABYS, ni `CodigoActividad`, ni la estructura XML de Hacienda. Muchos ni siquiera son
+XML.
+
+La tentación evidente es meterlos en el modelo que ya existe, rellenando los huecos. Es
+justo lo que este ADR prohíbe.
+
+### Decisión
+
+**Son dos dominios normalizados distintos.**
+
+```
+evidencia costarricense  →  dominio ElectronicDocument (las siete tablas actuales)
+evidencia externa        →  dominio ExternalDocument (futuro, sin diseñar)
+```
+
+**Un documento externo no se convierte artificialmente en un comprobante costarricense.**
+No se sintetiza `Clave`, ni consecutivo, ni CABYS, ni código de actividad. Un campo
+reportado que la fuente no reporta **no existe**: es la misma regla que ADR-041 impone al
+parser y que B2 tuvo que defender tres veces.
+
+Las siete tablas fiscales actuales describen **comprobantes electrónicos costarricenses
+normalizados**. No son, ni pretenden ser, un modelo universal de factura.
+
+### Lo que este ADR NO decide
+
+- **No** dice que `fiscal.source_documents` vaya a almacenar PDF, imágenes, correos, HTML o
+  facturas extranjeras. El modelo físico actual es explícitamente XML: la columna se llama
+  `raw_xml` y un `CHECK` impone `content_sha256 = sha256(raw_xml)`.
+- **No** diseña la arquitectura futura de almacenamiento de evidencia externa.
+- **No** decide si una abstracción genérica futura envolverá, extenderá o sustituirá el
+  concepto actual de `SourceDocument`. Queda **diferido**.
+- **No** crea tablas ni diseño físico.
+
+### Reportado frente a derivado, también aquí
+
+Si una factura externa no reporta CABYS, **`reported_cabys_code` no se inventa**: no está.
+
+Lo que un sistema futuro sí podrá producir son valores **derivados**, y viven separados de
+la evidencia reportada:
+
+| Reportado | Derivado |
+|---|---|
+| lo que el documento dice | `suggested_cabys_code` |
+| | `expense_category` · `expense_subcategory` |
+| | `classification_source` · `classification_confidence` |
+
+**Uno no sobrescribe al otro jamás.** Un CABYS sugerido por un clasificador no es un CABYS
+reportado, y confundirlos convertiría una conjetura nuestra en evidencia del contribuyente.
+Es [ADR-023](#adr-023) aplicado a un dominio nuevo.
+
+### Clasificación de gasto ≠ Tax Engine
+
+Ambos dominios podrán alimentar sistemas superiores compartidos —clasificación de gasto,
+analítica financiera, inteligencia tributaria— y ahí conviene fijar la frontera antes de
+construir nada:
+
+```
+Clasificador de gasto  responde:  ¿qué compró la empresa?
+Tax Engine             responde:  ¿cuál es el tratamiento fiscal?
+```
+
+Que una línea se clasifique como «Software / SaaS» **no determina** si es deducible, no
+deducible, con IVA acreditable o no acreditable. Eso son determinaciones del Tax Engine,
+fundadas en reglas tributarias verificadas con fuente, artículo y vigencia.
+
+```
+LLM ≠ Tax Engine
+Clasificación ≠ Tax Engine
+```
+
+**Intención de producto, no diseño.** La clasificación debería operar principalmente a
+nivel de **línea** siempre que sea posible: una misma factura puede contener gastos de
+naturaleza distinta. Señales que podrán ponderarse: la descripción reportada, el CABYS
+cuando exista, el proveedor y sus metadatos de actividad, el histórico de clasificación de
+la empresa, reglas deterministas y clasificación por IA. Categorías conceptuales de
+ejemplo: inventario/mercadería, suministros de oficina, software/SaaS, servicios
+profesionales, telecomunicaciones, transporte, publicidad, alquiler, logística.
+
+**No se diseñan tablas todavía.**
+
+### Consecuencias
+
+- El modelo fiscal costarricense no se degrada para acomodar datos que no son suyos.
+- Los documentos externos esperan a un diseño propio en lugar de entrar mal a uno ajeno.
+- La frontera clasificación/Tax Engine queda escrita antes de que exista código que la
+  pueda cruzar sin darse cuenta.
+- Coste asumido: hasta que exista el dominio externo, esos gastos no están normalizados en
+  el sistema.

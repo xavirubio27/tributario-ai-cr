@@ -486,7 +486,7 @@ Además de las 18 columnas del inventario (§20), lleva:
 | `ruleset_revision` | `text` | **NULL** | Puede no ser determinable (§13) |
 | `ruleset_revision_status` | `text` | NOT NULL | `detected` · `ambiguous` · `resolved` |
 | `direction` | `text` | NOT NULL | `issued` · `received` · `unknown` (§14) |
-| `direction_computed_at` | `timestamptz` | NOT NULL | Cuándo se derivó; permite recomputar por lotes |
+| `direction_computed_at` | `timestamptz` | NOT NULL | Última evaluación o asignación de dirección hecha por el pipeline (§14); permite recomputar por lotes |
 | `created_at` | `timestamptz` | NOT NULL | `DEFAULT now()` |
 
 `schema_version` **no se duplica aquí**: vive en `source_documents.detected_schema_version`,
@@ -668,6 +668,24 @@ versión estructural bajo semánticas distintas ([ADR-026](DECISIONS.md#adr-026)
 El **estado sí es obligatorio**: siempre sabemos si la revisión está determinada, es
 ambigua o se resolvió después, aunque no sepamos cuál es.
 
+**Qué escribe C1 (persistencia).** La persistencia **no ejecuta** el futuro resolutor de
+revisión, así que registra:
+
+```
+ruleset_revision        = NULL
+ruleset_revision_status = 'ambiguous'
+```
+
+En esta fase `ambiguous` significa **«la revisión semántica aplicable no ha sido resuelta
+de forma unívoca por el pipeline actual»**. No afirma que el documento carezca de señal
+discriminante: un resolutor posterior puede inspeccionar el contenido —un código `13`–`17`
+en la nota 9, por ejemplo— y pasar el estado a `detected` o `resolved`. Las dos columnas
+son mutables precisamente para eso.
+
+Sigue en pie la regla de [ADR-026](DECISIONS.md#adr-026): **la revisión no se infiere de la
+fecha**. Durante la adopción voluntaria conviven, para fechas idénticas, documentos bajo
+revisiones distintas.
+
 No se diseña catálogo de revisiones: `text` basta hasta que exista una necesidad real.
 
 ---
@@ -682,11 +700,37 @@ direction_computed_at timestamptz not null
 **Se persiste**, porque toda consulta de negocio separa ventas de compras y recalcularla
 en cada lectura la haría depender de un dato de la empresa que puede cambiar.
 
-**`NOT NULL` con `unknown` explícito**, no nullable. `NULL` significaría «no calculado» y
-`unknown` significa «calculado, y no coincide con ninguna de las partes»: son cosas
-distintas y confundirlas escondería un fallo de derivación detrás de un caso legítimo.
+**`NOT NULL` con `unknown` explícito**, no nullable. El vocabulario dice si la dirección
+**está establecida**, no cómo se llegó a ella:
 
-`direction_computed_at` permite recomputar por lotes cuando se corrija la identidad
+| Valor | Significado |
+|---|---|
+| `issued` | La dirección está establecida: el documento lo emitió esta empresa |
+| `received` | La dirección está establecida: esta empresa lo recibió |
+| `unknown` | **La dirección no está establecida** |
+
+`unknown` cubre **al menos dos situaciones**, y el modelo actual **no las distingue**:
+
+- **A** — el sistema todavía no tiene información suficiente para determinar la dirección;
+- **B** — se evaluó la dirección y ninguna coincidencia de emisor/receptor permitió
+  establecerla.
+
+> **Corrección de C1-A1.** Este párrafo afirmaba antes que `unknown` significaba
+> «calculado, y no coincide con ninguna de las partes» — es decir, solo el caso **B**. Esa
+> definición era incumplible desde el primer día: `public.companies` no almacena
+> identificación tributaria, así que la comparación que la frase da por hecha **no puede
+> ejecutarse todavía**. La persistencia de C1 escribe `unknown` por el caso **A**, y la
+> definición anterior habría convertido cada fila en una afirmación falsa. Se corrige el
+> texto, no la columna: el `CHECK` ya admite exactamente estos tres valores.
+
+**Que A y B compartan estado se acepta a propósito en el MVP.** No se introduce
+`not_determined`, ni `pending`, ni se hace la columna nullable: serían un cuarto estado con
+migración para una distinción que hoy nadie consulta. Si algún día un requisito de producto
+la necesita, pedirá un campo aparte de estado o procedencia — y ese diseño no se hace ahora.
+
+`direction_computed_at` es **la marca de tiempo de la última evaluación o asignación de
+dirección hecha por el pipeline**. No es prueba de que se comparara con éxito una identidad
+tributaria. Sirve para recomputar por lotes cuando exista —o se corrija— la identidad
 tributaria de una empresa, sabiendo qué filas están al día.
 
 **Es metadato derivado, no verdad de origen.** La verdad está en `document_parties`.
@@ -727,7 +771,7 @@ diferir en bytes sin diferir en contenido fiscal.
 |---|---|---|
 | **A** | Misma empresa · misma `content_sha256` | **Señal criptográficamente muy fuerte de equivalencia de bytes.** Indica duplicado de artefacto. Para igualdad exacta con ambos artefactos disponibles: comparar `raw_xml` directamente |
 | **B** | Misma empresa · misma `clave` · misma `content_sha256` | **Candidato firme** a duplicado de artefacto y mismo documento lógico |
-| **C** | Misma empresa · misma `clave` · **`content_sha256` distinta** | **Artefactos divergentes.** No se puede concluir nada más sin analizar el contenido. **No fusionar automáticamente** |
+| **C** | Misma empresa · misma `clave` · **`content_sha256` distinta** | **Artefactos divergentes.** No se puede concluir nada más sin analizar el contenido. **No fusionar automáticamente** — en el MVP se expone como `ClaveConflict` ([ADR-042](DECISIONS.md#adr-042)) |
 | **D** | Misma empresa · misma `clave` · **contenido fiscal autoritativo divergente** | **Conflicto de integridad** |
 
 **La distinción entre C y D es el punto.** El caso C es una **observación sobre bytes**;
@@ -989,6 +1033,24 @@ transacción B es también donde se satisface el mínimo `1..N` de §9.
 
 Si B falla: el artefacto queda con `parse_status='failed'` y su diagnóstico, y no existe
 ningún documento parcial.
+
+> **Precisión de C1-A2 sobre el reparto de escrituras dentro de la transacción B.** El
+> esquema de arriba dibuja la transacción B como una sola pieza que escribe a la vez el
+> enlace y el estado de parseo. Al diseñar la persistencia se separaron **dos
+> responsabilidades** que ese boceto agrupaba:
+>
+> - **la persistencia fiscal (C1)** escribe el agregado normalizado y **solo**
+>   `source_documents.electronic_document_id`;
+> - **la ingesta/orquestación (C2, sin diseñar)** ejecuta el parser y es dueña de las
+>   transiciones `pending → parsed / failed`, junto con `parse_error`,
+>   `parse_attempted_at` y `parse_attempt_count`.
+>
+> El motivo es simple: **C1 no ejecuta el parser**, así que no le corresponde declarar el
+> resultado del parseo. Recibe un `ParsedFiscalDocument` que ya existe.
+>
+> **La atomicidad de esta sección no cambia**: la transacción B sigue siendo indivisible y
+> sigue siendo todo o nada. Lo que cambia es quién escribe cada columna dentro de la
+> operación, no cuántas transacciones hay ni qué se revierte.
 
 ---
 
@@ -1589,6 +1651,14 @@ a `service_role`.
 | `electronic_document_id` en el artefacto | Mutable una vez: `NULL` → poblado |
 | `ruleset_revision` y su estado | Mutable: puede resolverse después |
 | `direction`, `direction_computed_at` | Mutable: recomputable |
+
+> **Reparto de escrituras sobre `source_documents` (C1-A2).** La persistencia fiscal (C1)
+> escribe **una sola** columna del artefacto: `electronic_document_id`, el enlace al
+> agregado normalizado. **No toca `parse_status`.** C1 recibe un `SourceDocument` que ya
+> existe y no ejecuta el parser, así que no le corresponde declarar el resultado del
+> parseo: `pending`, `parsed` y `failed` describen el ciclo de vida de ingesta y parseo, y
+> pertenecen a la capa futura de ingesta/orquestación. Esa capa no está diseñada todavía y
+> aquí no se anticipa cómo lo hará.
 | `resolved_document_id` | Mutable: la resolución es diferida |
 
 La línea es la de E1: **los hechos de origen son inmutables; nuestras conclusiones sobre

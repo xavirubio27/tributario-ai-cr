@@ -16,6 +16,17 @@ Se separa de `FISCAL_DOMAIN.md` porque aquél documenta **la fuente oficial** y 
 **nuestra interpretación**. Mezclarlos haría difícil saber qué afirma Hacienda y qué
 decidimos nosotros — distinción que ADR-021 exige mantener nítida.
 
+> **Alcance del dominio (C1-A2).** Las entidades de este documento y el modelo físico de
+> siete tablas describen **comprobantes electrónicos fiscales costarricenses
+> normalizados**. **No son un modelo universal de factura**, ni pretenden serlo.
+>
+> Una empresa costarricense también recibe recibos y facturas que no son comprobantes de
+> Hacienda —Uber, AWS, Adobe, proveedores extranjeros— sin `Clave`, sin consecutivo
+> costarricense, sin CABYS y a menudo sin XML. **Esos documentos no se fuerzan dentro de
+> este modelo**, y sus campos costarricenses no se sintetizan. La normalización de
+> documentos externos es trabajo futuro con dominio propio: ver
+> [ADR-043](DECISIONS.md#adr-043). Aquí no se crean tablas ni diseño para ello.
+
 ---
 
 ## 1. Qué transforma esta fase
@@ -497,6 +508,17 @@ Valores propuestos: `issued`, `received`, `unknown`.
 
 Se **deriva** comparando la identificación tributaria de la empresa contra las
 instantáneas de emisor y receptor. Nunca se acepta del frontend.
+
+**El vocabulario dice si la dirección está establecida, no cómo se llegó a ella.** `issued`
+y `received` significan que lo está; `unknown` significa que **no lo está**, y agrupa a
+propósito dos situaciones que el modelo actual no distingue: que falte información para
+determinarla, o que se evaluara y ninguna parte permitiera establecerla.
+
+> **Corrección de C1-A1.** Mientras `public.companies` no almacene identificación
+> tributaria, la comparación descrita arriba **no puede ejecutarse**, y la persistencia de
+> C1 escribe `unknown` por falta de información. `direction_computed_at` registra cuándo el
+> pipeline evaluó o asignó la dirección por última vez — no que la comparación tuviera
+> éxito.
 
 Se **almacena** por tres motivos: se consulta constantemente (todo informe separa ventas
 de compras); recalcularla en cada consulta obligaría a comparar contra un dato de la

@@ -45,8 +45,20 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
   B0.1 — nulabilidad de la identificación del receptor — COMPLETED
   B1  — parser: sobre del comprobante y partes — COMPLETED
   B2  — líneas, impuestos, descuentos y referencias — COMPLETED
-  C1  — persistencia fiscal transaccional — NEXT / NOT STARTED
-Next: C1.
+  C1  — persistencia fiscal transaccional — IN PROGRESS
+    C1-A  — contrato de persistencia y diseño transaccional — COMPLETED
+    C1-A1 — cierre de decisiones de arquitectura — COMPLETED
+    C1-A2 — cierre documental previo a la implementación — COMPLETED
+    C1-B  — implementación — NEXT / NOT STARTED
+  C2  — ingesta y orquestación de SourceDocument — NOT STARTED
+  C3  — subida de documentos — NOT STARTED
+  C4  — ingesta por correo — NOT STARTED
+Futuro (sin fase asignada, NOT STARTED):
+  · detección de tipo de documento
+  · normalización de documentos externos (ADR-043)
+  · clasificación de gasto
+  · Tax Engine
+Next: C1-B.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1088,6 +1100,70 @@ más probablemente se repita al normalizar campos nuevos.
 **Soporte semántico sin cambios:** FE · TE · NC. La Nota de Débito sigue reconocida y sin
 soporte semántico —no hay comprobante real con el que probarla, e implementarla solo desde
 el XSD sería afirmar cobertura que no existe—. `MensajeHacienda` sigue fuera.
+
+## Checkpoint E — Fase C1 · Persistencia fiscal transaccional
+
+### C1-A / C1-A1 / C1-A2 — Diseño · COMPLETED · C1-B NEXT / NOT STARTED
+
+**Nada implementado todavía.** Estas subfases son diseño y documentación; no existe código
+de persistencia, ni migraciones nuevas, ni escrituras en DEV.
+
+**Contrato aprobado:**
+
+```python
+persist_parsed_fiscal_document(
+    conn,                      # transacción fiscal YA contextualizada
+    *,
+    company_id,
+    source_document_id,
+    parsed,                    # ParsedFiscalDocument
+) -> PersistenceResult         # created | already_persisted | linked_existing
+```
+
+| Aspecto | Decisión |
+|---|---|
+| Dueño de la transacción | La capa de caso de uso autenticada. La persistencia **no** abre, comitea ni revierte |
+| `SourceDocument` | **Existe antes** de C1. C1 no lo crea |
+| Bloqueo | `SELECT … FOR UPDATE` sobre el artefacto, antes de decidir nada |
+| UUID | Default de PostgreSQL + `RETURNING`; nunca generados en Python |
+| `direction` | `unknown` + marca de tiempo (ver abajo) |
+| `ruleset_revision` | `NULL` · estado `ambiguous` |
+| Deduplicación | Misma clave + misma huella → `linked_existing`; misma clave + huella distinta → `ClaveConflict` ([ADR-042](DECISIONS.md#adr-042)) |
+| `parse_status` | **Intacto.** Pertenece a la ingesta (C2) |
+| Cálculo fiscal | **Ninguno.** Sin Tax Engine, sin LLM/RAG |
+
+**`direction = 'unknown'` en C1, y por qué.** `public.companies` no almacena identificación
+tributaria, así que la dirección **no puede determinarse todavía**. `unknown` significa «la
+dirección no está establecida» y agrupa dos situaciones que el modelo actual no distingue:
+falta de información, o evaluación sin coincidencia. Se aceptó a propósito para el MVP, sin
+cuarto estado ni migración. `direction_computed_at` es la marca de la última evaluación del
+pipeline, **no** prueba de que se comparara una identidad tributaria. Ambas columnas son
+mutables: la dirección se recomputará cuando exista la identidad.
+
+**Taxonomía de errores aprobada.** PostgreSQL RLS sigue siendo la **única** autoridad de
+autorización; no se duplica en Python. Ningún diagnóstico crudo de PostgreSQL cruza la
+frontera pública.
+
+| Error | `code` | Se produce cuando |
+|---|---|---|
+| `SourceDocumentNotFound` | `source_document_not_found` | El artefacto no es visible bajo RLS: no existe, es de otra empresa, o quien pregunta no es miembro |
+| `FiscalWriteForbidden` | `fiscal_write_forbidden` | RLS deniega la escritura — `viewer` |
+| `SourceDocumentStateConflict` | `source_document_state_conflict` | El artefacto ya está enlazado a un documento de otra clave |
+| `ClaveConflict` | `clave_conflict` | Misma clave, huella distinta ([ADR-042](DECISIONS.md#adr-042)) |
+| `PersistenceMappingError` | `persistence_mapping_error` | Defecto **nuestro** de mapeo: el XML pasó XSD y parser |
+| `PersistenceUnavailable` | `persistence_unavailable` | Fallo de infraestructura; reintentable |
+
+Un no-miembro no distingue «no existe» de «no puedes»: la existencia no es enumerable.
+
+**Sobre cómo se clasifica la denegación.** La implementación se apoyará en la **clase de
+excepción de psycopg y el SQLSTATE** —`42501` en el contexto conocido de escritura
+fiscal—, **nunca en el texto legible del mensaje**: un diagnóstico humano no es un contrato
+estable. Y el contexto importa: no todo `42501` de la aplicación es un fallo de
+autorización del usuario. Distinguir denegación esperada de defecto de configuración, de
+mapeo o de infraestructura se hace con el contexto de la operación, no con una tabla ciega
+de códigos.
+
+---
 
 ### B0.1 — El receptor puede no estar identificado · COMPLETED
 
