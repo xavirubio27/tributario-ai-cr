@@ -333,6 +333,18 @@ def create_pool(settings: Settings) -> ConnectionPool:
         max_size=5,
         open=True,
         kwargs={"row_factory": dict_row},
+        # Se valida la conexión AL ENTREGARLA. Sin esto el pool puede dar una
+        # conexión que el servidor ya cerró —el *pooler* de Supabase las cierra
+        # por su cuenta—, y el fallo aparece en el primer `BEGIN`, ya dentro de
+        # la petición: `OperationalError: server closed the connection
+        # unexpectedly`. Reproducido de forma controlada terminando el backend
+        # de una conexión propia: sin `check` el error llega a la aplicación;
+        # con `check` el pool la descarta y abre otra.
+        #
+        # `max_lifetime` (3600 s) y `max_idle` (600 s) NO se fijan aquí: la
+        # librería ya trae valores por defecto sensatos y ninguno cubre este
+        # caso, porque el servidor puede cerrar antes de que venzan.
+        check=ConnectionPool.check_connection,
     )
     try:
         verify_backend_role(pool)

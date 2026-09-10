@@ -12,6 +12,7 @@ FALLO RÁPIDO
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -213,6 +214,86 @@ def _cleanup_user(user: "TestUser") -> None:
             _admin_sql(sql)
         except Exception as exc:  # noqa: BLE001 - el teardown nunca debe enmascarar el fallo del test
             print(f"[teardown] no se pudo ejecutar {sql!r}: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vigencia del token durante suites largas
+#
+# `TestUser` es de ámbito de SESIÓN y guarda UN access token, que Supabase emite
+# con 60 minutos de vida. La suite completa dura ya ~35 minutos, así que no hay
+# margen: una pausa de la máquina o un pico de latencia y los tests del final
+# fallan con `ExpiredSignatureError` — observado, 20 fallos en una ejecución.
+#
+# La corrección NO toca la verificación de producción: un token caducado debe
+# seguir siendo rechazado, y `test_auth.py::test_expired_token_is_rejected` lo
+# comprueba. Lo que cambia es que la infraestructura de pruebas deja de
+# depender de que un solo token sobreviva a una sesión arbitrariamente larga:
+# cuando le queda poco, se pide otro con las MISMAS credenciales y se vuelve a
+# derivar la identidad por el camino de producción.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Margen antes de la caducidad a partir del cual se renueva.
+_MARGEN_RENOVACION_S = 15 * 60
+
+
+def _segundos_restantes(token: str) -> float:
+    """Vida que le queda al token, leyendo `exp` SIN verificar firma.
+
+    Es una decisión de la infraestructura de pruebas sobre cuándo pedir otro
+    token, no una validación: quien valida es `JwtVerifier`, en producción.
+    """
+    carga = token.split(".")[1]
+    carga += "=" * (-len(carga) % 4)
+    import time
+
+    return json.loads(base64.urlsafe_b64decode(carga))["exp"] - time.time()
+
+
+def _renovar_token(user: "TestUser", settings) -> None:
+    """Pide un token nuevo con las credenciales del usuario y re-deriva la
+    identidad. Muta el `TestUser` congelado a propósito: los tests leen
+    `user.token` en cada uso, así que ven el valor vigente sin cambiar nada."""
+    with httpx.Client(base_url=settings.supabase_url, timeout=30) as client:
+        respuesta = client.post(
+            "/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": os.environ.get("SUPABASE_PUBLISHABLE_KEY", "").strip()},
+            json={"email": user.email, "password": user.password},
+        )
+    if respuesta.status_code != 200:
+        raise AssertionError(
+            f"no se pudo renovar el token de {user.email}: "
+            f"HTTP {respuesta.status_code}{_rate_limit_hint(respuesta)}"
+        )
+    token = respuesta.json().get("access_token")
+    if not token:
+        raise AssertionError("la renovación no devolvió access_token")
+
+    # Misma ruta que producción para obtener la identidad.
+    identidad = JwtVerifier(settings).verify(token)
+    object.__setattr__(user, "token", token)
+    object.__setattr__(user, "identity", identidad)
+
+
+@pytest.fixture(autouse=True)
+def _token_vigente(request):
+    """Renueva, si hace falta, el token de los usuarios que el test pida.
+
+    Se comprueba `exp` en local —sin red— y solo se pide token nuevo cuando
+    queda poco, así que el coste habitual es nulo. `request.fixturenames`
+    evita crear usuarios que el test no haya solicitado.
+    """
+    if "settings" not in request.fixturenames:
+        yield
+        return
+    settings = request.getfixturevalue("settings")
+    for nombre in ("user_a", "user_b"):
+        if nombre not in request.fixturenames:
+            continue
+        usuario = request.getfixturevalue(nombre)
+        if _segundos_restantes(usuario.token) < _MARGEN_RENOVACION_S:
+            _renovar_token(usuario, settings)
+    yield
 
 
 @pytest.fixture(scope="session")

@@ -2,11 +2,13 @@
 
 > Fotografía del estado actual y punto de entrada de toda sesión nueva. Sustituye al
 > historial de conversación: si difieren, manda lo verificable (Git, tests, migraciones).
-> Se actualiza al cerrar cada checkpoint. Última actualización: **2026-08-23**.
+> Se actualiza al cerrar cada checkpoint. Última actualización: **2026-09-10**.
 
 ## Project
 
-**Name:** Asistente Tributario IA para Costa Rica · **Repository:** `tributario-ai-cr`
+**Name:** Tribuu.ai — asistente tributario para Costa Rica · **Repository:** `tributario-ai-cr`
+
+> El producto pasó a llamarse **Tribuu.ai**. Las decisiones y documentos históricos conservan el nombre con el que se escribieron: renombrarlos reescribiría el registro de lo que se decidió y cuándo.
 
 ## Current Phase
 
@@ -45,12 +47,12 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
   B0.1 — nulabilidad de la identificación del receptor — COMPLETED
   B1  — parser: sobre del comprobante y partes — COMPLETED
   B2  — líneas, impuestos, descuentos y referencias — COMPLETED
-  C1  — persistencia fiscal transaccional — IN PROGRESS
+  C1  — persistencia fiscal transaccional — COMPLETED
     C1-A  — contrato de persistencia y diseño transaccional — COMPLETED
     C1-A1 — cierre de decisiones de arquitectura — COMPLETED
     C1-A2 — cierre documental previo a la implementación — COMPLETED
-    C1-B  — implementación — NEXT / NOT STARTED
-  C2  — ingesta y orquestación de SourceDocument — NOT STARTED
+    C1-B  — implementación — COMPLETED
+  C2  — ingesta y orquestación de SourceDocument — NEXT / NOT STARTED
   C3  — subida de documentos — NOT STARTED
   C4  — ingesta por correo — NOT STARTED
 Futuro (sin fase asignada, NOT STARTED):
@@ -58,7 +60,7 @@ Futuro (sin fase asignada, NOT STARTED):
   · normalización de documentos externos (ADR-043)
   · clasificación de gasto
   · Tax Engine
-Next: C1-B.
+Next: C2.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1101,9 +1103,9 @@ más probablemente se repita al normalizar campos nuevos.
 soporte semántico —no hay comprobante real con el que probarla, e implementarla solo desde
 el XSD sería afirmar cobertura que no existe—. `MensajeHacienda` sigue fuera.
 
-## Checkpoint E — Fase C1 · Persistencia fiscal transaccional
+## Checkpoint E — Fase C1 · Persistencia fiscal transaccional · COMPLETED
 
-### C1-A / C1-A1 / C1-A2 — Diseño · COMPLETED · C1-B NEXT / NOT STARTED
+### C1-A / C1-A1 / C1-A2 — Diseño · COMPLETED
 
 **Nada implementado todavía.** Estas subfases son diseño y documentación; no existe código
 de persistencia, ni migraciones nuevas, ni escrituras en DEV.
@@ -1155,6 +1157,38 @@ frontera pública.
 
 Un no-miembro no distingue «no existe» de «no puedes»: la existencia no es enumerable.
 
+**Puerta de autorización en DOS lecturas (refinación aprobada en C1-B-R1).** El diseño
+original resolvía la autorización con una sola consulta. Medido contra PostgreSQL 17.6 con
+las políticas vigentes, no funciona:
+
+| Actor | `SELECT` simple | `SELECT … FOR UPDATE` |
+|---|---|---|
+| `owner` · `editor` | 1 fila | **1 fila** |
+| `viewer` | **1 fila** | **0 filas · sin excepción** |
+| no miembro | 0 filas | 0 filas |
+
+`SELECT … FOR UPDATE` aplica, además de la política `SELECT`, la cláusula `USING` de la
+política `UPDATE`, y **filtra en silencio** lo que no la pasa: no lanza error ni SQLSTATE.
+Con una sola lectura, `viewer` y no-miembro eran indistinguibles.
+
+La puerta aprobada observa **dos capacidades que RLS ya decide**, sin consultar
+`company_memberships` ni reproducir la lógica de roles en Python:
+
+```
+paso A · SELECT simple      → visibilidad        0 filas ⇒ SourceDocumentNotFound
+paso B · SELECT FOR UPDATE  → intención de escritura, y bloqueo
+                                                 0 filas ⇒ FiscalWriteForbidden
+```
+
+**La puerta va antes de cualquier decisión de idempotencia.** Un `viewer` recibe
+`FiscalWriteForbidden` incluso si el artefacto ya estaba persistido y ese reintento
+concreto no fuera a mutar nada: C1 es un caso de uso de escritura, y la autorización no
+puede depender de la suerte del camino. Hay un test de regresión dedicado.
+
+Hallazgo que conviene recordar al diseñar C2: en este esquema **las cláusulas `USING`
+filtran en silencio y solo las `WITH CHECK` levantan `42501`**. Las señales de denegación
+existen donde hay `WITH CHECK` — el `INSERT`—, no donde hay filtrado.
+
 **Sobre cómo se clasifica la denegación.** La implementación se apoyará en la **clase de
 excepción de psycopg y el SQLSTATE** —`42501` en el contexto conocido de escritura
 fiscal—, **nunca en el texto legible del mensaje**: un diagnóstico humano no es un contrato
@@ -1162,6 +1196,134 @@ estable. Y el contexto importa: no todo `42501` de la aplicación es un fallo de
 autorización del usuario. Distinguir denegación esperada de defecto de configuración, de
 mapeo o de infraestructura se hace con el contexto de la operación, no con una tabla ciega
 de códigos.
+
+
+### C1-B — Implementación · COMPLETED
+
+**Existe la persistencia fiscal transaccional.** `backend/app/fiscal/persistence.py`.
+
+```
+persist_parsed_fiscal_document(conn, *, company_id, source_document_id, parsed)
+    -> PersistenceResult(electronic_document_id, source_document_id, status)
+```
+
+`PersistenceStatus` es `StrEnum` —misma convención que `CompanyRole`—:
+`created` · `already_persisted` · `linked_existing`.
+
+**Orden de la transacción**, cuyo dueño es la capa de caso de uso:
+
+```
+A  SELECT source_documents                      → visibilidad
+B  SELECT source_documents FOR UPDATE           → escritura + bloqueo
+C  ¿ya enlazado? → already_persisted | SourceDocumentStateConflict
+D  SAVEPOINT → INSERT electronic_documents RETURNING id
+     23505 en (company_id, clave) → ¿hay artefacto con la misma huella?
+         sí → linked_existing     no → ClaveConflict
+E  parties (executemany) · cada línea RETURNING id + sus descuentos e impuestos
+   · referencias (executemany)
+F  UPDATE source_documents SET electronic_document_id, updated_at
+```
+
+**Cero `UPDATE` sobre datos normalizados.** Los grants por columna ya lo impiden; un test
+lo comprueba también sobre el SQL del módulo. La única mutación del artefacto es el enlace:
+`parse_status` sigue siendo de la ingesta.
+
+**Solo la colisión de `(company_id, clave)` abre la deduplicación.** Cualquier otra
+violación de unicidad —rol de parte, número de línea, secuencia— es `PersistenceMappingError`,
+no un duplicado feliz. Sin `ON CONFLICT`.
+
+**Privacidad de la CADENA de excepciones (R2).** No basta con que el texto del error sea
+seguro: `raise Safe(...) from exc` deja el original en `__cause__`, y **`from None` lo deja
+en `__context__`** — medido, no supuesto. La única forma de que ambos queden en `None` es
+**lanzar fuera del bloque `except`**, cuando Python ya descartó la excepción en curso. El
+traductor clasifica dentro del `except` —devolviendo dos cadenas, nunca la excepción— y
+lanza después. Ningún objeto de psycopg queda alcanzable desde un error público, y este
+módulo **no tiene logging**: `logger.exception` o `exc_info=` volcarían el `DETAIL` del
+motor con el valor infractor dentro.
+
+**Clasificación estrecha (R2).** `PersistenceMappingError` significa algo concreto —«lo que
+el dominio aprobó no cupo en el modelo físico»— y dejó de ser el cajón de sastre. Un
+`UndefinedColumn` o un SQL mal formado son **defectos nuestros** y van a
+`PersistenceDatabaseError` (`persistence_database_error`): llamarlos defecto de mapeo
+mandaría a revisar los datos del contribuyente en lugar del código.
+
+| Condición | Error | ¿Reintentable? |
+|---|---|---|
+| `23505` en `electronic_documents_company_clave_key` | rama de deduplicación | — |
+| Otra `UniqueViolation` · `CheckViolation` · `NotNullViolation` · `ForeignKeyViolation` · `StringDataRightTruncation` · `NumericValueOutOfRange` | `PersistenceMappingError` | No |
+| `InsufficientPrivilege` `42501` en escritura fiscal | `FiscalWriteForbidden` | No |
+| `SerializationFailure` · `DeadlockDetected` · `OperationalError` | `PersistenceUnavailable` | **Sí** |
+| Cualquier otro fallo de PostgreSQL | `PersistenceDatabaseError` | No |
+
+**El enlace final exige exactamente una fila (R2).** Una política `UPDATE` de RLS no lanza
+error: **filtra**. Si la capacidad de escritura cambiara entre la puerta y el enlace, el
+`UPDATE` afectaría a cero filas y devolveríamos `created` con el agregado guardado y el
+artefacto **sin enlazar** — un documento huérfano de su evidencia. Ahora se comprueba
+`rowcount`: cero es `FiscalWriteForbidden` y revierte todo; más de uno, imposible bajo un
+predicado de clave primaria, es `PersistenceDatabaseError`. El predicado añade
+`electronic_document_id is null` como defensa en profundidad —la fila ya está bloqueada
+desde el paso B—, y C1 jamás reenlaza.
+
+**Estabilidad de la suite completa (R3).** La suite no cerraba en verde por dos defectos
+que solo asomaban al final de una ejecución larga, y solo uno era de los tests:
+
+**El pool entregaba conexiones ya cerradas por el servidor — defecto de PRODUCCIÓN.**
+`psycopg_pool` se creaba sin `check`, así que no validaba la conexión al entregarla y el
+fallo aparecía en el primer `BEGIN`, ya dentro de la petición:
+`OperationalError: server closed the connection unexpectedly`. Reproducido de forma
+controlada terminando el backend de una conexión propia: sin `check` el error llega a la
+aplicación; con `check` el pool la descarta y abre otra. **El mismo pool atiende las
+peticiones reales**, así que no era un problema de las pruebas. Corregido con
+`check=ConnectionPool.check_connection` — y nada más: `max_lifetime` (3600 s) y `max_idle`
+(600 s) ya traen valores por defecto de la librería, y ninguno cubre este caso porque el
+servidor puede cerrar antes de que venzan.
+
+> Corrección de lo que informé en R2: dije que el pool no tenía `max_lifetime`. **Sí lo
+> tiene**, por defecto de la librería. Lo que faltaba era `check`.
+
+**El token de sesión caducaba antes de terminar la suite — infraestructura de pruebas.**
+`TestUser` es de ámbito de sesión y guardaba un único token de 60 minutos para una suite de
+~33. Sin margen. La verificación de producción **no se toca**: un token caducado se sigue
+rechazando, y `test_auth.py::test_expired_token_is_rejected` lo comprueba con un par de
+claves local. Lo que cambia es que la infraestructura deja de depender de que un token
+sobreviva a una sesión arbitrariamente larga: cuando le quedan menos de 15 minutos se pide
+otro con las mismas credenciales y se re-deriva la identidad por el camino de producción.
+No se alarga la validez del JWT, no se desactiva `exp`, no se simula la verificación y no
+se usa `service_role`.
+
+**Ejecución de cierre: 997/997 PASS en 33:25, sin reejecuciones.**
+
+**Estado formal al cerrar C1** (auditoría independiente final: 0 CRITICAL · 0 HIGH ·
+0 MEDIUM · 0 LOW · 0 INFORMATIONAL):
+
+| Componente | Estado |
+|---|---|
+| Persistencia fiscal transaccional | **IMPLEMENTADA / COMPLETED** |
+| Ingesta y orquestación de `SourceDocument` (C2) | **NEXT / NOT STARTED** |
+| Subida de documentos · Ingesta por correo | NOT STARTED |
+| Documentos externos (ADR-043) · Clasificación de gasto | NOT STARTED |
+| Tax Engine | NOT STARTED |
+
+**Evidencia de cierre:** backend completo **997/997 PASS** en una sola ejecución
+ininterrumpida (33:25, sin reejecuciones); persistencia e infraestructura **65/65**; Day 2
+32/32; frontend eslint · tsc · build. DEV: 18 migraciones locales = 18 remotas, 7 tablas
+fiscales, **0 filas**, **0 migraciones nuevas en todo C1**.
+
+**Evidencia de implementación:** 58 tests contra PostgreSQL real. **0 migraciones · 0
+cambios de esquema.**
+
+La carrera de concurrencia se fuerza de verdad (R2): la barrera está **inmediatamente antes
+del `INSERT`** del documento electrónico —envolviendo `_insertar_documento`, que ya es la
+frontera natural del módulo—, no al entrar a la transacción. Antes, el hilo A podía
+completar su transacción entera antes de que B llegara al `INSERT` y los estados finales
+salían iguales sin haber ejercitado el bloqueo del índice único ni la recuperación por
+`SAVEPOINT`. Los tests registran qué workers cruzaron la puerta: la carrera es un hecho
+comprobado, no una inferencia de los estados. Sin `sleep` y sin aserciones probabilísticas.
+
+La reversión se comprueba con el valor **exacto**: se captura `updated_at` desde una
+transacción independiente, se inyecta el fallo **después** de que el enlace real se haya
+ejecutado con éxito, y se exige que la reversión devuelva el mismo instante — con una
+contraprueba de que sin el fallo esa columna sí avanza.
 
 ---
 
