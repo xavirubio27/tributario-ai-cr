@@ -52,18 +52,30 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C1-A1 — cierre de decisiones de arquitectura — COMPLETED
     C1-A2 — cierre documental previo a la implementación — COMPLETED
     C1-B  — implementación — COMPLETED
-  C2  — ingesta y orquestación de SourceDocument — COMPLETED
+  C2  — ingesta y orquestación de SourceDocument — COMPLETED (*)
     C2-A  — arquitectura y ciclo de vida — COMPLETED
     C2-A1 — cierre de decisiones — COMPLETED
     C2-B  — implementación — COMPLETED
-  C3  — subida manual de XML — NEXT / NOT STARTED
+  C3  — subida manual de XML — IN PROGRESS
+    C3-A  — arquitectura de subida y flujo de producto — COMPLETED
+    C3-A1 — cierre de decisiones — COMPLETED
+    C3-A2 — identidad del artefacto en fallos posteriores a la captura — COMPLETED
+    C3-B0 — configuración de aptitud para despliegue — COMPLETED
+    C3-B1 — frontera HTTP de subida — NEXT / NOT STARTED
+    C3-B2 — workspace de empresa y UI de subida — NOT STARTED
+    C3-B3 — integración y cierre — NOT STARTED
   C4  — ingesta por correo — NOT STARTED
+(*) C2 conserva una corrección menor de contrato APROBADA y PENDIENTE de implementar en
+    C3-B1: los fallos posteriores al commit de T1 que proceden de infraestructura
+    -- PersistenceUnavailable, PersistenceDatabaseError, PersistenceMappingError,
+    ValidatorConfigurationError -- no exponen todavía `source_document_id`, de modo que el
+    llamante pierde la identidad de una evidencia que sí quedó guardada. Ver C3-A2.
 Futuro (sin fase asignada, NOT STARTED):
   · detección de tipo de documento
   · normalización de documentos externos (ADR-043)
   · clasificación de gasto
   · Tax Engine
-Next: C3 — subida manual de XML.
+Next: C3-B1 — frontera HTTP de subida.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1327,6 +1339,91 @@ La reversión se comprueba con el valor **exacto**: se captura `updated_at` desd
 transacción independiente, se inyecta el fallo **después** de que el enlace real se haya
 ejecutado con éxito, y se exige que la reversión devuelva el mismo instante — con una
 contraprueba de que sin el fallo esa columna sí avanza.
+
+---
+
+## Checkpoint G — Fase C3 · Subida manual de XML
+
+### C3-B0 — configuración de aptitud para despliegue — COMPLETED
+
+**Auditoría independiente (Codex):** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 1 · INFORMATIONAL 1.
+
+> **No hay endpoint de producto ni interfaz de usuario en C3-B0.** Este subcheckpoint es
+> exclusivamente configuración de aptitud para desplegar, previa a escribir la primera capa
+> HTTP fiscal.
+
+**No hay endpoint todavía.** Este subcheckpoint cierra dos puertas de configuración antes de
+escribir la primera capa HTTP de producto.
+
+**`lxml` es dependencia de PRODUCCIÓN.** Lo importan `app/fiscal/parser/document.py`,
+`app/fiscal/xsd/registry.py` y `app/fiscal/xsd/bundle.py`, pero estaba declarado solo bajo
+`[dev]` — y ni siquiera instalado en `backend/.pydeps`: el intérprete lo resolvía del
+`site-packages` global de la máquina. Reclasificado a `dependencies`, versión `6.0.2` intacta.
+
+**Probado desde un entorno aislado, no supuesto.** Un `venv` temporal creado FUERA del
+repositorio, sin paquetes del sistema, con el backend instalado **sin extras de desarrollo**:
+
+```
+lxml 6.0.2  →  <venv>/lib/python3.12/site-packages/lxml/__init__.py
+               (ni /Library/Frameworks ni .pydeps)
+importan:      app.fiscal.xsd.bundle · app.fiscal.xsd.registry
+               app.fiscal.parser.document
+humo:          manifiesto leído · registro VERIFICADO compilado
+               5 esquemas con raíz enrutable · XML mal formado rechazado
+```
+
+**Hallazgo que destapó la prueba:** el backend **no era instalable en absoluto**, ni editable
+ni normal. `setuptools` rechazaba el árbol —`Multiple top-level packages discovered in a
+flat-layout: ['app', 'resources']`— porque `pyproject.toml` no declaraba qué distribuir.
+Resuelto con `[tool.setuptools.packages.find] include = ["app*"]`. Queda anotado que la
+instalación debe ser **editable**: `bundle.py` localiza los esquemas con
+`Path(__file__).parents[3]`, relativo al árbol de fuentes, así que una rueda instalada en
+`site-packages` no los encontraría. Empaquetarlo de verdad exigiría mover los recursos y
+cambiar esa búsqueda, que es código de producción y no pertenece a este subcheckpoint.
+
+**Sobre de transporte de los Server Actions = 9 MiB.** El valor por defecto de Next.js es
+1 MiB, con lo que cualquier comprobante mayor se rechazaría en el framework antes de ejecutar
+nuestro código: sin evidencia capturada y sin código de error estable. Fijado a
+`9 * 1024 * 1024` como número, no como `'9mb'`, porque `bytes.parse` usa unidades binarias y
+escribirlo así elimina la ambigüedad del sufijo.
+
+**9 MiB no es el tamaño máximo de un documento fiscal.** Es el sobre de transporte: 8 MiB de
+artefacto más 1 MiB de holgura para el marco multipart. La autoridad del dominio sigue siendo
+`MAX_SOURCE_XML_BYTES = 8 MiB` en `app/fiscal/ingestion.py`. Verificado que el sobre cabe bajo
+`proxyClientMaxBodySize`, cuyo valor por defecto son 10 MiB.
+
+**Comprobación reproducible del sobre.** `tests/config/upload-transport.test.ts`, 5 tests,
+sobre Vitest 4.1.11 —ya declarado y fijado en `tests/package.json`, no una dependencia
+nueva—. Importa la configuración real y afirma el valor EFECTIVO, no la presencia de un
+texto. Comando:
+
+```
+cd tests && ./node_modules/.bin/vitest run config    # exit 0
+```
+
+Verificado que tiene dientes: con el valor alterado a 1 MiB, 2 aserciones fallan y el
+código de salida es 1.
+
+**Nota de ENTORNO LOCAL, no del proyecto.** El directorio padre de este clon se llama
+`Projects:Asistente-Tributario`, y en Unix `:` es el separador del `PATH`. La entrada
+absoluta a `node_modules/.bin` que npm inyecta se parte por tanto en dos componentes
+inválidos, y ningún script npm resuelve un binario local por nombre:
+
+```
+/Users/xavierrubio/Documents/Projects              ← fragmento
+Asistente-Tributario/.../tests/node_modules/.bin   ← fragmento
+```
+
+Es la misma causa por la que `python -m venv` no puede crear entornos aquí (ver
+`backend/README.md`). **No es un defecto de la aplicación, ni de la arquitectura de C3, ni
+del despliegue**, y por eso NO se codifica ningún parche en los scripts del repositorio:
+serían portables a ninguna parte. Mientras el clon viva en esa ruta, los binarios se
+invocan directamente —`./node_modules/.bin/<binario>`—, que es como se ha recogido toda la
+evidencia. La solución de fondo está fuera de Git: renombrar el directorio padre para que no
+contenga `:`, por ejemplo `Projects-Asistente-Tributario` o `Projects/Asistente-Tributario`.
+
+**Evidencia:** XSD 126/126 · parser 317/317 · sobre de transporte 5/5 · `eslint`, `tsc` y
+`next build` correctos. **0 migraciones · 0 librerías nuevas de Python · 0 de npm.**
 
 ---
 

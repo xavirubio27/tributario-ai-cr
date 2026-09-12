@@ -12,19 +12,36 @@ dependencies = [
     "psycopg[binary,pool]==3.3.4",
     "pyjwt[crypto]==2.13.0",
     "python-dotenv==1.2.3",
+    # Validacion XSD contra los esquemas oficiales v4.4 versionados en
+    # backend/resources/fiscal/xsd/. libxml2 cubre XSD 1.0 por completo y
+    # permite desactivar red, DTD y entidades externas de forma explicita.
+    # Es dependencia de PRODUCCION: la importan el parser y el registro de
+    # esquemas -- app/fiscal/parser/document.py, app/fiscal/xsd/registry.py y
+    # app/fiscal/xsd/bundle.py --, no solo los tests.
+    "lxml==6.0.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
     "httpx==0.28.1",
-    # Validacion XSD contra los esquemas oficiales v4.4 versionados en
-    # backend/resources/fiscal/xsd/. libxml2 cubre XSD 1.0 por completo y
-    # permite desactivar red, DTD y entidades externas de forma explicita.
-    # Hoy solo lo usan los tests; pasara a dependencia principal cuando el
-    # parser de produccion lo necesite.
-    "lxml==6.0.2",
 ]
+
+# El descubrimiento automatico de setuptools falla en este arbol: `backend/`
+# tiene varios directorios de primer nivel -- `app` y `resources` -- y la
+# herramienta se niega a adivinar cual distribuir.
+#
+#   error: Multiple top-level packages discovered in a flat-layout:
+#          ['app', 'resources']
+#
+# El paquete distribuible es `app`. `resources/fiscal/xsd/` NO es un paquete
+# Python -- no tiene `__init__.py` -- y `bundle.py` lo localiza con
+# `Path(__file__).parents[3]`, es decir, relativo al arbol de fuentes. Por eso
+# la instalacion es EDITABLE (ver README): asi `__file__` sigue apuntando aqui
+# y los esquemas oficiales se resuelven. Empaquetarlo como rueda exigiria
+# mover los recursos y cambiar esa busqueda, que es codigo de produccion.
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
