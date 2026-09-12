@@ -59,6 +59,27 @@ class VerifiedSchemaRegistry:
         """
         return self._por_clave.get((raiz, namespace))
 
+    def entradas(self) -> tuple[SchemaEntry, ...]:
+        """Entradas de los esquemas VERIFICADOS que son documento raíz.
+
+        Existe para que un consumidor pueda leer metadatos del paquete
+        aprobado —hoy, la versión estructural que la ingesta registra en
+        `detected_schema_version`— sin alcanzar el mapa interno ni volver a
+        interpretar el manifiesto, el identificador o el namespace.
+
+        Devuelve una tupla de `SchemaEntry`, que es `frozen`: es lectura, no
+        el mapa. `_por_clave` sigue siendo detalle de implementación, y el
+        enrutado sigue siendo exclusivamente de `para()`.
+
+        Se excluyen las dependencias —las que no tienen raíz—: no son
+        documentos y no se enrutan.
+        """
+        return tuple(
+            entrada
+            for entrada, _esquema in self._por_clave.values()
+            if entrada.root is not None
+        )
+
 
 #: Motivo canónico del rechazo por clave de enrutado repetida. Texto fijo: no
 #: nombra el esquema ni el namespace en conflicto, porque el mensaje viaja

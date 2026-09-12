@@ -52,15 +52,18 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C1-A1 — cierre de decisiones de arquitectura — COMPLETED
     C1-A2 — cierre documental previo a la implementación — COMPLETED
     C1-B  — implementación — COMPLETED
-  C2  — ingesta y orquestación de SourceDocument — NEXT / NOT STARTED
-  C3  — subida de documentos — NOT STARTED
+  C2  — ingesta y orquestación de SourceDocument — COMPLETED
+    C2-A  — arquitectura y ciclo de vida — COMPLETED
+    C2-A1 — cierre de decisiones — COMPLETED
+    C2-B  — implementación — COMPLETED
+  C3  — subida manual de XML — NEXT / NOT STARTED
   C4  — ingesta por correo — NOT STARTED
 Futuro (sin fase asignada, NOT STARTED):
   · detección de tipo de documento
   · normalización de documentos externos (ADR-043)
   · clasificación de gasto
   · Tax Engine
-Next: C2.
+Next: C3 — subida manual de XML.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1324,6 +1327,138 @@ La reversión se comprueba con el valor **exacto**: se captura `updated_at` desd
 transacción independiente, se inyecta el fallo **después** de que el enlace real se haya
 ejecutado con éxito, y se exige que la reversión devuelva el mismo instante — con una
 contraprueba de que sin el fallo esa columna sí avanza.
+
+---
+
+## Checkpoint F — Fase C2 · Ingesta y orquestación
+
+### C2-A / C2-A1 / C2-B — COMPLETED
+
+**Auditoría independiente (Codex) — sign-off final:** CRITICAL 0 · HIGH 0 · MEDIUM 0 ·
+LOW 0. El MEDIUM previo —hueco de evidencia en la prueba de concurrencia, no defecto de
+producción— quedó **cerrado** con la prueba determinista de contención descrita más abajo.
+
+**Evidencia medida en el cierre:**
+
+| suite | resultado |
+|---|---|
+| ingesta C2 (`test_fiscal_ingestion.py`) | **40/40** |
+| persistencia C1 (`test_fiscal_persistence.py`) | **58/58** |
+| prueba determinista de contención, aislada | **1/1** |
+| backend completo | **1037/1037** |
+| Day2 (vitest) | **32/32** |
+| frontend | `eslint` · `tsc` · `build` — PASS |
+
+DEV: 18 migraciones locales = 18 remotas, mismo orden · 7 tablas fiscales · 0 filas ·
+**0 migraciones nuevas**.
+
+**Existe la ingesta fiscal.** `backend/app/fiscal/ingestion.py` — tres superficies:
+
+```
+capture_source_document(conn, ...)   conserva la evidencia recibida
+process_source_document(conn, ...)   la interpreta y la normaliza
+ingest_fiscal_xml(pool, ...)         coreografía síncrona canónica
+```
+
+**La evidencia primero, y en dos transacciones.** T1 comitea el artefacto; solo entonces T2
+lo interpreta. Unirlas haría que un documento ilegible se perdiera justo por ser ilegible —
+que es el caso que más falta hace conservar. Probado: fallo del parser, conflicto de clave,
+validador mal configurado, persistencia caída y defecto de programación **dejan la evidencia
+intacta**.
+
+**`parse_status` describe el parseo, no la tubería.** La compleción de la normalización la
+representa `electronic_document_id`. De ahí el caso que fija la arquitectura: parseo
+correcto + `ClaveConflict` ⇒ `parse_status='parsed'`, `parse_error=NULL`, sin enlace. Un
+`SAVEPOINT` alrededor de C1 revierte solo la persistencia y deja en pie esa verdad, que se
+comitea **antes** de que el llamante reciba el conflicto — verificado leyendo desde otra
+transacción.
+
+**Los desenlaces esperados viajan como veredicto, no como excepción.** Si el primitivo
+lanzara, el gestor de transacción revertiría T2 y el estado recién escrito se perdería. El
+orquestador levanta una excepción **nueva** después del commit, con `__cause__` y
+`__context__` en `None`.
+
+**`unknown` ≠ `unsupported`, por dato y no por texto.** `UnsupportedDocument` gana un
+`reason` tipado con las tres rutas reales del parser —`UNKNOWN_DOCUMENT`,
+`OUTSIDE_PIPELINE`, `UNSUPPORTED_TYPE`— y los errores posteriores a la detección llevan un
+`DocumentDetection` con tipo canónico y versión, tomada del manifiesto del paquete
+aprobado. La ingesta ya no necesita leer mensajes ni volver a mirar el XML.
+
+**Frontera de dominio:** `MAX_SOURCE_XML_BYTES = 8 MiB` y rechazo de cero bytes, **antes**
+de tocar la base y antes del parser. Constante de código, no configuración.
+
+**Autorización, medida contra RLS real:** la política `INSERT` usa `WITH CHECK`, que **sí
+lanza** `42501`. `owner`/`editor` capturan; `viewer`, no miembro y cruce entre empresas
+reciben `FiscalWriteForbidden` — la misma señal, para no filtrar nada del tenant ajeno. Al
+procesar se mantiene la puerta de dos lecturas de C1, **antes** de leer el XML: un `viewer`
+no puede provocar trabajo de parseo, y hay un test que cuenta las llamadas al parser.
+
+**Evidencia:** 40 tests contra PostgreSQL real, incluidos concurrencia sobre el mismo
+artefacto —el parser se ejecuta **exactamente una vez**— y los cinco modos de fallo que no
+deben culpar al documento. **0 migraciones · 0 cambios de esquema.**
+
+**Frontera con el registro de esquemas (C2-B-R2).** La ingesta necesita la versión
+estructural de todo el catálogo verificado, y `VerifiedSchemaRegistry` solo ofrecía
+`para(raiz, namespace)` —una búsqueda por clave que obliga a conocer el namespace—, así que
+durante un tiempo alcanzó el interno `_por_clave`. Cerrado con `entradas()`, que devuelve
+una tupla de `SchemaEntry` (`frozen`) con los esquemas que son documento raíz: lectura, no
+el mapa mutable. El enrutado sigue siendo exclusivo de `para()` y `_por_clave` vuelve a ser
+detalle de implementación. Protegido por tres pruebas de comportamiento y una estática.
+
+### Diagnóstico del *connection check* del pool
+
+Se midió el coste del `check` del pool, sospechoso de degradar la suite. **No lo era.**
+
+- **El `check` de producción se conserva**, sin cambios. Una conexión muerta no puede llegar
+  a una petición de la aplicación, muriera por lo que muriera.
+- **Su coste es bajo:** ~21 s por corrida, **3,3–3,5 %** del tiempo, con media estable de
+  141–143 ms —un round-trip al *pooler*— en tres corridas independientes. La varianza entre
+  corridas con idéntica configuración llegó a 31,8 s, es decir, **mayor que el coste total
+  del `check`**: no explica ninguna degradación.
+- **La única conexión muerta observada se correlaciona con la suspensión del host**, no con
+  la inactividad ni con la edad. Medido: con el equipo despierto, una conexión sobrevive
+  1800 s de inactividad pura; la que murió lo hizo en un intervalo cuyo reloj avanzó 1910 s
+  de más. `idle_session_timeout` del servidor es `0`.
+  *Nota:* el fixture usa `min_size = max_size = 1`, y con esa geometría `max_idle` es
+  estructuralmente inerte —`_shrink_pool` solo recicla por encima de `min_size`—, así que el
+  `check` es lo único que puede detectar ahí una conexión muerta.
+- **`_admin_sql` es deuda de rendimiento del arnés de pruebas, y NO se ha tocado.** Medido:
+  **70,5 %** del tiempo de la muestra, 97 subprocesos de la CLI de Supabase, ~426 s, con un
+  suelo de 3,69 s por invocación que es arranque de proceso, no trabajo SQL. Es el siguiente
+  cuello de botella medible; no afecta a la corrección de C2.
+
+### Contención real sobre el mismo artefacto (C2-B-R3)
+
+La prueba de concurrencia anterior sincronizaba solo el ARRANQUE de los dos hilos con una
+barrera: `CREATED` + `ALREADY_PERSISTED` y un solo parseo son necesarios, pero una
+planificación serie los produce igual. No demostraban contención.
+
+Sustituida por una prueba en la que **PostgreSQL confirma el bloqueo**. Se retiene al primer
+trabajador dentro de su transacción —en el parser, punto que solo se alcanza después de que
+el `SELECT ... FOR UPDATE` haya sido concedido y antes de cualquier commit— y un observador
+independiente consulta `pg_blocking_pids(B)` hasta ver el PID de A, con plazo acotado.
+
+Observado, no inferido: `A pid=2057827 · B pid=2057835 · pg_blocking_pids(B)=[2057827]`.
+Después se libera A, que comitea; B reanuda, ve `electronic_document_id` ya poblado y
+devuelve `ALREADY_PERSISTED` **sin parsear**. Parseos reales totales: 1. Documentos
+normalizados: 1.
+
+### Deuda informativa retenida (no se toca en C2)
+
+- **`_admin_sql`** — rendimiento del arnés, medido arriba.
+- **Day2 exige un servidor Next.js en marcha** y no lo arranca: falla con `SetupError` si no
+  está. Fricción del arnés, no defecto.
+- **`SemanticParseError` conserva dos rutas defensivas inalcanzables tras el XSD**
+  (`Emisor` y `ResumenFactura` ausentes: el esquema ya los exige, verificado). Se mantienen
+  a propósito; la ingesta sí prueba el mapeo por inyección.
+- **`_version_por_tipo()` colapsaría versiones simultáneas del mismo tipo canónico.** Si un
+  paquete futuro trajera dos versiones del mismo documento, el diccionario se sobrescribiría
+  por orden de iteración. Hoy el paquete verificado es **solo v4.4** y la arquitectura no
+  afirma soportar varias versiones a la vez, así que es deuda de arquitectura futura, no un
+  defecto actual. No se introduce diseño multi-versión especulativo.
+- **`check` en `single_connection_pool`** es una diferencia funcional del fixture respecto al
+  HEAD publicado de C1. Aceptada: es solo de tests, es segura y alinea el arnés con la
+  validación de salud de producción.
 
 ---
 

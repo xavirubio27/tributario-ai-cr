@@ -343,6 +343,28 @@ def single_connection_pool(settings):
         timeout=120,
         open=True,
         kwargs={"row_factory": dict_row},
+        # Misma corrección que el pool de producción (C1-B-R3): sin validar la
+        # conexión al entregarla, el pool puede dar una que el servidor ya
+        # cerró, y el fallo aparece como `psycopg.Connection [BAD]` en el
+        # primer uso.
+        #
+        # MEDIDO (C2-B, diagnóstico del check). La causa NO es la edad ni la
+        # inactividad, como se supuso al principio:
+        #
+        #   · con el equipo despierto, una conexión sobrevivió 1800 s de
+        #     inactividad pura sin que el servidor la cerrara;
+        #   · `idle_session_timeout` del servidor es 0;
+        #   · la única conexión muerta observada lo fue en un intervalo cuyo
+        #     reloj avanzó 1910 s de más -- el host se había suspendido.
+        #
+        # Es decir: lo que mata la conexión es una interrupción del host o de
+        # la red, no el paso del tiempo. El `check` sigue siendo la defensa
+        # correcta justamente porque no depende de POR QUÉ murió.
+        #
+        # Aquí es además la ÚNICA defensa posible: con `min_size == max_size
+        # == 1`, `_shrink_pool` nunca actúa -- solo recicla por encima de
+        # `min_size` -- y `max_idle` queda estructuralmente inerte.
+        check=ConnectionPool.check_connection,
     )
     yield p
     p.close()

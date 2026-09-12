@@ -66,6 +66,7 @@
 | [ADR-041](#adr-041) | El parser fiscal es puro y solo emite datos reportados | ✅ |
 | [ADR-042](#adr-042) | Deduplicación conservadora por huella en el MVP | ✅ |
 | [ADR-043](#adr-043) | Los documentos externos no entran en el dominio fiscal costarricense | ✅ |
+| [ADR-044](#adr-044) | Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla | ✅ |
 
 ---
 ---
@@ -2685,3 +2686,88 @@ profesionales, telecomunicaciones, transporte, publicidad, alquiler, logística.
   pueda cruzar sin darse cuenta.
 - Coste asumido: hasta que exista el dominio externo, esos gastos no están normalizados en
   el sistema.
+
+---
+
+## ADR-044 — Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla
+
+**Estado:** ✅ Aceptada (Día 3, fase C2) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-007](#adr-007) · [ADR-031](#adr-031) · [ADR-035](#adr-035) ·
+[ADR-037](#adr-037) · [ADR-038](#adr-038) · [ADR-041](#adr-041) · [ADR-042](#adr-042)
+
+### Contexto
+
+Un `SourceDocument` es **evidencia fiscal inmutable**: los bytes que el contribuyente
+recibió. Interpretarlos —parsearlos, validarlos contra el esquema oficial, normalizarlos—
+es una operación posterior que **puede fallar**, y que falla precisamente en los casos que
+más interesa conservar: el XML corrupto, el tipo no soportado, la clave en conflicto.
+
+Si captura e interpretación viven en una sola transacción, un fallo del parser revierte
+también la captura. El resultado es que **un documento ilegible se pierde justo por ser
+ilegible**, y no queda nada que investigar.
+
+Además, la evidencia llegará por varios canales —subida manual (C3), correo (C4),
+conectores—, y ninguno puede tener su propia tubería fiscal: sería multiplicar por tres las
+reglas de autorización, de trazabilidad y de estado.
+
+### Decisión
+
+**Dos transacciones, nunca una.**
+
+```
+T1  transacción fiscal autenticada
+    capture_source_document(...)
+    COMMIT  ────────────────────────►  la evidencia ya es durable
+
+T2  transacción fiscal autenticada NUEVA
+    process_source_document(...)
+    COMMIT o ROLLBACK según la clase de error
+```
+
+`ingest_fiscal_xml(...)` es la **coreografía síncrona canónica** y posee ese orden. C3 y C4
+llaman aquí en lugar de reproducirlo; C4 podrá además usar los dos primitivos por separado
+alrededor de una cola, sin reescribir nada.
+
+**`parse_status` describe el parseo, no la tubería.** Que la normalización se completara lo
+representa `electronic_document_id`, y solo eso. De ahí el caso que fija la arquitectura:
+parseo correcto + `ClaveConflict` ⇒ `parse_status = 'parsed'`, `parse_error = NULL`, sin
+enlace.
+
+**`parse_error` pertenece solo al parseo.** Nunca almacena errores de persistencia,
+diagnósticos de PostgreSQL o de lxml, ni un solo dato del contribuyente.
+
+**Los eventos de evidencia duplicada se preservan.** Dos recepciones de los mismos bytes son
+dos hechos distintos y generan dos `SourceDocument`. Deduplicar evidencia y deduplicar
+documentos normalizados son conceptos deliberadamente separados: lo segundo es de C1
+([ADR-031](#adr-031), [ADR-042](#adr-042)).
+
+**C2 es independiente del canal.** Registra por dónde llegó la evidencia; no sabe nada del
+transporte.
+
+### Consecuencias
+
+- **La evidencia sobrevive a todo lo que venga después.** Fallo del parser, documento no
+  soportado, conflicto de clave, caída temporal de la base, error interno o caída del
+  proceso tras T1: ninguno puede borrar los bytes recibidos.
+- **Dos transacciones son intencionadas**, no un descuido. Se paga una segunda apertura de
+  transacción a cambio de que la evidencia no dependa de que la interpretación funcione.
+- **El llamante puede recibir un error cuando el artefacto ya existe.** Es la consecuencia
+  directa de comitear T1 primero, y es deseable.
+- **Por eso `source_document_id` viaja como contexto del error**: sin él, quien recibe el
+  fallo no puede referirse al artefacto que sí se guardó. Es un UUID interno, no un dato
+  del contribuyente.
+- **El estado del parser y el de la persistencia permanecen separados** y no se deducen uno
+  del otro.
+- **El procesamiento asíncrono cabe sin rediseño**: `process_source_document` ya es un
+  primitivo independiente que opera sobre un artefacto ya durable.
+- Coste asumido: un artefacto puede quedar capturado y sin procesar si T2 falla. Es
+  preferible a perder la evidencia, y el reintento es idempotente.
+
+### Lo que este ADR NO decide
+
+- **No** implementa transporte: ni subida (C3), ni extracción de correo (C4).
+- **No** introduce cola ni procesamiento en segundo plano.
+- **No** toca el Tax Engine, que sigue sin existir.
+- **No** amplía el dominio a documentos externos ([ADR-043](#adr-043)).
+- **No** reimplementa nada de C1: la persistencia normalizada, el arbitraje de la carrera
+  por `Clave`, la deduplicación por huella y el enlace final siguen siendo suyos.

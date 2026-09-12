@@ -7,6 +7,9 @@ nombres, correos y direcciones, y no tienen por qué acabar en un log.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
+
 
 class FiscalParseError(Exception):
     """Raíz de todo fallo del parser. Nada de lxml cruza la frontera pública."""
@@ -31,19 +34,66 @@ class MalformedXML(FiscalParseError):
     code = "malformed_xml"
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentDetection:
+    """Lo que el parser llegó a IDENTIFICAR antes de decidir o de fallar.
+
+    Existe para que la ingesta pueda registrar qué documento era sin volver a
+    mirar el XML ni leer el texto de un mensaje de error. El parser sigue
+    siendo el único dueño de la detección; esto solo la hace legible.
+
+    No lleva ningún dato del contribuyente: tipo canónico y versión
+    estructural del esquema, ambos de nuestro vocabulario.
+    """
+
+    document_type: str
+    schema_version: str
+
+
+class UnsupportedDocumentReason(StrEnum):
+    """Por qué un documento no se procesa. Discriminador ESTABLE.
+
+    Sin él, las tres rutas que levantan `UnsupportedDocument` solo se
+    distinguían leyendo el mensaje — el mismo antipatrón que ya se corrigió en
+    el parser (B2-R2) y en la traducción de errores de la persistencia
+    (C1-B-R2).
+
+    Los tres valores corresponden exactamente a las tres condiciones reales
+    del código, ni una más:
+    """
+
+    #: Ni la raíz ni el namespace corresponden a ningún esquema del paquete.
+    UNKNOWN_DOCUMENT = "unknown_document"
+    #: Esquema reconocido, pero el documento no es un comprobante —
+    #: `MensajeHacienda` no tiene líneas ni totales.
+    OUTSIDE_PIPELINE = "outside_pipeline"
+    #: Comprobante reconocido sin soporte semántico probado — hoy, la Nota de
+    #: Débito: existe el esquema, no existe un comprobante real con el que
+    #: probar la extracción.
+    UNSUPPORTED_TYPE = "unsupported_type"
+
+
 class UnsupportedDocument(FiscalParseError):
-    """La raíz o el namespace no corresponden a un comprobante soportado.
+    """El documento no entra en el pipeline de comprobantes normalizados.
 
-    Cubre tres situaciones distintas, todas deterministas:
-
-    - raíz desconocida;
-    - raíz conocida con **namespace equivocado** —una versión distinta del
-      esquema no debe caer en el de 4.4—;
-    - documento reconocido pero **sin soporte semántico probado** todavía, que
-      hoy es el caso de la Nota de Débito.
+    `reason` es obligatorio y tipado: quien lo reciba decide por dato, no por
+    texto. `detection` existe cuando el esquema SÍ se identificó — es decir,
+    en todo caso salvo `UNKNOWN_DOCUMENT`.
     """
 
     code = "unsupported_document"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: UnsupportedDocumentReason,
+        detection: DocumentDetection | None = None,
+        **contexto: object,
+    ) -> None:
+        super().__init__(message, reason=reason.value, **contexto)
+        self.reason = reason
+        self.detection = detection
 
 
 class XSDValidationError(FiscalParseError):
@@ -59,6 +109,14 @@ class XSDValidationError(FiscalParseError):
     """
 
     code = "xsd_validation_error"
+
+    def __init__(
+        self, message: str, *, detection: "DocumentDetection | None" = None,
+        **contexto: object,
+    ) -> None:
+        super().__init__(message, **contexto)
+        #: El esquema SÍ se identificó antes de este fallo.
+        self.detection = detection
 
 
 class ValidatorConfigurationError(FiscalParseError):
@@ -84,6 +142,14 @@ class SemanticParseError(FiscalParseError):
     """
 
     code = "semantic_parse_error"
+
+    def __init__(
+        self, message: str, *, detection: "DocumentDetection | None" = None,
+        **contexto: object,
+    ) -> None:
+        super().__init__(message, **contexto)
+        #: El esquema SÍ se identificó antes de este fallo.
+        self.detection = detection
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,3 +268,55 @@ class PersistenceDatabaseError(FiscalPersistenceError):
     """
 
     code = "persistence_database_error"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingesta (C2)
+#
+# Errores de la frontera que RECIBE la evidencia. Son de entrada y de recurso:
+# no hablan del contenido fiscal, porque en este punto todavía no se ha mirado
+# ningún XML. Por eso no se reutilizan `MalformedXML` ni `XSDValidationError`:
+# dirían que el XML está mal cuando ni siquiera se ha intentado leerlo.
+#
+# Todo lo demás —parseo y persistencia— la ingesta lo reutiliza tal cual.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class FiscalIngestionError(Exception):
+    """Raíz de los fallos de la capa de ingesta."""
+
+    code = "fiscal_ingestion_error"
+
+    def __init__(self, message: str, **contexto: object) -> None:
+        super().__init__(message)
+        self.message = message
+        self.contexto = {k: v for k, v in contexto.items() if v is not None}
+
+    def __str__(self) -> str:  # pragma: no cover - representación
+        if not self.contexto:
+            return self.message
+        extra = " · ".join(f"{k}={v!r}" for k, v in sorted(self.contexto.items()))
+        return f"{self.message} ({extra})"
+
+
+class SourceDocumentTooLarge(FiscalIngestionError):
+    """El artefacto supera el máximo admitido por la frontera de dominio.
+
+    C3 pondrá además su límite de transporte, pero la frontera del dominio no
+    puede depender de que el canal se comporte: un llamante directo de la API
+    llegaría hasta `bytea` sin tope.
+    """
+
+    code = "source_document_too_large"
+
+
+class EmptySourceDocument(FiscalIngestionError):
+    """Cero bytes no son evidencia de nada.
+
+    No hay artefacto que preservar, así que se rechaza **antes** de insertar.
+    Guardarlo crearía una fila que jamás podrá procesarse —y que además pasa el
+    CHECK, porque `sha256(b'')` es un hash válido— sin representar ningún
+    hecho.
+    """
+
+    code = "empty_source_document"

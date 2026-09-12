@@ -27,6 +27,15 @@ TIPO_POR_RAIZ: dict[str, str] = {
 }
 
 
+#: Tipo canónico DETECTADO, para `source_documents.detected_document_type`.
+#: Superconjunto de `TIPO_POR_RAIZ`: añade lo que el paquete sabe identificar
+#: pero no se normaliza como comprobante. Un vocabulario, no dos.
+TIPO_DETECTADO_POR_RAIZ: dict[str, str] = {
+    **TIPO_POR_RAIZ,
+    "MensajeHacienda": "hacienda_message",
+}
+
+
 # Cardinalidad de `InformacionReferencia` por tipo de comprobante, verificada
 # elemento por elemento en los CUATRO esquemas oficiales vendorizados. La Nota
 # de Crédito y la de Débito exigen al menos una referencia; la Factura y el

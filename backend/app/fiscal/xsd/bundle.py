@@ -107,6 +107,10 @@ class SchemaEntry:
     id: str
     root: str | None
     namespace: str
+    #: Versión estructural declarada en el manifiesto —«4.4»—. La consume la
+    #: ingesta para registrar `detected_schema_version` sin deducirla del
+    #: identificador ni del namespace.
+    version: str
     path: str
     sha256: str
     bytes: int
@@ -123,6 +127,7 @@ def entries() -> tuple[SchemaEntry, ...]:
     return tuple(
         SchemaEntry(
             id=e["id"], root=e.get("root"), namespace=e["namespace"],
+            version=e["version"],
             path=e["path"], sha256=e["sha256"], bytes=e["bytes"],
             dependencies=tuple(e.get("dependencies", ())),
         )

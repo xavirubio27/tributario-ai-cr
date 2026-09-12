@@ -28,13 +28,16 @@ from decimal import Decimal, InvalidOperation
 from lxml import etree
 
 from app.fiscal.errors import (
+    DocumentDetection,
     MalformedXML,
     SemanticParseError,
     UnsupportedDocument,
+    UnsupportedDocumentReason,
     ValidatorConfigurationError,
     XSDValidationError,
 )
 from app.fiscal.models import (
+    TIPO_DETECTADO_POR_RAIZ,
     TIPO_POR_RAIZ,
     FechaFiscal,
     Identificacion,
@@ -60,6 +63,18 @@ RAICES_SOPORTADAS = frozenset({
 })
 
 _RE_OFFSET = re.compile(r"(?P<signo>[+-])(?P<h>\d{2}):(?P<m>\d{2})$|Z$")
+
+
+def _deteccion(entrada, raiz: str) -> DocumentDetection:
+    """Identidad del documento, en vocabulario canónico nuestro.
+
+    La versión sale del manifiesto del paquete aprobado, no de deducirla del
+    identificador ni del namespace.
+    """
+    return DocumentDetection(
+        document_type=TIPO_DETECTADO_POR_RAIZ[raiz],
+        schema_version=entrada.version,
+    )
 
 
 def _diagnostico_seguro(error_log) -> dict[str, object]:
@@ -482,26 +497,37 @@ def parse_fiscal_document(raw_xml: bytes) -> ParsedFiscalDocument:
 
     encontrado = registro.para(raiz, ns)
     if encontrado is None:
+        # No se identificó NADA: no hay detección que reportar.
         raise UnsupportedDocument(
-            "Raíz o namespace no reconocidos", raiz=raiz, namespace=ns
+            "Raíz o namespace no reconocidos",
+            reason=UnsupportedDocumentReason.UNKNOWN_DOCUMENT,
+            raiz=raiz, namespace=ns,
         )
     entrada, schema = encontrado
+    # A partir de aquí el esquema está identificado, así que todo fallo puede
+    # decir QUÉ era el documento sin que nadie vuelva a mirar el XML.
+    deteccion = _deteccion(entrada, raiz)
 
     if raiz not in TIPO_POR_RAIZ:
         # MensajeHacienda tiene esquema, pero no es un comprobante: no tiene
         # líneas ni totales, y forzarlo en el modelo rompería su semántica.
         raise UnsupportedDocument(
-            "El documento no es un comprobante fiscal", raiz=raiz
+            "El documento no es un comprobante fiscal",
+            reason=UnsupportedDocumentReason.OUTSIDE_PIPELINE,
+            detection=deteccion, raiz=raiz,
         )
     if raiz not in RAICES_SOPORTADAS:
         raise UnsupportedDocument(
-            "Tipo reconocido pero sin soporte semántico probado", raiz=raiz
+            "Tipo reconocido pero sin soporte semántico probado",
+            reason=UnsupportedDocumentReason.UNSUPPORTED_TYPE,
+            detection=deteccion, raiz=raiz,
         )
 
     # 4 · Validación contra el esquema oficial VERIFICADO.
     if not schema.validate(arbol_completo):
         raise XSDValidationError(
             "El documento no es conforme a su esquema oficial",
+            detection=deteccion,
             esquema=entrada.id, **_diagnostico_seguro(schema.error_log),
         )
 
