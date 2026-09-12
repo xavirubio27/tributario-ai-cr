@@ -185,6 +185,36 @@ Decisión deliberada, con tres razones:
 3. **Riesgo acotado** — permite construir y validar todo el pipeline de datos antes
    de asumir dependencias externas.
 
+### El MVP práctico cubre DOS familias de documentos
+
+El primer hito es el XML costarricense, por las tres razones de arriba. Pero una empresa
+real no gasta solo en proveedores que emiten comprobante electrónico de Hacienda:
+también paga transporte, SaaS, nube, publicidad, hoteles, vuelos y servicios
+profesionales del extranjero. Un producto que ignore esa mitad del gasto no le sirve
+para llevar su contabilidad.
+
+Por eso el MVP práctico, en su dirección completa, abarca:
+
+```
+Comprobante electrónico CR (XML)  ──▶  Dominio Fiscal          [parcialmente IMPLEMENTADO]
+Documento externo (PDF, imagen,   ──▶  Dominio Externo         [PLANIFICADO — D1]
+ factura no costarricense)
+```
+
+**Las dos familias no se mezclan** ([docs/DECISIONS.md](docs/DECISIONS.md), ADR-043). Un
+documento externo nunca se disfraza de comprobante costarricense: no se inventa `Clave`,
+ni consecutivo, ni CABYS reportado. La evidencia original se conserva íntegra, y lo que
+un modelo extraiga de ella la acompaña sin sustituirla, con su procedencia y su
+confianza.
+
+La dirección del MVP práctico incluye, por orden de madurez: ingesta de XML
+costarricense · evidencia conservada · bandeja de revisión de documentos · ingesta de
+documentos externos · extracción asistida por IA · categorización de gasto · calendario
+fiscal · inteligencia inicial de IVA · y un canal de notificación proactiva, con
+**WhatsApp** como preferencia estratégica.
+
+Ver [ROADMAP.md](ROADMAP.md) para la secuencia y el estado de cada etapa.
+
 ### Fuera del alcance del MVP
 
 Explícitamente excluido por ahora: integración con Hacienda, integración bancaria,
@@ -195,7 +225,14 @@ Base, monetización.
 
 ## 6. Funcionalidades previstas
 
-Enumeradas por capa de madurez. Ninguna está implementada hoy.
+Enumeradas por capa de madurez.
+
+> **Estado.** Hoy existe la tubería fiscal de XML costarricense en el backend —parser,
+> validación contra esquemas oficiales, persistencia normalizada y endpoint HTTP de
+> subida—. **Todo lo demás de esta lista está sin implementar**, incluidas la interfaz
+> de subida, la bandeja de documentos, el dominio externo, la clasificación de gasto, el
+> calendario, el Tax Engine, las notificaciones y WhatsApp. El estado medido está en
+> [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ### Capa 1 — Datos fiscales (fundación)
 

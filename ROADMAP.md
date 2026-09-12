@@ -1,35 +1,230 @@
-# ROADMAP — Asistente Tributario IA (Costa Rica)
+# ROADMAP — Tribuu.ai (Costa Rica)
 
 > **Sin fechas.** Este roadmap describe una **secuencia**, no un calendario.
-> El desarrollo es incremental: cada fase se apoya en la confiabilidad de la anterior.
+> El desarrollo es incremental: cada etapa se apoya en la confiabilidad de la anterior.
 >
-> Estado actual: **Fase 0 — en curso.**
+> **El estado vigente y medido está en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).**
+> Este documento describe la DIRECCIÓN del producto; aquel describe lo que existe.
+> Ante cualquier discrepancia, manda `PROJECT_STATE`.
 
 ---
 
-## Secuencia conceptual
+## Qué existe hoy, y qué no
+
+Esta separación es deliberada y debe leerse antes que cualquier tabla de este archivo:
+un roadmap que suena a producto terminado es un roadmap que engaña.
+
+**IMPLEMENTADO** — tubería de documentos fiscales costarricenses en el backend: parser
+del comprobante electrónico, validación contra los esquemas oficiales, persistencia
+normalizada, y el endpoint HTTP de subida manual.
+
+**NO IMPLEMENTADO** — interfaz de subida, bandeja de documentos, dominio de documentos
+externos, inteligencia sobre PDF o imagen, clasificación de gasto, ingesta por correo,
+calendario fiscal, Tax Engine de IVA, WhatsApp, motor de notificaciones y radar
+normativo. **Nada de lo anterior existe todavía**, por muy detallado que aparezca aquí.
+
+---
+
+## Las dos familias de documentos
+
+Una empresa costarricense real gasta en dos mundos a la vez, y Tribuu.ai tendrá que
+cubrir ambos:
 
 ```
-XML → PARSER → VALIDACIÓN → NORMALIZACIÓN → INTERNAL INVOICE
-  → POSTGRESQL → PERFIL FISCAL → DASHBOARD → TAX ENGINE IVA
-  → KNOWLEDGE BASE → RAG → AI EXPERT → RADAR FISCAL → MONETIZACIÓN
+Comprobante electrónico CR  ──▶  Dominio Fiscal
+(XML de Hacienda)                parser determinista + XSD
+
+Documento externo           ──▶  Dominio de Documentos Externos
+(PDF, imagen, factura no                    (por diseñar)
+ costarricense, evidencia
+ derivada de un correo)
 ```
 
-## Vista general
+Proveedores de transporte, SaaS, servicios en la nube, plataformas de publicidad,
+hoteles, aerolíneas, servicios profesionales y proveedores internacionales producen
+gasto real que hoy el sistema no sabe representar. Los ejemplos son **ilustrativos**:
+no se codifica lógica específica de ningún proveedor.
 
-| Fase | Nombre | Estado |
+**La separación es obligatoria** ([ADR-043](docs/DECISIONS.md#adr-043)). Un documento
+externo **nunca** se fuerza dentro del dominio fiscal costarricense. No se sintetiza
+`Clave`, ni consecutivo de Hacienda, ni `CodigoActividad`, ni CABYS reportado, ni
+aceptación de Hacienda para que encaje en el esquema actual. Un hueco se queda hueco.
+
+Más adelante ambos dominios podrán alimentar clasificación de gasto, analítica, Tax
+Engine y notificaciones — pero como fuentes distintas, no fundidas en una.
+
+**La evidencia original se conserva.** El PDF, la imagen o el artefacto derivado de un
+correo **son** la evidencia. Lo que extraiga un modelo no la sustituye: la acompaña.
+
+---
+
+## Reportado frente a derivado
+
+El principio que ya gobierna el dominio fiscal se extiende tal cual al externo:
+
+```
+LO QUE EL DOCUMENTO DICE     ≠     LO QUE TRIBUU INFIERE
+```
+
+| Reportado | Derivado |
+|---|---|
+| `reported_total` | `suggested_category` |
+| `reported_currency` | `suggested_subcategory` |
+| `reported_supplier` | `suggested_cabys_code` |
+| | `classification_confidence` |
+
+**Un valor derivado jamás se disfraza de evidencia.** En particular, un documento
+externo casi nunca reporta CABYS costarricense: en ese caso el CABYS **reportado queda
+ausente**. Tribuu podrá sugerir uno más adelante, con su confianza y su procedencia,
+pero un CABYS sugerido no es un CABYS reportado.
+
+Los campos extraídos o inferidos por IA deberán poder llevar **valor, procedencia,
+confianza cuando proceda y estado de corrección humana**. El esquema físico se diseñará
+en D1/D2, no aquí.
+
+---
+
+## Clasificador ≠ Tax Engine
+
+```
+Clasificador de gasto  →  «¿qué compró la empresa?»
+Tax Engine             →  «¿cuál es el tratamiento tributario en Costa Rica?»
+```
+
+El clasificador —y cualquier modelo— **no determina por su cuenta** deducibilidad,
+derecho a crédito de IVA, obligaciones de retención ni deuda tributaria final. Es la
+misma frontera que gobierna todo el proyecto: **LLM ≠ Tax Engine**.
+
+---
+
+## Arquitectura de notificaciones — principio
+
+El usuario no debería tener que acordarse de abrir Tribuu.ai. El producto debe buscarle
+cuando algo merece su atención. Pero un canal es un canal:
+
+```
+Documentos ───────────┐
+Calendario ───────────┤
+Tax Engine ───────────┤
+Radar normativo ──────┤
+                      ▼
+             Motor de notificaciones
+              ↙        ↓         ↘
+            Web    WhatsApp     Correo
+```
+
+**Nunca** `Tax Engine → API del proveedor de WhatsApp`, y **nunca** un modelo estimando
+una cifra que sale por WhatsApp. Los canales consumen estado y eventos ya confiables,
+producidos en otra parte.
+
+El motor de notificaciones tendrá que ocuparse conceptualmente de evento, prioridad,
+destinatario, preferencias de canal, estado de entrega, intención del mensaje, enlace
+profundo, deduplicación y enfriamiento, e historial. **Sin esquema, sin cola y sin
+integración de proveedor todavía.**
+
+**Consentimiento.** Un mensaje proactivo por WhatsApp exigirá opt-in explícito y
+preferencias por tipo — vencimientos, alertas de importe, documentos que requieren
+atención, avisos preventivos, novedades normativas, frecuencia y severidad.
+
+**Lenguaje de certeza.** Si faltan datos o hay documentos en revisión, Tribuu no puede
+presentar una cifra como definitiva. Habrá que distinguir **estimado**, **calculado /
+listo para revisión** y **determinado**. Lo decide el estado del Tax Engine; WhatsApp
+solo comunica ese estado.
+
+---
+
+## Roadmap de producto
+
+**Ninguna etiqueta de esta tabla es un nombre inmutable de checkpoint de ingeniería.**
+Los checkpoints reales viven en `PROJECT_STATE`.
+
+| Etapa | Nombre | Estado |
 |---|---|---|
-| 0 | Project foundation | 🔵 En curso |
-| 1 | Infrastructure / Auth / Company | ⬜ Pendiente |
-| 2 | XML invoices | ⬜ Pendiente |
-| 3 | Dashboard | ⬜ Pendiente |
-| 4 | Tax Engine IVA | ⬜ Pendiente |
-| 5 | Tax Knowledge Base + RAG | ⬜ Pendiente |
-| 6 | AI Expert | ⬜ Pendiente |
-| 7 | Fiscal Radar | ⬜ Pendiente |
-| 8 | Monetization | ⬜ Pendiente |
-| 9 | Integrations | ⬜ Pendiente |
-| 10 | Advanced tax capabilities | ⬜ Pendiente |
+| **C3** | Subida manual de XML + workspace + bandeja | 🔵 **EN CURSO** |
+| D1 | Dominio de documentos externos | ⬜ Planificado |
+| D2 | Inteligencia documental | ⬜ Planificado |
+| D3 | Clasificación de gasto | ⬜ Planificado |
+| D4 | Revisión unificada de documentos | ⬜ Planificado |
+| C4 | Canales de ingesta automatizada | ⬜ Planificado |
+| C5 | Perfil fiscal de empresa + calendario | ⬜ Planificado |
+| C6 | Tax Engine de IVA | ⬜ Planificado |
+| W1 | Notificaciones por WhatsApp | ⬜ Planificado |
+| C7 | Renta y proyecciones | ⬜ Planificado |
+| W2 | Inteligencia fiscal por WhatsApp | ⬜ Planificado |
+| C8 | Radar normativo | ⬜ Planificado |
+| W3 | Alertas normativas por WhatsApp | ⬜ Planificado |
+| W4 | Tribuu conversacional | ⬜ Planificado |
+
+### D1 — Dominio de documentos externos
+
+Ciclo de vida de la evidencia, documento externo normalizado, tenencia y seguridad,
+procedencia, y semántica de revisión y corrección.
+
+### D2 — Inteligencia documental
+
+Extracción de texto nativo cuando existe, visión u OCR cuando hace falta, extracción
+estructurada asistida por IA, validación, y confianza con procedencia.
+
+### D3 — Clasificación de gasto
+
+Responde a «¿qué compró la empresa?». Señales del proveedor y del contexto, categoría y
+subcategoría, clasificación por línea cuando sea posible, CABYS **sugerido** separado
+del reportado, y realimentación cuando una persona corrige.
+
+### D4 — Revisión unificada de documentos
+
+Una sola bandeja para ambos dominios: procesado · requiere atención · no soportado
+todavía · pendiente de proceso · en revisión o corrección humana.
+
+### C4 — Canales de ingesta automatizada
+
+Reencuadre de lo que antes era «ingesta de XML por correo». El correo es el primer
+canal probable, no el alcance:
+
+```
+correo / adjunto
+        ↓
+  recepción de evidencia
+        ↓
+  detector y enrutador de documento
+       ↙                    ↘
+XML fiscal CR          PDF / imagen / externo
+      ↓                        ↓
+Dominio Fiscal          Dominio Externo
+```
+
+**El canal no contiene lógica fiscal.** Transporta y enruta; nada más.
+
+### W1 — Notificaciones por WhatsApp
+
+Vencimientos fiscales, importe de IVA estimado o calculado **cuando sea confiable**,
+documentos que requieren atención, y enlace profundo a Tribuu.
+
+### W2 — Inteligencia fiscal por WhatsApp
+
+Después de renta y proyecciones: proyecciones, advertencias preventivas y cambios
+fiscales relevantes.
+
+### W3 — Alertas normativas por WhatsApp
+
+Después del radar normativo. Cada aviso indica sin ambigüedad si la norma está
+**EN DISCUSIÓN**, **APROBADA** o **VIGENTE**.
+
+### W4 — Tribuu conversacional
+
+«¿Cuánto tengo que pagar?» · «¿Cuándo vence?» · «¿Por qué?» · «¿Qué tengo pendiente?»
+· «¿Qué cambió?»
+
+La capa conversacional **recupera y explica** resultados confiables. No calcula
+impuestos por su cuenta.
+
+---
+
+## Fases originales (referencia histórica)
+
+Lo que sigue es el plan por fases con el que arrancó el proyecto. Se conserva porque
+describe bien el porqué del orden, pero **sus estados están superados**: consúltese
+`PROJECT_STATE`. Las fases 0 a 2 corresponden, a grandes rasgos, a lo ya construido.
 
 **Por qué el orden importa.** El asistente de la Fase 6 solo vale lo que valgan los
 datos de la Fase 2 y el motor de la Fase 4. Adelantar la capa de IA sobre datos poco

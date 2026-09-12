@@ -67,11 +67,21 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
   C4  — ingesta por correo — NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
-Futuro (sin fase asignada, NOT STARTED):
-  · detección de tipo de documento
-  · normalización de documentos externos (ADR-043)
-  · clasificación de gasto
-  · Tax Engine
+Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
+  D1 — dominio de documentos externos (ADR-043)
+  D2 — inteligencia documental (PDF, imagen, extracción asistida por IA)
+  D3 — clasificación de gasto (CABYS sugerido != CABYS reportado)
+  D4 — revisión unificada de documentos
+  C4 — canales de ingesta automatizada (correo primero; ya no «XML por correo»)
+  C5 — perfil fiscal de empresa + calendario fiscal
+  C6 — Tax Engine de IVA
+  W1 — notificaciones por WhatsApp
+  C7 — renta y proyecciones
+  W2 — inteligencia fiscal por WhatsApp
+  C8 — radar normativo
+  W3 — alertas normativas por WhatsApp
+  W4 — Tribuu conversacional
+  Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
 Next: C3-B2 — workspace de empresa y UI de subida.
 ```
 
