@@ -26,6 +26,8 @@ from app.fiscal.errors import (
     EmptySourceDocument,
     FiscalWriteForbidden,
     MalformedXML,
+    PersistenceDatabaseError,
+    PersistenceMappingError,
     PersistenceUnavailable,
     SemanticParseError,
     SourceDocumentNotFound,
@@ -989,3 +991,180 @@ def test_la_ingesta_no_toca_internos_del_registro():
         and not (n.attr.startswith("__") and n.attr.endswith("__"))
     })
     assert privados == [], f"la ingesta alcanza internos ajenos: {privados}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 12 · Identidad del artefacto en fallos posteriores a la captura (C3-A2)
+#
+# ADR-044 hace que el llamante pueda recibir un error CUANDO LA EVIDENCIA YA
+# EXISTE. Si ese error no dice cuál es el artefacto, la única salida del
+# usuario es volver a subir el fichero -- y nace una segunda evidencia por un
+# fallo transitorio nuestro. Aquí se fija que no se pierda esa identidad.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_INFRAESTRUCTURA = [
+    (PersistenceUnavailable, "persist_parsed_fiscal_document"),
+    (PersistenceDatabaseError, "persist_parsed_fiscal_document"),
+    (PersistenceMappingError, "persist_parsed_fiscal_document"),
+    (ValidatorConfigurationError, "parse_fiscal_document"),
+]
+
+
+@pytest.mark.parametrize(
+    ("clase", "objetivo"), _INFRAESTRUCTURA,
+    ids=[c.__name__ for c, _ in _INFRAESTRUCTURA],
+)
+def test_un_fallo_posterior_a_t1_conserva_la_identidad_del_artefacto(
+    clase, objetivo, pool, settings, user_a, monkeypatch, limpio
+):
+    from app.fiscal import ingestion
+
+    def _revienta(*a, **k):
+        raise clase("fallo inyectado", stage="inyectado")
+
+    monkeypatch.setattr(ingestion, objetivo, _revienta)
+
+    with pytest.raises(clase) as exc:
+        ingest_fiscal_xml(pool, settings, user_a.identity,
+                          company_id=user_a.company_id, raw_xml=_bytes(FE),
+                          ingestion_source=IngestionSource.API)
+
+    sid = exc.value.contexto.get("source_document_id")
+    assert sid, f"{clase.__name__} perdió la identidad de la evidencia"
+
+    # Es el artefacto REAL, no un valor cualquiera: existe y sigue intacto.
+    fila = _leer(pool, settings, user_a, sid)
+    assert fila is not None, "la evidencia de T1 debe sobrevivir"
+    assert fila["parse_status"] == "pending", "T2 revirtió"
+    assert fila["parse_error"] is None
+    assert fila["parse_attempt_count"] == 0, "sin incremento durable"
+    assert fila["electronic_document_id"] is None
+
+    # No quedó ningún documento normalizado.
+    with fiscal_transaction(pool, settings, user_a.identity) as conn:
+        assert conn.execute(
+            "select count(*) as n from fiscal.electronic_documents where company_id=%s",
+            (user_a.company_id,)).fetchone()["n"] == 0
+
+    # La cadena sigue limpia: se levantó una excepción NUEVA fuera del `except`.
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+    publico = f"{exc.value!s} {exc.value!r}"
+    for fuga in ("psycopg", "postgres", "Traceback", "lxml"):
+        assert fuga not in publico
+
+
+def test_un_defecto_de_programacion_no_se_enriquece_ni_se_convierte(
+    pool, settings, user_a, monkeypatch, limpio
+):
+    """Lo inesperado sigue siendo inesperado.
+
+    Enriquecer capturando `Exception` habría convertido cualquier defecto
+    nuestro en un error de dominio con aspecto de cosa prevista.
+    """
+    from app.fiscal import ingestion
+
+    def _bug(*a, **k):
+        raise RuntimeError("defecto de programación simulado")
+
+    monkeypatch.setattr(ingestion, "persist_parsed_fiscal_document", _bug)
+
+    with pytest.raises(RuntimeError) as exc:
+        ingest_fiscal_xml(pool, settings, user_a.identity,
+                          company_id=user_a.company_id, raw_xml=_bytes(FE),
+                          ingestion_source=IngestionSource.API)
+    assert not isinstance(exc.value, (FiscalWriteForbidden, PersistenceUnavailable))
+    assert not hasattr(exc.value, "contexto"), "no se le adjuntó contexto de dominio"
+
+
+def test_el_conjunto_enriquecido_es_cerrado_y_explicito():
+    """Ni `Exception` ni `BaseException`: un conjunto nombrado."""
+    from app.fiscal.ingestion import _SEGUROS_TRAS_CAPTURA
+
+    assert Exception not in _SEGUROS_TRAS_CAPTURA
+    assert BaseException not in _SEGUROS_TRAS_CAPTURA
+    assert set(_SEGUROS_TRAS_CAPTURA) == {
+        FiscalWriteForbidden, PersistenceUnavailable, PersistenceDatabaseError,
+        PersistenceMappingError, ValidatorConfigurationError,
+    }
+
+
+def test_la_etapa_distingue_captura_de_ciclo_de_vida(
+    pool, settings, user_a, monkeypatch, limpio
+):
+    """`_error_de_captura` sirve a T1 y a T2; la etapa debe decir a cuál.
+
+    Antes fijaba `source_capture` literalmente, así que un fallo al escribir el
+    estado del intento se etiquetaba como si hubiera ocurrido al recibir la
+    evidencia.
+    """
+    from app.fiscal import ingestion
+
+    r = _capturar(pool, settings, user_a, user_a.company_id, _bytes(FE))
+
+    # Un fallo de base en la ESCRITURA DEL CICLO DE VIDA, dentro de T2.
+    original = ingestion._ACTUALIZAR_CICLO
+    monkeypatch.setattr(ingestion, "_ACTUALIZAR_CICLO",
+                        original.replace("fiscal.source_documents",
+                                         "fiscal.no_existe_esta_tabla"))
+    with pytest.raises(PersistenceDatabaseError) as exc:
+        _procesar(pool, settings, user_a, user_a.company_id, r.source_document_id)
+
+    assert exc.value.contexto.get("stage") == "source_lifecycle", (
+        f"etapa incorrecta: {exc.value.contexto.get('stage')!r}")
+
+    # El identificador NO se añade aquí, y es correcto: el primitivo puede
+    # llamarse sobre un artefacto que el llamante ya conoce. Enriquecer es
+    # tarea del orquestador, que es quien sabe que T1 acaba de comitear --
+    # probado en `test_un_fallo_posterior_a_t1_conserva_la_identidad...`.
+    assert "source_document_id" not in exc.value.contexto
+
+
+def test_una_excepcion_ya_enriquecida_llega_con_la_cadena_limpia(
+    pool, settings, user_a, monkeypatch, limpio
+):
+    """El caso que el `raise` a secas dejaba escapar.
+
+    Si un error seguro NACE dentro de otro `except`, Python le cuelga la
+    excepción interna en `__context__`. Relanzarlo tal cual —porque ya traía
+    su identificador— habría arrastrado esa excepción hasta la frontera
+    pública, que es justo lo que C1-B-R2 prohíbe. Por eso se reconstruyen
+    todas, tengan identificador o no.
+    """
+    from app.fiscal import ingestion
+
+    visto: dict[str, str] = {}
+
+    def _contaminado(*a, **k):
+        visto["sid"] = k["source_document_id"]
+        try:
+            raise ValueError("DETALLE-INTERNO-QUE-NO-DEBE-SALIR")
+        except ValueError:
+            # Nace enriquecida Y dentro de un `except`: las dos condiciones.
+            raise PersistenceUnavailable(
+                "La persistencia no está disponible",
+                stage="electronic_document",
+                source_document_id=k["source_document_id"],
+            )
+
+    monkeypatch.setattr(ingestion, "persist_parsed_fiscal_document", _contaminado)
+
+    with pytest.raises(PersistenceUnavailable) as exc:
+        ingest_fiscal_xml(pool, settings, user_a.identity,
+                          company_id=user_a.company_id, raw_xml=_bytes(FE),
+                          ingestion_source=IngestionSource.API)
+
+    err = exc.value
+    assert err.contexto.get("stage") == "electronic_document", "contexto preservado"
+    assert err.contexto.get("source_document_id") == visto["sid"], (
+        "se respetó el identificador que el error ya traía")
+
+    # La propiedad que se estaba perdiendo.
+    assert err.__cause__ is None
+    assert err.__context__ is None
+    publico = f"{err!s} {err!r}"
+    assert "DETALLE-INTERNO-QUE-NO-DEBE-SALIR" not in publico
+    assert "ValueError" not in publico
+
+    # Y la evidencia sigue ahí, con T2 revertida.
+    fila = _leer(pool, settings, user_a, visto["sid"])
+    assert fila is not None and fila["electronic_document_id"] is None

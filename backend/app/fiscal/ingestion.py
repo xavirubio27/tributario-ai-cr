@@ -49,11 +49,14 @@ from app.fiscal.errors import (
     FiscalWriteForbidden,
     MalformedXML,
     PersistenceDatabaseError,
+    PersistenceMappingError,
+    PersistenceUnavailable,
     SemanticParseError,
     SourceDocumentNotFound,
     SourceDocumentTooLarge,
     UnsupportedDocument,
     UnsupportedDocumentReason,
+    ValidatorConfigurationError,
     XSDValidationError,
 )
 from app.fiscal.models import TIPO_DETECTADO_POR_RAIZ
@@ -203,7 +206,7 @@ def capture_source_document(
     except pgerr.Error as exc:
         fallo = _clasificar_captura(exc)
         # `exc` muere aquí: no se devuelve, no se guarda, no se registra.
-    raise _error_de_captura(*fallo)
+    raise _error_de_captura(*fallo, etapa="source_capture")
 
 
 def _clasificar_captura(exc: pgerr.Error) -> tuple[str, str | None]:
@@ -214,18 +217,25 @@ def _clasificar_captura(exc: pgerr.Error) -> tuple[str, str | None]:
     return "database", constraint
 
 
-def _error_de_captura(categoria: str, constraint: str | None) -> Exception:
-    """Se llama FUERA del `except`, para que la cadena quede limpia."""
+def _error_de_captura(
+    categoria: str, constraint: str | None, *, etapa: str
+) -> Exception:
+    """Se llama FUERA del `except`, para que la cadena quede limpia.
+
+    `etapa` la aporta el llamante porque esta función sirve a DOS momentos
+    distintos —recibir la evidencia en T1 y escribir el estado del intento en
+    T2—, y fijarla aquí etiquetaba el segundo como si fuera el primero.
+    """
     if categoria == "forbidden":
         # `viewer`, no miembro y cruce entre empresas dan la MISMA señal, y es
         # deseable: un no miembro no debe aprender nada del tenant ajeno.
         return FiscalWriteForbidden(
             "No se permite registrar evidencia fiscal en esta empresa",
-            stage="source_capture",
+            stage=etapa,
         )
     return PersistenceDatabaseError(
         "Fallo inesperado de la base de datos al registrar la evidencia",
-        stage="source_capture", constraint=constraint,
+        stage=etapa, constraint=constraint,
     )
 
 
@@ -282,7 +292,9 @@ def _actualizar_ciclo_de_vida(
     except pgerr.Error as exc:
         fallo = _clasificar_captura(exc)
     if fallo is not None:
-        raise _error_de_captura(*fallo)
+        # `source_lifecycle`, no `source_capture`: este fallo ocurre al escribir
+        # el estado del intento en T2, no al recibir la evidencia en T1.
+        raise _error_de_captura(*fallo, etapa="source_lifecycle")
 
     # Una política `UPDATE` de RLS no falla: FILTRA. Sin comprobarlo,
     # comitearíamos un estado que nunca llegó a escribirse.
@@ -481,6 +493,19 @@ def _excepcion_de(failure: ProcessingFailure, source_document_id: str) -> Except
     return clase(mensaje, source_document_id=source_document_id)
 
 
+#: Errores TIPADOS Y SEGUROS que pueden surgir en T2, cuando la evidencia de T1
+#: ya es durable. Es un conjunto CERRADO y explícito, nunca `Exception`: un
+#: defecto de programación debe seguir siendo un defecto de programación, no
+#: convertirse en un error de dominio por el camino (ADR-044, C3-A2).
+_SEGUROS_TRAS_CAPTURA = (
+    FiscalWriteForbidden,
+    PersistenceUnavailable,
+    PersistenceDatabaseError,
+    PersistenceMappingError,
+    ValidatorConfigurationError,
+)
+
+
 def ingest_fiscal_xml(
     pool: ConnectionPool,
     settings: Settings,
@@ -509,11 +534,37 @@ def ingest_fiscal_xml(
         )
     # ─── la evidencia ya es durable ───
 
-    with fiscal_transaction(pool, settings, user) as conn:
-        veredicto = process_source_document(
-            conn, company_id=company_id,
-            source_document_id=captura.source_document_id,
-        )
+    # Si T2 falla con un error tipado seguro, el llamante NO puede perder la
+    # identidad de una evidencia que sí quedó guardada: sin ella no hay forma
+    # de retomar el artefacto después. Solo este punto sabe a la vez que T1
+    # comiteó y cuál es el artefacto, así que la reconstrucción vive aquí y no
+    # en C1 —que ni siquiera recibe siempre el identificador—.
+    reconstruir: tuple[type[Exception], str, dict[str, object]] | None = None
+    try:
+        with fiscal_transaction(pool, settings, user) as conn:
+            veredicto = process_source_document(
+                conn, company_id=company_id,
+                source_document_id=captura.source_document_id,
+            )
+    except _SEGUROS_TRAS_CAPTURA as exc:
+        # Datos, nunca la excepción: un objeto de excepción arrastra traza y,
+        # según dónde naciera, contexto. Se reconstruyen TODAS, incluidas las
+        # que ya traen el identificador: un `raise` a secas relanzaría el
+        # objeto original con su `__context__` intacto, y bastaría con que
+        # naciera dentro de otro `except` para que la cadena arrastrase una
+        # excepción interna hasta la frontera pública.
+        reconstruir = (type(exc), exc.message, dict(exc.contexto))
+
+    if reconstruir is not None:
+        clase, mensaje, contexto = reconstruir
+        # `setdefault`, no asignación: si el error ya identificaba su artefacto
+        # se respeta ESE valor. Hoy no hay forma de que difiera del de T1 -- el
+        # único identificador que circula por T2 es el que se le pasó -- pero
+        # sobrescribirlo sería decidir por encima de quien sí tenía el dato.
+        contexto.setdefault("source_document_id", captura.source_document_id)
+        # FUERA del `except`, para que `__cause__` y `__context__` queden en
+        # `None` —la propiedad medida en C1-B-R2—.
+        raise clase(mensaje, **contexto)
     # ─── el resultado del intento también ───
 
     if veredicto.failure is not None:

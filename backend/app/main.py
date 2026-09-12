@@ -1,11 +1,12 @@
-"""Aplicación FastAPI — foundation de identidad y RLS (ADR-012).
+"""Aplicación FastAPI — identidad, RLS (ADR-012) y frontera fiscal.
 
-ALCANCE DELIBERADAMENTE MÍNIMO
-    Este backend existe para demostrar una propiedad de seguridad, no para servir
-    producto. No hay API de facturas, ni de impuestos, ni CRUD de empresas.
+ALCANCE
+    Nació para demostrar una propiedad de seguridad: el camino completo
+    JWT -> FastAPI -> PostgreSQL -> RLS, expuesto en `/diagnostics/identity`.
 
-    El único endpoint es de diagnóstico: recorre el camino completo
-    JWT -> FastAPI -> PostgreSQL -> RLS y devuelve lo que RLS deja ver.
+    Desde C3-B1 sirve además la primera API de producto —la subida manual de
+    un comprobante—, que vive en `app/api/` y se monta aquí. Sigue sin haber
+    API de impuestos ni CRUD de empresas.
 """
 
 from __future__ import annotations
@@ -13,10 +14,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel
 
-from app.auth import AuthenticatedUser, AuthError, JwtVerifier, extract_bearer_token
+from app.api.dependencies import require_user
+from app.api.fiscal_documents import router as fiscal_documents_router
+from app.auth import AuthenticatedUser, JwtVerifier
 from app.authorization import list_company_memberships
 from app.config import get_settings
 from app.db import create_pool, current_identity, user_transaction
@@ -35,30 +38,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Asistente Tributario IA — backend foundation",
+    title="Tribuu.ai — backend",
     version="0.1.0",
     lifespan=lifespan,
 )
 
-
-def require_user(
-    request: Request,
-    authorization: Annotated[str | None, Header()] = None,
-) -> AuthenticatedUser:
-    """Identidad verificada, o 401.
-
-    Es la única puerta de entrada de identidad al backend. Ningún endpoint debe
-    aceptar un identificador de usuario por parámetro.
-    """
-    try:
-        token = extract_bearer_token(authorization)
-        return request.app.state.verifier.verify(token)
-    except AuthError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+# Primera API de producto. El router no conoce esta aplicación: recibe el pool
+# y los ajustes por `request.app.state`, igual que el endpoint de diagnóstico.
+app.include_router(fiscal_documents_router)
 
 
 class CompanyRef(BaseModel):

@@ -61,21 +61,18 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C3-A1 — cierre de decisiones — COMPLETED
     C3-A2 — identidad del artefacto en fallos posteriores a la captura — COMPLETED
     C3-B0 — configuración de aptitud para despliegue — COMPLETED
-    C3-B1 — frontera HTTP de subida — NEXT / NOT STARTED
-    C3-B2 — workspace de empresa y UI de subida — NOT STARTED
+    C3-B1 — frontera HTTP de subida — COMPLETED
+    C3-B2 — workspace de empresa y UI de subida — NEXT / NOT STARTED
     C3-B3 — integración y cierre — NOT STARTED
   C4  — ingesta por correo — NOT STARTED
-(*) C2 conserva una corrección menor de contrato APROBADA y PENDIENTE de implementar en
-    C3-B1: los fallos posteriores al commit de T1 que proceden de infraestructura
-    -- PersistenceUnavailable, PersistenceDatabaseError, PersistenceMappingError,
-    ValidatorConfigurationError -- no exponen todavía `source_document_id`, de modo que el
-    llamante pierde la identidad de una evidencia que sí quedó guardada. Ver C3-A2.
+(*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
+    fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Futuro (sin fase asignada, NOT STARTED):
   · detección de tipo de documento
   · normalización de documentos externos (ADR-043)
   · clasificación de gasto
   · Tax Engine
-Next: C3-B1 — frontera HTTP de subida.
+Next: C3-B2 — workspace de empresa y UI de subida.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1339,6 +1336,90 @@ La reversión se comprueba con el valor **exacto**: se captura `updated_at` desd
 transacción independiente, se inyecta el fallo **después** de que el enlace real se haya
 ejecutado con éxito, y se exige que la reversión devuelva el mismo instante — con una
 contraprueba de que sin el fallo esa columna sí avanza.
+
+---
+
+## Checkpoint G — Fase C3 · Subida manual de XML
+
+### C3-B1 — frontera HTTP de subida — COMPLETED
+
+**Auditoría independiente (Codex):** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0 · INFORMATIONAL 1.
+
+> **Lo que existe y lo que no.** Existe la primera API fiscal de producto. **No** existe
+> todavía frontend de subida, ni bandeja de documentos, ni soporte de documentos externos,
+> ni nada de WhatsApp.
+
+**Existe la primera API de producto de Tribuu.ai.**
+
+```
+POST /companies/{company_id}/fiscal-documents
+```
+
+Recibe UN comprobante como cuerpo crudo y llama a `ingest_fiscal_xml`. **No parsea, no valida
+contra XSD, no calcula nada fiscal, no consulta pertenencias y no escribe filas
+normalizadas.** C3 es transporte sobre C2, no una segunda tubería.
+
+**El lector del cuerpo está acotado, y esa es su propiedad de seguridad.** No se usa
+`request.body()`, que acumula el flujo entero sin tope: un cliente que omita `Content-Length`
+o use `Transfer-Encoding: chunked` haría crecer la memoria sin límite. `Content-Length` es
+solo una optimización de rechazo temprano —puede faltar, mentir o venir mal formada—, y la
+cota real es el acumulado contado trozo a trozo sobre `request.stream()`. Nunca se retiene
+más que el máximo más el trozo en curso. `MAX_SOURCE_XML_BYTES` se **importa** de C2: el
+transporte no redefine el límite.
+
+**El `Content-Type` no decide.** Solo el parser sabe si unos bytes son un comprobante;
+rechazar por cabecera negaría documentos legítimos mal etiquetados. Probado con
+`application/xml`, `text/xml`, `application/octet-stream`, `text/plain` y sin cabecera.
+
+**Contrato.** Éxito 200 para los tres desenlaces —`created`, `linked_existing`,
+`already_persisted`—: los tres significan que el documento quedó procesado, y que ya
+estuviera registrado es información, no un error del usuario. El 409 se reserva al conflicto
+de clave. El error lleva `code` y `category` estables; la copia en español es del frontend.
+
+**`source_document_id` sale cuando la evidencia existe y la categoría es segura.** El 503 sí
+lo devuelve —un reintento futuro podrá reutilizar el artefacto—; el 500 genérico no, aunque
+el artefacto exista: no hay acción que ofrecer y el cuerpo debe decir lo mínimo.
+
+**Corrección de C2 (C3-A2), implementada.** El enriquecimiento vive en `ingest_fiscal_xml`,
+único punto que sabe a la vez que T1 comiteó y cuál es el artefacto. Captura un conjunto
+CERRADO y nombrado —cinco clases—, extrae solo datos y levanta una excepción nueva del mismo
+tipo **fuera** del `except`, con `__cause__` y `__context__` en `None`. C1 no se tocó. Un
+defecto de programación sigue siendo un defecto de programación: no se convierte en error de
+dominio para colgarle un identificador.
+
+**Etiqueta de etapa corregida.** `_error_de_captura` recibe ahora la etapa del llamante:
+`source_capture` en T1 y `source_lifecycle` al escribir el estado del intento en T2. Antes la
+fijaba literalmente y el segundo caso se etiquetaba como si fuera el primero.
+
+**El cuerpo crudo está declarado en OpenAPI** —`application/xml`, `{type: string, format:
+binary}`, `required`— mediante `openapi_extra`, que es METADATO. Declararlo como parámetro de
+cuerpo haría que FastAPI lo bufferizara entero antes de ejecutar nada y la cota acumulada
+dejaría de proteger; hay un test que vigila que no aparezca `Body`, `File`, `UploadFile` ni
+`Form` en la firma.
+
+**Una ruta mal formada usa el contrato estable, no el de FastAPI.** `company_id` se recibe
+como cadena y se valida en el endpoint: un valor que no es UUID devuelve 422 con
+`{"code": "invalid_request", "category": "invalid_request"}`, sin llamar a C2 y sin crear
+evidencia. Con `company_id: UUID`, FastAPI rechazaba antes de entrar y devolvía su
+`{"detail": [...]}`, que contradice el contrato anunciado. La documentación no se pierde:
+`format: uuid` sigue en OpenAPI. No se instaló ningún manejador global, así que `/health` y
+`/diagnostics/identity` no cambian.
+
+**Todos los errores seguros posteriores a T1 se reconstruyen fuera del `except`**, también
+los que ya traían identificador. Un `raise` a secas relanzaba el objeto original con su
+`__context__` intacto: bastaba que el error naciera dentro de otro `except` para arrastrar
+una excepción interna hasta la frontera pública. Medido:
+
+```
+raise a secas        →  __context__ = ValueError   ← fuga
+reconstruir fuera    →  __context__ = None         ← limpio
+```
+
+El identificador existente se respeta con `setdefault`, nunca se sobrescribe.
+
+**Evidencia:** backend completo **1111/1111** en una sola corrida (47:03), frente a 1037 de
+base — +8 de la corrección de C2 y +66 del endpoint. Day2 **37/37**. 7 tablas fiscales, 0
+filas. **0 migraciones · 0 dependencias nuevas · sin cambios en `frontend/src`.**
 
 ---
 
