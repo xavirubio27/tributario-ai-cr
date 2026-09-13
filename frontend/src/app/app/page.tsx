@@ -6,6 +6,7 @@
  *
  * Todavía NO es el dashboard fiscal: no hay facturas, ni IVA, ni métricas.
  */
+import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { SignOutForm } from '@/components/sign-out-form'
 import { listCompanies } from '@/lib/companies/queries'
@@ -52,11 +53,13 @@ export default async function AppPage() {
           ) : (
             <ul className="mt-4 divide-y divide-neutral-200 rounded-md border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
               {companies.map((company) => (
-                <li
-                  key={company.id}
-                  className="px-4 py-3 text-sm font-medium text-neutral-900 dark:text-neutral-100"
-                >
-                  {company.name}
+                <li key={company.id}>
+                  <Link
+                    href={`/app/${company.id}`}
+                    className="block px-4 py-3 text-sm font-medium text-neutral-900 underline-offset-4 hover:bg-neutral-50 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 dark:text-neutral-100 dark:hover:bg-neutral-900"
+                  >
+                    {company.name}
+                  </Link>
                 </li>
               ))}
             </ul>

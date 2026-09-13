@@ -1,6 +1,22 @@
+import path from 'node:path'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      /**
+       * El alias `@/` del frontend, para que sus módulos se puedan importar
+       * aquí tal cual están escritos.
+       *
+       * La alternativa era obligar al código de producción a usar rutas
+       * relativas para ser testeable, que es deformarlo para acomodar al
+       * ejecutor de tests. Los módulos PUROS del frontend sí lo evitan a
+       * propósito -- ver `companies/validation.ts` --, pero una Server Action
+       * no puede: importa el cliente de Supabase y la sesión.
+       */
+      '@': path.resolve(import.meta.dirname, '../frontend/src'),
+    },
+  },
   test: {
     /**
      * Las tres suites comparten el MISMO proyecto Supabase de desarrollo y la

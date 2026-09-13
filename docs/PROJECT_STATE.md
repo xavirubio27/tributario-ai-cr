@@ -62,8 +62,8 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C3-A2 — identidad del artefacto en fallos posteriores a la captura — COMPLETED
     C3-B0 — configuración de aptitud para despliegue — COMPLETED
     C3-B1 — frontera HTTP de subida — COMPLETED
-    C3-B2 — workspace de empresa y UI de subida — NEXT / NOT STARTED
-    C3-B3 — integración y cierre — NOT STARTED
+    C3-B2 — workspace de empresa y UI de subida — COMPLETED
+    C3-B3 — integración y cierre — NEXT / NOT STARTED
   C4  — ingesta por correo — NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
@@ -82,7 +82,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: C3-B2 — workspace de empresa y UI de subida.
+Next: C3-B3 — integración y cierre.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1351,6 +1351,86 @@ contraprueba de que sin el fallo esa columna sí avanza.
 
 ## Checkpoint G — Fase C3 · Subida manual de XML
 
+### C3-B2 — workspace de empresa y UI de subida — COMPLETED
+
+**Auditoría independiente (Codex):** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0.
+
+> **Alcance.** B2 aporta workspace de empresa, navegación, interfaz de subida manual, la
+> capa BFF de Server Actions, reenvío byte a byte, reenvío de JWT verificado, contrato de
+> respuesta estricto, estado de incertidumbre de transporte y copia segura en español.
+> **NO** aporta bandeja ni historial de documentos, ni documentos externos, ni ingesta por
+> correo, ni WhatsApp, ni Tax Engine.
+
+**Existe el primer flujo fiscal visible.** Un usuario autenticado abre una empresa desde
+`/app`, entra en `/app/[companyId]`, elige UN archivo XML y lo sube.
+
+```
+Navegador ──FormData──▶ Server Action ──bytes exactos + Bearer──▶ FastAPI ──▶ C2
+```
+
+**El navegador nunca habla con FastAPI.** El JWT vive en cookies `httpOnly` que no puede
+leer, `BACKEND_URL` es solo de servidor —sin prefijo `NEXT_PUBLIC_`— y así no hace falta
+CORS.
+
+**Secuencia de autenticación.** `getClaims()` establece la identidad y refresca la sesión
+si el token está por vencer; `getSession()` entrega el token como VALOR OPACO de
+transporte —no se lee su `user` ni se deriva de él ningún permiso—; `getClaims(token)`
+verifica ESE token exacto antes de reenviarlo. FastAPI lo verifica otra vez contra JWKS, y
+esa es la autoridad: el tercer paso convierte un 401 confuso del backend en un fallo claro
+en el cliente.
+
+**Lo que se ve no es autorización.** Editar el identificador de la URL no da acceso: se
+envía igualmente y responde RLS con un 403 que no revela si la empresa existe.
+
+**Exactamente un fichero**, con `getAll('file')` y no `get`: con `get`, un envío con dos
+archivos pasaría en silencio quedándose con el primero. Ni la extensión ni el MIME
+rechazan nada — el navegador informa el tipo de formas incoherentes y el parser es la
+autoridad.
+
+**Los bytes viajan intactos:** `arrayBuffer()`, sin `text()`, sin decodificar, sin
+normalizar saltos de línea. Probado con BOM, CRLF y un carácter fuera del plano básico.
+
+**Sin reintentos automáticos.** C2 conserva cada recepción como evidencia; un reintento
+invisible de transporte crearía un `SourceDocument` de más por un fallo de red.
+
+**El 503 conserva el identificador y su mensaje no exige volver a subir**: la evidencia ya
+existe y B3 podrá retomarla. El 500 genérico se queda genérico.
+
+**No saber qué pasó no es lo mismo que saber que se guardó.** Un `fetch` rechazado, un DNS
+caído, una conexión reiniciada o el temporizador agotado devuelven ahora
+`upload_outcome_unknown` / `indeterminate`, una categoría propia de esta capa que el backend
+no conoce. Antes compartían estado con un 503 confirmado, y la interfaz llegaba a afirmar
+«guardamos el documento» cuando la petición podía no haber salido siquiera. El mensaje nuevo
+admite que el documento **puede** haber llegado, no afirma lo contrario, y no manda resubir a
+ciegas. Un 503 con su identificador sigue significando lo que significaba: el backend
+CONFIRMÓ que conservó la evidencia.
+
+**Una respuesta recibida pero incumplidora NO es incertidumbre de transporte.** Hubo
+respuesta; lo que falla es el contrato. Cae en `internal`.
+
+**Se valida la combinación completa, no un campo suelto.** Reconocer una categoría no basta:
+la matriz exige estado, código, categoría, motivo y presencia del identificador según lo que
+el backend garantiza en cada fila —extraído de `error_mapping.py`, con los motivos en
+minúsculas porque así los serializa—. Un `409` con cuerpo de éxito, un `500` con
+`invalid_document`, un código futuro, un motivo desconocido o un identificador que falta
+donde el contrato lo garantiza **fallan cerrando**. El 401 se resuelve por estado y su cuerpo
+nunca se mira: no usa `UploadError`.
+
+**El resultado anterior deja de mostrarse al elegir otro archivo, y tampoco reaparece
+mientras el siguiente envío está en curso.** `useActionState` conserva el resultado previo
+hasta que la acción nueva termina, así que hacían falta las dos condiciones: un aviso solo se
+muestra si pertenece al último envío COMPLETADO y no hay otro más reciente en marcha.
+
+**Evidencia:** 113 tests de la subida (39 de contrato, 26 de la acción, 48 de contrato
+estricto, certeza y visibilidad) · Day2 **150/150** · `eslint`, `tsc` y `next build`
+correctos, con `/app/[companyId]` en la salida.
+
+**Lo que NO existe todavía:** bandeja de documentos, detalle de documento, dominio de
+documentos externos, ingesta por correo, WhatsApp, motor de notificaciones y Tax Engine.
+**0 migraciones · 0 dependencias nuevas · backend sin cambios.**
+
+---
+
 ### C3-B1 — frontera HTTP de subida — COMPLETED
 
 **Auditoría independiente (Codex):** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0 · INFORMATIONAL 1.
@@ -1432,8 +1512,6 @@ base — +8 de la corrección de C2 y +66 del endpoint. Day2 **37/37**. 7 tablas
 filas. **0 migraciones · 0 dependencias nuevas · sin cambios en `frontend/src`.**
 
 ---
-
-## Checkpoint G — Fase C3 · Subida manual de XML
 
 ### C3-B0 — configuración de aptitud para despliegue — COMPLETED
 
