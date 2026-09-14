@@ -184,14 +184,30 @@ def test_viewer_y_no_miembro_son_indistinguibles(client, user_a, user_b, as_role
 
 
 def test_el_endpoint_no_consulta_pertenencias():
+    """La autorización es de RLS, y el endpoint no la reproduce.
+
+    Se EXCLUYEN los docstrings: explicar en prosa que la política se llama
+    `is_company_member` es documentar por qué NO comprobamos roles aquí, justo
+    lo contrario de consultarlos. Una aserción sobre el texto del fichero
+    confunde mencionar con hacer — el mismo patrón frágil que este repositorio
+    ya corrigió en la suite de ingesta.
+    """
     import ast
     from app.api import fiscal_documents
 
     arbol = ast.parse(Path(fiscal_documents.__file__).read_text(encoding="utf-8"))
+    docstrings = {
+        n.body[0].value for n in ast.walk(arbol)
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and n.body and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant)
+    }
+    sql = [n.value for n in ast.walk(arbol)
+           if isinstance(n, ast.Constant) and isinstance(n.value, str)
+           and n not in docstrings]
     nombres = ({n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)}
                | {n.attr for n in ast.walk(arbol) if isinstance(n, ast.Attribute)}
-               | {n.value for n in ast.walk(arbol)
-                  if isinstance(n, ast.Constant) and isinstance(n.value, str)})
+               | set(sql))
     for prohibido in ("company_memberships", "is_company_member",
                       "can_write_company", "service_role"):
         assert not any(prohibido in str(x) for x in nombres), prohibido

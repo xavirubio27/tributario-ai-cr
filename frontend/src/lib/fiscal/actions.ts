@@ -19,7 +19,8 @@
  *   reintento explícito del usuario sí es legítimo.
  */
 
-import { createClient } from '@/lib/supabase/server'
+import { revalidatePath } from 'next/cache'
+
 import { requireUser } from '@/lib/auth/session'
 import type { UploadFiscalDocumentActionResult } from '@/lib/fiscal/contract'
 import {
@@ -29,54 +30,9 @@ import {
   interpretResponse,
 } from '@/lib/fiscal/response'
 import { validateUpload } from '@/lib/fiscal/validation'
-
-/** Un XML pequeño se procesa en mucho menos; esto es el techo, no lo normal. */
-const TIMEOUT_MS = 30_000
+import { BACKEND_TIMEOUT_MS, backendUrl, verifiedAccessToken } from '@/lib/server/backend'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/**
- * Token verificado listo para reenviar, o `null`.
- *
- * `getClaims()` establece la identidad —la librería advierte explícitamente de
- * no usar `getSession()` para eso—. Pero `getClaims()` devuelve
- * `{claims, header, signature}`, no la cadena compacta, así que el token hay
- * que sacarlo de la sesión.
- *
- * El orden importa y no es casual:
- *
- *   1. `getClaims()` verifica la identidad y, si el token está por vencer,
- *      refresca la sesión antes de seguir;
- *   2. `getSession()` entrega el token que se va a reenviar, tratado como un
- *      VALOR OPACO de transporte: no se lee su `user`, no se deriva de él
- *      ningún permiso;
- *   3. `getClaims(token)` verifica ESE token exacto, el mismo que viajará.
- *
- * El paso 3 no añade seguridad —FastAPI lo verifica otra vez contra JWKS, y esa
- * es la autoridad—; convierte un 401 confuso del backend en un fallo claro
- * aquí.
- */
-async function tokenVerificado(): Promise<string | null> {
-  const supabase = await createClient()
-
-  const identidad = await supabase.auth.getClaims()
-  if (identidad.error || !identidad.data?.claims) {
-    return null
-  }
-
-  const { data } = await supabase.auth.getSession()
-  const token = data.session?.access_token
-  if (!token) {
-    return null
-  }
-
-  const delToken = await supabase.auth.getClaims(token)
-  if (delToken.error || !delToken.data?.claims) {
-    return null
-  }
-
-  return token
-}
 
 export async function uploadFiscalDocumentAction(
   companyId: string,
@@ -96,14 +52,14 @@ export async function uploadFiscalDocumentAction(
     return { ok: false, ...validacion.failure }
   }
 
-  const backend = process.env.BACKEND_URL
+  const backend = backendUrl()
   if (!backend) {
     // Fallo de configuración del servidor. No se inventa un `localhost` ni se
     // le cuenta al navegador qué falta.
     return RESULTADO_INTERNO
   }
 
-  const token = await tokenVerificado()
+  const token = await verifiedAccessToken()
   if (!token) {
     return RESULTADO_SESION
   }
@@ -126,7 +82,7 @@ export async function uploadFiscalDocumentAction(
         cache: 'no-store',
         // No seguir una redirección con un Bearer adjunto.
         redirect: 'error',
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS),
       },
     )
   } catch {
@@ -148,5 +104,17 @@ export async function uploadFiscalDocumentAction(
     cuerpo = null      // no era JSON; lo resuelve `interpretResponse`
   }
 
-  return interpretResponse(respuesta.status, cuerpo)
+  const resultado = interpretResponse(respuesta.status, cuerpo)
+
+  // Refrescar la bandeja SIEMPRE que exista evidencia durable, no solo cuando
+  // todo fue bien. Un XSD inválido, un tipo no soportado o un conflicto de
+  // clave también crearon un artefacto, y el usuario debe verlo aparecer; si
+  // solo se revalidara el éxito, la bandeja se quedaría vieja justo en los
+  // casos que hay que revisar.
+  const hayEvidencia = resultado.ok || resultado.sourceDocumentId !== undefined
+  if (hayEvidencia) {
+    revalidatePath(`/app/${companyId}`)
+  }
+
+  return resultado
 }

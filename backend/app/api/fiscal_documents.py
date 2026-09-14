@@ -24,18 +24,41 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Request, Response, status
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from app.api.dependencies import require_user
-from app.api.error_mapping import FALLO_INTERNO, PETICION_INVALIDA, respuesta_de
-from app.api.schemas import UploadAccepted, UploadError, UploadOutcome
+from app.api.error_mapping import (
+    CONSULTA_INVALIDA,
+    FALLO_INTERNO,
+    PETICION_INVALIDA,
+    respuesta_de,
+)
+from app.api.schemas import (
+    InboxCountsResponse,
+    InboxItemKind,
+    InboxItemResponse,
+    InboxPageResponse,
+    UploadAccepted,
+    UploadError,
+    UploadOutcome,
+)
 from app.auth import AuthenticatedUser
+from app.db import fiscal_transaction
 from app.fiscal.errors import (
     FiscalIngestionError,
     FiscalParseError,
     FiscalPersistenceError,
     SourceDocumentTooLarge,
+)
+from app.fiscal.inbox import (
+    PAGINA_MAXIMA,
+    PAGINA_POR_DEFECTO,
+    InboxQueryError,
+    OperationalStatus,
+    decode_cursor,
+    parse_limit,
+    read_inbox,
 )
 from app.fiscal.ingestion import (
     MAX_SOURCE_XML_BYTES,
@@ -190,4 +213,134 @@ async def upload_fiscal_document(
         status=UploadOutcome(resultado.status.value),
         source_document_id=resultado.source_document_id,
         electronic_document_id=resultado.electronic_document_id,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lectura — bandeja de documentos
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _item_a_respuesta(item) -> InboxItemResponse:
+    """Modelo de dominio → JSON seguro.
+
+    El importe pasa a CADENA sin tocar `float` en ningún punto: `str(Decimal)`
+    conserva la representación exacta, mientras que `float(Decimal)` la
+    destruiría en silencio.
+    """
+    return InboxItemResponse(
+        kind=InboxItemKind(item.kind),
+        operational_status=item.operational_status.value,
+        source_document_id=str(item.source_document_id) if item.source_document_id else None,
+        electronic_document_id=(
+            str(item.electronic_document_id) if item.electronic_document_id else None
+        ),
+        received_at=item.received_at.isoformat(),
+        receipt_count=item.receipt_count,
+        document_type=item.document_type,
+        issued_at_local=item.issued_at_local.isoformat() if item.issued_at_local else None,
+        issued_at_offset_minutes=item.issued_at_offset_minutes,
+        consecutive_number=item.consecutive_number,
+        currency_code=item.currency_code,
+        reported_total_document=(
+            str(item.reported_total_document)
+            if item.reported_total_document is not None
+            else None
+        ),
+    )
+
+
+@router.get(
+    "/companies/{company_id}/fiscal-documents",
+    response_model=InboxPageResponse,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Identidad no verificada"},
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {"model": UploadError},
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {"model": UploadError},
+        status.HTTP_503_SERVICE_UNAVAILABLE: {"model": UploadError},
+    },
+    summary="Lista los documentos fiscales recibidos por una empresa",
+)
+def list_fiscal_documents(
+    company_id: Annotated[
+        str,
+        Path(
+            description="Identificador de la empresa (UUID).",
+            json_schema_extra={"format": "uuid"},
+        ),
+    ],
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_user)],
+    cursor: Annotated[str | None, Query(description="Cursor opaco de paginación.")] = None,
+    limit: Annotated[
+        str,
+        Query(
+            # Se recibe como CADENA y se valida en la ruta. Con `int`, FastAPI
+            # rechazaba `?limit=abc` antes de entrar y devolvía su
+            # `{"detail": [...]}`, contradiciendo el contrato estable. Y sin el
+            # `| None` el esquema sale limpio: con él, FastAPI emitía un
+            # `anyOf` que convivía mal con la semántica entera documentada.
+            description=(
+                f"Tamaño de página. Entero entre 1 y {PAGINA_MAXIMA}. "
+                f"Por defecto {PAGINA_POR_DEFECTO}."
+            ),
+            json_schema_extra={"pattern": r"^[0-9]+$", "example": "25"},
+        ),
+    ] = str(PAGINA_POR_DEFECTO),
+    filter_status: Annotated[
+        str | None,
+        Query(alias="status", description="Filtra los ítems por estado operativo."),
+    ] = None,
+) -> object:
+    """Documentos recibidos, del más reciente al más antiguo.
+
+    **Leen todos los miembros.** A diferencia de la subida —que exige permiso
+    de escritura—, la política `SELECT` de las tablas fiscales solo comprueba
+    pertenencia, así que las tres funciones ven la bandeja. No se comprueba
+    ningún rol en Python: decide RLS.
+
+    **NO DEVUELVE 403, Y ES DELIBERADO.** Quien no pertenezca a la empresa
+    —o pida una ajena— obtiene un **200 con la colección vacía**, idéntico al
+    de una empresa propia sin documentos. Distinguir ambos casos convertiría
+    el endpoint en un oráculo para enumerar empresas ajenas. No es una
+    relajación de RLS: es RLS diciendo que no hay filas, y se devuelve tal
+    cual. La escritura sí distingue, porque allí negar es la respuesta útil.
+
+    El filtro actúa sobre los ítems; los contadores son de toda la empresa.
+    """
+    try:
+        empresa = UUID(company_id)
+    except ValueError:
+        return JSONResponse(status_code=422, content=PETICION_INVALIDA.model_dump())
+
+    try:
+        posicion = decode_cursor(cursor) if cursor else None
+        estado = OperationalStatus(filter_status) if filter_status else None
+        tamano = parse_limit(limit)
+    except (InboxQueryError, ValueError):
+        # `ValueError` cubre un `status` que no está en el vocabulario. Ni el
+        # texto del decodificador ni el del enum viajan al cliente.
+        return JSONResponse(status_code=422, content=CONSULTA_INVALIDA.model_dump())
+
+    try:
+        with fiscal_transaction(
+            request.app.state.pool, request.app.state.settings, user
+        ) as conn:
+            pagina = read_inbox(
+                conn, company_id=str(empresa), limit=tamano,
+                cursor=posicion, status=estado,
+            )
+    except (FiscalParseError, FiscalPersistenceError, FiscalIngestionError) as exc:
+        estado_http, cuerpo = respuesta_de(exc)
+        if estado_http >= 500 and cuerpo.code != "persistence_unavailable":
+            cuerpo = FALLO_INTERNO
+        return JSONResponse(status_code=estado_http, content=cuerpo.model_dump())
+
+    return InboxPageResponse(
+        items=[_item_a_respuesta(i) for i in pagina.items],
+        next_cursor=pagina.next_cursor,
+        counts=InboxCountsResponse(
+            needs_attention=pagina.counts.needs_attention,
+            system_pending=pagina.counts.system_pending,
+        ),
     )

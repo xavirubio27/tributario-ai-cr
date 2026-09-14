@@ -15,6 +15,13 @@ export default defineConfig({
        * no puede: importa el cliente de Supabase y la sesión.
        */
       '@': path.resolve(import.meta.dirname, '../frontend/src'),
+      /**
+       * `next/cache` apunta a un doble: `next` no es dependencia de este
+       * paquete, así que el especificador resolvía a ficheros distintos desde
+       * cada lado y `vi.mock` no podía interceptarlo. Además,
+       * `revalidatePath` real exige el contexto de petición de Next.
+       */
+      'next/cache': path.resolve(import.meta.dirname, './support/next-cache-stub.ts'),
     },
   },
   test: {

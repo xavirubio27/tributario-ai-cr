@@ -259,9 +259,10 @@ describe('503 confirmado frente a transporte incierto', () => {
     expect(messageFor(RESULTADO_INDETERMINADO).detail).toContain('Puede que sí')
   })
 
-  it('el indeterminado no manda resubir a ciegas', () => {
+  it('el indeterminado remite a la bandeja antes de resubir', () => {
+    // Con B3 la bandeja existe, así que el mensaje ya puede decir DÓNDE mirar.
     const texto = messageFor(RESULTADO_INDETERMINADO).detail.toLowerCase()
-    expect(texto).toContain('revisa antes')
+    expect(texto).toContain('revisa la lista de documentos recibidos')
   })
 
   it('sus mensajes son visiblemente distintos', () => {

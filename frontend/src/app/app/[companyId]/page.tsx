@@ -17,16 +17,35 @@ import Link from 'next/link'
 import { requireUser } from '@/lib/auth/session'
 import { listCompanies } from '@/lib/companies/queries'
 import { UploadFiscalDocumentForm } from '@/components/upload-fiscal-document-form'
+import { FiscalInbox } from '@/components/fiscal-inbox'
+import { fetchInbox } from '@/lib/server/inbox'
+import { siguientePaginaHref } from '@/lib/fiscal/inbox-navigation'
 
 export default async function CompanyWorkspacePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ companyId: string }>
+  searchParams: Promise<{ documentCursor?: string | string[] }>
 }) {
   await requireUser()
   const { companyId } = await params
   const { companies } = await listCompanies()
   const empresa = companies.find((c) => c.id === companyId)
+
+  // El cursor viene de la URL, así que la navegación es del servidor y el
+  // botón «atrás» del navegador funciona sin esfuerzo. Se toma el primero si
+  // llegan repetidos: un parámetro duplicado es una petición malformada, no
+  // una invitación a adivinar.
+  const { documentCursor } = await searchParams
+  const cursor = Array.isArray(documentCursor) ? documentCursor[0] : documentCursor
+
+  // Lectura EN SERVIDOR: el token no llega al navegador y no hace falta CORS.
+  const bandeja = await fetchInbox(companyId, { cursor })
+  const siguienteHref = siguientePaginaHref({
+    companyId,
+    nextCursor: bandeja.ok ? bandeja.page.nextCursor : null,
+  })
 
   return (
     <main className="min-h-screen bg-white px-6 py-12 dark:bg-neutral-950">
@@ -60,6 +79,13 @@ export default async function CompanyWorkspacePage({
             lo recibimos.
           </p>
           <UploadFiscalDocumentForm companyId={companyId} />
+        </section>
+
+        <section className="mt-12">
+          <h2 className="mb-4 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            Documentos recibidos
+          </h2>
+          <FiscalInbox resultado={bandeja} siguienteHref={siguienteHref} />
         </section>
       </div>
     </main>

@@ -22,16 +22,33 @@ let getClaims: ReturnType<typeof vi.fn>
 let getSession: ReturnType<typeof vi.fn>
 let fetchMock: ReturnType<typeof vi.fn>
 
-vi.mock('../../frontend/src/lib/supabase/server', () => ({
+// Se simula por el ALIAS, que es como lo importan la acción y el ayudante de
+// servidor compartido. Con la ruta relativa el mock no aplicaría: para el
+// resolvedor son dos módulos distintos.
+vi.mock('@/lib/supabase/server', () => ({
   createClient: async () => ({ auth: { getClaims, getSession } }),
 }))
-vi.mock('../../frontend/src/lib/auth/session', () => ({
+vi.mock('@/lib/auth/session', () => ({
   requireUser: async () => ({ id: 'u1', email: 'u@example.com' }),
 }))
+
 
 async function accion() {
   const m = await import('../../frontend/src/lib/fiscal/actions')
   return m.uploadFiscalDocumentAction
+}
+
+/**
+ * Rutas cuya revalidación se pidió.
+ *
+ * Se importa DINÁMICAMENTE: `vi.resetModules()` reinstancia el grafo en cada
+ * test, y una importación estática dejaría al test mirando un array distinto
+ * del que usa la acción. (`next/cache` está aliasado a este doble en
+ * `vitest.config.ts`.)
+ */
+async function rutasRevalidadas(): Promise<string[]> {
+  const m = await import('../support/next-cache-stub')
+  return m.revalidatedPaths
 }
 
 function respuesta(status: number, cuerpo: unknown, json = true): Response {
@@ -287,5 +304,48 @@ describe('privacidad', () => {
     const s = JSON.stringify(r)
     expect(s).not.toContain(TOKEN)
     expect(s).not.toContain(BACKEND)
+  })
+})
+
+
+// ── §48 · refresco de la bandeja ─────────────────────────────────────────────
+
+describe('refresco de la bandeja tras subir', () => {
+  it('un éxito refresca el workspace', async () => {
+    await (await accion())(COMPANY, null, formCon(new File([XML], 'fe.xml')))
+    expect(await rutasRevalidadas()).toContain(`/app/${COMPANY}`)
+  })
+
+  it('un fallo POSTERIOR a la captura también refresca', async () => {
+    // La evidencia existe: el usuario debe verla aparecer en la bandeja. Si
+    // solo se refrescara el éxito, la lista quedaría vieja justo en los casos
+    // que hay que revisar.
+    fetchMock.mockResolvedValue(
+      respuesta(422, { code: 'xsd_validation_error', category: 'invalid_document',
+                       source_document_id: 'sid-1' }),
+    )
+    await (await accion())(COMPANY, null, formCon(new File([XML], 'fe.xml')))
+    expect(await rutasRevalidadas()).toContain(`/app/${COMPANY}`)
+  })
+
+  it('un 409 de conflicto de clave refresca', async () => {
+    fetchMock.mockResolvedValue(
+      respuesta(409, { code: 'clave_conflict', category: 'requires_review',
+                       source_document_id: 'sid-2' }),
+    )
+    await (await accion())(COMPANY, null, formCon(new File([XML], 'fe.xml')))
+    expect(await rutasRevalidadas()).toHaveLength(1)
+  })
+
+  it('un rechazo PREVIO a la captura no refresca: no hay nada nuevo', async () => {
+    const fd = new FormData()          // sin fichero
+    await (await accion())(COMPANY, null, fd)
+    expect(await rutasRevalidadas()).toEqual([])
+  })
+
+  it('un resultado indeterminado no refresca: no hay identificador fiable', async () => {
+    fetchMock.mockRejectedValue(new Error('red caída'))
+    await (await accion())(COMPANY, null, formCon(new File([XML], 'f.xml')))
+    expect(await rutasRevalidadas()).toEqual([])
   })
 })

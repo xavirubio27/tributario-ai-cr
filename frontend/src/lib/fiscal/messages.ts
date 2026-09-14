@@ -110,7 +110,7 @@ const FALLO: Record<UploadErrorCategory, UploadMessage> = {
     tone: 'attention',
     title: 'No pudimos confirmar el resultado',
     detail:
-      'La conexión terminó antes de que pudiéramos confirmar si el documento fue recibido. Puede que sí lo esté. Revisa antes de volver a subirlo.',
+      'La conexión terminó antes de que pudiéramos confirmar si el documento fue recibido. Puede que sí lo esté: revisa la lista de documentos recibidos antes de volver a subirlo.',
   },
   internal: {
     tone: 'error',

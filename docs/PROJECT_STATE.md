@@ -63,7 +63,10 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C3-B0 — configuración de aptitud para despliegue — COMPLETED
     C3-B1 — frontera HTTP de subida — COMPLETED
     C3-B2 — workspace de empresa y UI de subida — COMPLETED
-    C3-B3 — integración y cierre — NEXT / NOT STARTED
+    C3-B3-A — arquitectura de lectura de la bandeja — COMPLETED
+    C3-B3-B — bandeja de documentos — COMPLETED
+    C3-B3   — COMPLETED (auditoría final independiente: 0/0/0/0/0)
+    (C3 sigue NOT COMPLETED: falta ADR-045 / cierre arquitectónico final de C3)
   C4  — ingesta por correo — NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
@@ -82,7 +85,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: C3-B3 — integración y cierre.
+Next: ADR-045 / cierre arquitectónico final de C3.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -103,26 +106,20 @@ Roadmap: **Fase 1 — Infrastructure / Auth / Company** (ver [ROADMAP.md](../ROA
 ## Last Substantive Checkpoint Commit
 
 ```
-91596df — feat: establish backend identity and rls foundation   (2026-08-28)
+feat: add fiscal document inbox   (cierre de C3-B3, 2026-09-14)
 ```
 
 Este campo identifica el último commit que contiene **implementación o checkpoint
-estable**. Deliberadamente **no** referencia el commit documental que actualiza este
-propio archivo: hacerlo generaría una autorreferencia infinita.
+estable**. Ese commit incluye también esta actualización, así que su SHA no puede
+figurar aquí sin autorreferencia; se identifica por mensaje y fecha.
 
-**Working tree:** contiene D0 (ADR-020) y D1 (la frontera fiscal ya implementada y
-aplicada), pendientes ambos de revisión y commit. D1 sí incluye cambio de esquema:
-la migración `20260829183152` está **aplicada en la base de datos de desarrollo**.
-
-En `91596df`, `HEAD == origin/main` sin commits por delante ni por detrás.
-
-Historial:
+Historial reciente:
 ```
-91596df  feat: establish backend identity and rls foundation        (2026-08-28)
-22875b1  feat: complete day 2 auth tenancy and security hardening   (2026-08-24)
-ebf3be4  docs: update project state after checkpoint                (2026-08-23)
-85c3556  feat: establish secure tenancy and Next.js foundation      (2026-08-23)
-4a80ca5  docs: establish project foundation                         (2026-08-22)
+a488dd8  feat: add company fiscal upload workspace                  (2026-09-12)
+39deee6  docs: expand MVP roadmap for external documents and WhatsApp (2026-09-12)
+3b04280  feat: add fiscal document upload endpoint                  (2026-09-12)
+35a6da8  build: prepare fiscal upload runtime                       (2026-09-12)
+27c7d85  feat: implement fiscal document ingestion                  (2026-09-11)
 ```
 
 ## Completed — implementado y verificado
@@ -1351,6 +1348,148 @@ contraprueba de que sin el fallo esa columna sí avanza.
 
 ## Checkpoint G — Fase C3 · Subida manual de XML
 
+### C3-B3-B — bandeja de documentos — COMPLETED
+
+**Existe la primera lectura fiscal.** `GET /companies/{company_id}/fiscal-documents`,
+cargada en servidor dentro del workspace.
+
+**La clasificación sale de columnas, y eso es posible por una decisión de C2.** `parse_error`
+guarda el CÓDIGO ESTABLE de la clase de error, no un mensaje, así que la bandeja deriva su
+taxonomía **sin interpretar texto, sin reparsear XML y sin IA**. Siete estados:
+
+| estado | regla |
+|---|---|
+| `processed` | hay enlace normalizado |
+| `requires_attention` | `parsed` y sin enlace |
+| `system_pending` | `pending` |
+| `invalid_document` | `failed` con código de parseo, XSD o semántica |
+| `unrecognized` | `unsupported_document` + detección `unknown` |
+| `not_yet_supported` | `unsupported` y el tipo ES comprobante |
+| `outside_pipeline` | `unsupported` y el tipo NO es comprobante |
+
+**Quién es responsable.** `needsAttention` cuenta `requires_attention`, `invalid_document` y
+`unrecognized`. **No** cuenta `not_yet_supported` ni `outside_pipeline`: son límites de
+Tribuu, no deudas del contribuyente. Una Nota de Débito o un MensajeHacienda aparecen, pero
+no piden nada al usuario.
+
+**Invariante sin columna, fijada con test.** `parsed` + sin enlace significa conflicto de
+clave porque el `except ClaveConflict` de C2 es el ÚNICO camino que comitea T2 sin enlazar:
+cualquier otro fallo propaga y revierte T2 entera. Es una invariante DEL CÓDIGO, no del
+esquema. Si mañana aparece otro desenlace «parseado y sin enlazar» colisionará en silencio,
+y entonces hará falta un campo estructurado. Hay un test de regresión por el camino real de
+C2 que lo sujeta.
+
+**Modelo híbrido.** Una fila por documento normalizado, colapsando sus recepciones con su
+contador; y una fila por recepción sin normalizar. La unión es discriminada: un `document`
+**no** lleva `sourceDocumentId`, porque elegir una de varias recepciones sería arbitrario.
+La evidencia no se borra: colapsar es de la vista.
+
+**Paginación por keyset** sobre `(received_at DESC, kind_rank ASC, row_id DESC)` — el orden
+es total sobre las dos clases de fila, que es lo que exige un cursor sobre filas
+heterogéneas.
+
+**Corrección de R1 (hallazgo HIGH de Codex, confirmado antes de tocar nada).** El keyset
+usaba una comparación de tuplas, que solo vale cuando todas las componentes ordenan en el
+MISMO sentido — y `kind_rank` sube mientras las otras dos bajan. El efecto era real en ambos
+sentidos: un `receipt` que compartía instante con un `document` se SALTABA, y paginando desde
+un `receipt` el `document` del mismo instante se REPETÍA. Sustituido por un comparador
+lexicográfico explícito, entre paréntesis, legible como la regla que dice ser:
+
+```
+   received_at < c
+or (received_at = c and kind_rank > k)
+or (received_at = c and kind_rank = k and row_id < r)
+```
+
+Lo sujetan tests con instantes REALMENTE iguales fijados en la base —sin esperas ni tiempos
+aproximados— y una prueba de completitud que recorre el mismo conjunto de dos formas (una
+página grande frente a página a página) exigiendo identidad de elementos y orden, sin
+pérdidas ni duplicados. También con filtro activo: el filtro se aplica ANTES de dimensionar
+la página, así que las páginas filtradas vienen llenas.
+
+**Cursor canónico.** Además de validar contenido —forma, versión, tipo de fila, UUID, huso
+horario obligatorio por ser tiempo del sistema—, el decodificador RE-CODIFICA el resultado y
+exige coincidencia exacta con lo recibido: relleno, alfabeto estándar, espacios o basura
+añadida se rechazan. Solo existe un cursor por posición, y lo emitimos nosotros.
+
+**No enumerabilidad de la lectura, decidida y documentada.** El `GET` NO devuelve 403: quien
+no pertenece a una empresa —o pide una inexistente— recibe un **200 con la colección vacía**,
+idéntico byte a byte al de una empresa propia sin documentos. Distinguirlos convertiría el
+endpoint en un oráculo para enumerar empresas ajenas. No es una relajación de RLS: es RLS
+diciendo que no hay filas, devuelto tal cual. Hay un test que compara las tres respuestas
+—propia vacía, ajena, inventada— y exige que sean indistinguibles. La ESCRITURA conserva su
+403, porque allí negar es la respuesta útil.
+
+**`limit` se valida léxicamente en la ruta.** Con `limit: int`, FastAPI rechazaba
+`?limit=abc` antes de entrar y devolvía su `{"detail": [...]}`. Ahora `abc`, `1.5`, `0`,
+`101`, `1e2` o `٣` reciben el contrato estable, y el esquema OpenAPI documenta el entero
+1–100 sin contradicción.
+
+**Equivalencia SQL/regla canónica, probada contra la base.** El filtro por estado existe dos
+veces —`clasificar()` y su predicado SQL—, y ahora un test siembra los NUEVE desenlaces
+durables y exige, para cada estado, que `?status=X` devuelva exactamente las filas que la
+regla canónica considera X. Si una de las dos expresiones cambia sola, falla. (El informe
+anterior afirmaba que este test existía; no existía — lo que había comparaba la función
+contra expectativas escritas a mano. Corregido y registrado.)
+
+La re-auditoría detectó que el sembrado cubría OCHO desenlaces, no nueve: faltaba
+`semantic_parse_error`. Ese error no es alcanzable hoy con ningún XML público —sus puntos de
+partida los ataja antes el XSD—, así que la novena fila se produce inyectando el error del
+parser en la frontera real de procesamiento de C2, igual que hace la suite de ingesta;
+captura T1, mapeo del fallo y estado durable son los auténticos. Además, el test de los
+nueve desenlaces ya no se conforma con ver los siete valores del enum: comprueba, fila a
+fila, la tupla durable exacta que dejó C2, su clasificación canónica y que el filtro SQL
+devuelve esa fila concreta.
+
+**Importe como CADENA** de punta a punta. Un decimal fiscal convertido a coma flotante
+binaria es un importe distinto, y hay un test con un valor que lo delataría.
+
+**Leen todos los miembros.** La política `SELECT` es `is_company_member`, sin mirar el rol,
+así que `owner`, `editor` y `viewer` ven la bandeja — a diferencia de la escritura.
+
+**La subida refresca la bandeja siempre que haya evidencia durable**, no solo cuando todo va
+bien: un XSD inválido o un conflicto de clave también crearon un artefacto que el usuario
+debe ver. Y el caso indeterminado ya remite a la lista antes de resubir.
+
+**La bandeja pagina en la interfaz.** Navegación de SERVIDOR: un enlace «Ver más» que lleva
+el cursor en la URL (`?documentCursor=…`) — nunca mostrado como texto, sin número de página
+inventado, con el botón «atrás» funcionando solo. El frontend valida semánticamente lo que
+recibe: UUID canónicos, instantes con huso, fecha local SIN convertir a `Date` (ADR-039),
+desplazamiento entero dentro de husos reales y gramática decimal sin `Number()`. Tras la
+re-auditoría, la fecha local se valida además como CALENDARIO —meses, días por mes, años
+bisiestos, topes de hora— con aritmética entera pura: la gramática sola aceptaba imposibles
+como `2026-99-99T25:61:61`, y convertirla a `Date` para comprobarla la habría
+reinterpretado en el huso del navegador.
+
+**Evidencia (tras R2):** bandeja **89/89** contra PostgreSQL real (90/90 con el camino
+semántico de ingesta) · suite backend completa **1200/1200** (cierre de R1; R2 no tocó
+código de producción backend) · frontend fiscal **168/168** · Day2 **205/205** · `eslint`,
+`tsc` y `next build` correctos. **1 migración (solo un índice) · 0 columnas · 0 tablas ·
+0 dependencias.**
+
+**Cierre formal.** Auditoría final independiente: **0 CRITICAL · 0 HIGH · 0 MEDIUM ·
+0 LOW · 0 INFORMATIONAL — FINAL PASS**. Los 504 intermitentes de Supabase DEV quedan
+registrados como deuda de entorno preexistente —no ocurrieron en la corrida verde
+aceptada y no se introdujo ningún reintento ni marca de flaky—, igual que las aserciones
+de fuente-cruda fuera de B3 y la deuda de empaquetado non-editable-wheel: ninguna es un
+hallazgo de C3-B3.
+
+**Lo que B3 deja funcionando:** bandeja fiscal durable · siete estados operativos ·
+colapso de duplicados con evidencia intacta · importes exactos como cadena · lectura
+solo de servidor protegida por RLS · paginación por keyset con cursor opaco canónico ·
+contadores globales de empresa · refresco de bandeja tras la subida · y resolución del
+caso indeterminado remitiendo a la bandeja.
+
+**Sigue explícitamente SIN implementar:** documentos externos · ingesta por correo ·
+WhatsApp · motor de notificaciones · Tax Engine · cálculo de IVA · clasificación
+venta/compra · reprocesador de pendientes.
+
+**Lo que NO existe todavía:** detalle ni descarga de documento, reproceso de lo pendiente,
+emisor y receptor en la lista, documentos externos, ingesta por correo, WhatsApp y Tax
+Engine. La dirección del documento sigue en `unknown` y **no se expone**.
+
+---
+
 ### C3-B2 — workspace de empresa y UI de subida — COMPLETED
 
 **Auditoría independiente (Codex):** CRITICAL 0 · HIGH 0 · MEDIUM 0 · LOW 0.
@@ -2371,23 +2510,14 @@ cerrado en el Checkpoint B del Día 3. Se retira por obsoleta, no por levantarla
 
 ## Next Action
 
-**Revisión de la fase E0.** El inventario del dominio está hecho y documentado en
-[FISCAL_DOMAIN.md](FISCAL_DOMAIN.md); falta aprobación antes de pasar a diseño de
-esquema.
+**ADR-045 / cierre arquitectónico final de C3.** C3-B3 está COMPLETED con auditoría
+final independiente en cero; C3 en conjunto sigue **NOT COMPLETED** hasta ese cierre.
+El ADR-045 pertenece al próximo checkpoint: deliberadamente **no** forma parte del
+commit de cierre de B3.
 
-E0 fue exclusivamente investigación y documentación. **Ningún cambio en `backend/`,
-`frontend/` ni `supabase/migrations/`.** Sigue sin existir ninguna tabla fiscal.
-
-Decisiones conceptuales cerradas: [ADR-021](DECISIONS.md#adr-021) …
-[ADR-026](DECISIONS.md#adr-026), las seis aceptadas. Ninguna fija esquema físico:
-[ADR-025](DECISIONS.md#adr-025) acota el núcleo MVP sin declarar que todos los tipos
-compartan una única tabla.
-
-Checkpoints A, B, C y D del Día 3 cerrados, los cuatro con auditoría externa en
-0 CRITICAL / 0 HIGH / 0 MEDIUM. Sigue sin existir código fiscal, ni tablas de
-comprobantes, ni parser XML, ni Tax Engine.
-
-Las limitaciones diferidas siguen documentadas más arriba y **no bloquean** el Día 3.
+Sigue sin existir: documentos externos, ingesta por correo, WhatsApp, motor de
+notificaciones, Tax Engine, cálculo de IVA, clasificación venta/compra y reprocesador
+de pendientes.
 
 Antes de construir la interfaz real del producto queda pendiente un checkpoint propio
 para **elegir la librería de componentes UI / design system**.

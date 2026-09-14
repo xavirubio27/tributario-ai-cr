@@ -69,6 +69,14 @@ PETICION_INVALIDA = UploadError(
 FALLO_INTERNO = UploadError(code="internal_error", category=ErrorCategory.INTERNAL)
 
 
+#: Consulta mal formada: cursor ilegible, límite fuera de rango, estado
+#: desconocido o `company_id` que no es UUID. Habla de la PETICIÓN, no de
+#: ningún documento.
+CONSULTA_INVALIDA = UploadError(
+    code="invalid_query", category=ErrorCategory.INVALID_REQUEST
+)
+
+
 def _id_seguro(exc: Exception) -> str | None:
     """Identificador del artefacto, si el dominio lo adjuntó como contexto."""
     valor = getattr(exc, "contexto", {}).get("source_document_id")
