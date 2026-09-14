@@ -227,12 +227,12 @@ Base, monetización.
 
 Enumeradas por capa de madurez.
 
-> **Estado.** Hoy existe la tubería fiscal de XML costarricense en el backend —parser,
-> validación contra esquemas oficiales, persistencia normalizada y endpoint HTTP de
-> subida—. **Todo lo demás de esta lista está sin implementar**, incluidas la interfaz
-> de subida, la bandeja de documentos, el dominio externo, la clasificación de gasto, el
-> calendario, el Tax Engine, las notificaciones y WhatsApp. El estado medido está en
-> [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
+> **Estado.** Hoy existe la vertical fiscal de XML costarricense de punta a punta:
+> parser, validación contra esquemas oficiales, persistencia normalizada, endpoint HTTP
+> de subida, interfaz de subida en el workspace y bandeja de documentos con estados
+> operativos. **Todo lo demás de esta lista está sin implementar**, incluidos el dominio
+> externo, la clasificación de gasto, el calendario, el Tax Engine, las notificaciones y
+> WhatsApp. El estado medido está en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md).
 
 ### Capa 1 — Datos fiscales (fundación)
 

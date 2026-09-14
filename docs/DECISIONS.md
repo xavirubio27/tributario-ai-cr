@@ -67,6 +67,7 @@
 | [ADR-042](#adr-042) | Deduplicación conservadora por huella en el MVP | ✅ |
 | [ADR-043](#adr-043) | Los documentos externos no entran en el dominio fiscal costarricense | ✅ |
 | [ADR-044](#adr-044) | Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla | ✅ |
+| [ADR-045](#adr-045) | Frontera web fiscal: Next.js de servidor → FastAPI → RLS de PostgreSQL | ✅ |
 
 ---
 ---
@@ -2689,6 +2690,8 @@ profesionales, telecomunicaciones, transporte, publicidad, alquiler, logística.
 
 ---
 
+<a id="adr-044"></a>
+
 ## ADR-044 — Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla
 
 **Estado:** ✅ Aceptada (Día 3, fase C2) · **Criticidad: alta** ·
@@ -2771,3 +2774,193 @@ transporte.
 - **No** amplía el dominio a documentos externos ([ADR-043](#adr-043)).
 - **No** reimplementa nada de C1: la persistencia normalizada, el arbitraje de la carrera
   por `Clave`, la deduplicación por huella y el enlace final siguen siendo suyos.
+
+---
+
+<a id="adr-045"></a>
+
+## ADR-045 — Frontera web fiscal: Next.js de servidor → FastAPI → RLS de PostgreSQL
+
+**Estado:** ✅ Aceptada (Día 3, fase C3) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-001](#adr-001) · [ADR-012](#adr-012) · [ADR-015](#adr-015) ·
+[ADR-017](#adr-017) · [ADR-020](#adr-020) · [ADR-038](#adr-038) · [ADR-039](#adr-039) ·
+[ADR-044](#adr-044)
+
+### Contexto
+
+C3 construyó la primera vertical web completa sobre el dominio fiscal: un usuario sube un
+XML de Hacienda desde el navegador y más tarde ve su estado durable en la bandeja. Ese
+camino cruza tres procesos —navegador, servidor de Next.js, FastAPI— antes de llegar a
+PostgreSQL, y cada cruce es una decisión de confianza que hasta ahora estaba repartida
+entre ADRs de capas más profundas. Este ADR registra la frontera web tal y como quedó
+**implementada y probada en ambas direcciones**, no un diseño hipotético.
+
+Las razones de que exista una frontera deliberada de servidor:
+
+- Los datos fiscales son **datos sensibles del contribuyente**, aislados por empresa.
+- El navegador no debe recibir credenciales de base de datos ni configuración de
+  infraestructura del backend (`BACKEND_URL` es solo de servidor).
+- Las tablas fiscales **no se exponen** como acceso normal de Data API al frontend: el
+  camino es el de [ADR-001](#adr-001)/[ADR-017](#adr-017)/[ADR-020](#adr-020).
+- La autorización no puede depender del estado de la interfaz ni de un rol que aporte el
+  propio usuario.
+- La identidad del JWT debe estar verificada **antes** de que ninguna operación toque la
+  base fiscal.
+- RLS de PostgreSQL es la **autoridad final** de autorización por empresa.
+
+### Decisión
+
+**El navegador no habla con FastAPI para el flujo fiscal.** Interactúa con la frontera de
+aplicación de Next.js, y ambas direcciones atraviesan el mismo modelo de confianza:
+
+```
+ESCRITURA                                  LECTURA
+navegador                                  navegación del navegador
+  → FormData                                 → Server Component / helper de servidor
+  → Server Action de Next.js                 → petición a FastAPI desde el servidor
+  → FastAPI                                  → FastAPI
+  → identidad en la transacción              → identidad en la transacción
+  → RLS de PostgreSQL                        → RLS de PostgreSQL
+  → dominio de ingesta fiscal                → dominio de bandeja fiscal
+```
+
+No existe arquitectura fiscal de API en el navegador dependiente de CORS.
+
+**Lo que la capa de servidor de Next.js PUEDE hacer:** recibir el `FormData` del
+navegador; preservar los bytes exactos de la subida; obtener en el servidor el token de
+acceso autenticado de Supabase; verificar y fijar el token exacto antes de reenviarlo;
+llamar a FastAPI; validar los contratos de respuesta del backend; traducir resultados a
+estado seguro de interfaz; hacer lecturas desde el servidor; y disparar la revalidación
+del workspace.
+
+**Lo que NO puede hacer:** convertirse en Tax Engine; parsear o normalizar XML para
+producir verdad fiscal; decidir autorización de empresa; inferir membresías o roles
+fiscales; ni saltarse FastAPI leyendo tablas fiscales directamente de Supabase.
+
+**Secuencia de token probada.** `getClaims()` establece y valida el contexto de sesión
+autenticada; `getSession()` extrae únicamente el `access_token` como valor opaco de
+transporte —su `user` no se lee y ningún permiso se deriva de él—; `getClaims(token)`
+verifica el token exacto que va a reenviarse; y ese mismo token viaja como
+`Authorization: Bearer` a FastAPI, que lo valida **independientemente** contra JWKS.
+Ni `session.user` ni ninguna claim de rol o membresía del JWT son autoridad de
+autorización: la membresía se resuelve en la base ([ADR-012](#adr-012),
+[ADR-015](#adr-015)).
+
+**FastAPI es la frontera fiscal de API**: verificación del JWT, contratos estables de
+petición y respuesta, admisión acotada de evidencia cruda, orquestación fiscal, apertura
+de la transacción, instalación de la identidad de la petición para RLS e invocación de
+los servicios del dominio. No usa comprobaciones de membresía en la capa de aplicación
+como mecanismo primario de autorización.
+
+**El camino a la base es el de [ADR-020](#adr-020)**: conexión del backend con un rol
+dedicado de privilegio mínimo, identidad de la petición con alcance de transacción, y RLS
+como autoridad final. Sin `service_role` como camino normal, sin `BYPASSRLS`, sin acceso
+fiscal directo por Data API desde el frontend.
+
+**`company_memberships` sigue siendo la fuente de verdad** ([ADR-015](#adr-015)), con los
+roles `owner`, `editor` y `viewer`. Para escrituras fiscales, RLS vía `can_write_company`
+permite owner/editor y niega viewer ([ADR-038](#adr-038)); para lecturas,
+`private.is_company_member` permite a los tres. No se inventa RBAC granular.
+
+**Lectura y escritura tienen semánticas de negación distintas, y es deliberado.** Una
+escritura fiscal no puede convertirse en silencio: los caminos no autorizados producen la
+semántica de prohibición existente, incluido el 403 donde corresponde. La colección de
+lectura `GET /companies/{company_id}/fiscal-documents` es en cambio **no enumerable**:
+para un usuario autenticado al que RLS no expone ninguna fila, la respuesta es HTTP 200
+con colección vacía y contadores en cero. Eso hace indistinguibles la empresa propia con
+bandeja vacía, la empresa ajena, el UUID cruzado y el UUID inventado. No se añade ningún
+preflight de membresía en Python solo para fabricar un 403. Esta regla es una decisión de
+**colección de lectura**; no se generaliza a cualquier endpoint futuro.
+
+**La navegación del frontend no es autorización.** El `companyId` de `/app/[companyId]`
+es contexto, no prueba: editarlo a mano no concede acceso fiscal. La visibilidad final la
+deciden el JWT verificado en el backend y RLS en la base.
+
+**La frontera de datos tiene dos regímenes** ([ADR-017](#adr-017)): los datos públicos de
+identidad y tenancy pueden usar los patrones directos de Supabase ya establecidos; los
+datos del dominio fiscal van siempre por Next de servidor → FastAPI → base fiscal con
+RLS. La división es deliberada y valiosa: no debe erosionarse por conveniencia.
+
+**La evidencia cruza la web intacta** ([ADR-044](#adr-044)): `File` del navegador →
+`arrayBuffer()` → cuerpo HTTP crudo → lectura acotada en FastAPI → evidencia del
+`SourceDocument`. Next.js no decodifica el XML, no lo normaliza, no quita el BOM, no
+altera CRLF, no parsea DOM ni re-serializa.
+
+**Next.js no se fía del JSON de FastAPI.** C3 estableció validación estricta en la
+frontera: estado HTTP, forma del cuerpo, combinación código/categoría/razón, presencia
+del identificador, ítems discriminados de la bandeja, UUIDs, marcas de tiempo, cadenas
+decimales exactas, contadores y cursor. Una respuesta desconocida o contradictoria cierra
+en fallo hacia un estado seguro de producto; ningún diagnóstico crudo llega al usuario.
+
+**La incertidumbre de transporte no es un resultado del dominio.** Un 503 confirmado con
+`source_document_id` significa que la evidencia se preservó; un `fetch` rechazado, un
+timeout o una conexión cortada producen `upload_outcome_unknown` / `indeterminate`, que
+no puede afirmar ni recepción ni no-recepción. No hay reintento automático, y el estado
+indeterminado **no se persiste** como estado fiscal: la bandeja permite al usuario
+comprobar si la evidencia apareció antes de volver a subir.
+
+**El modelo de lectura de B3** —estado durable → clasificación operativa determinista →
+bandeja híbrida → contrato de lectura de FastAPI → interfaz de servidor— queda como está:
+la clasificación no usa IA y el XML crudo no se reparsea durante la lectura. Los
+decimales fiscales reportados cruzan la frontera web como **cadenas exactas**, nunca
+convertidas a `Number` de JavaScript; la fecha local de emisión conserva la semántica de
+reloj de pared de [ADR-039](#adr-039), separada del instante de sistema. Este ADR
+referencia esas decisiones; no las redefine.
+
+### Alternativas rechazadas
+
+- **A. Navegador → FastAPI directamente.** Expone la frontera del backend al navegador,
+  exige arquitectura de API/CORS en el cliente, complica la frontera de configuración de
+  token y backend, y esquiva la validación de contratos que la capa de servidor ya hace.
+- **B. Navegador → Data API fiscal de Supabase.** La arquitectura fiscal está
+  deliberadamente detrás de FastAPI; duplicaría fronteras de API y dominio y arriesgaría
+  divergencia en autorización y validación fiscal.
+- **C. `service_role` para peticiones fiscales ordinarias.** Puentea la autoridad de RLS
+  y contradice el diseño de privilegio mínimo.
+- **D. Comprobaciones de membresía en Python como autorización primaria.** Duplicarían la
+  lógica de autorización de empresa con riesgo de divergir de RLS;
+  `company_memberships` + RLS son la fuente de verdad.
+- **E. Confiar en claims de rol/empresa del JWT como autoridad.** Las membresías cambian
+  con independencia del token; la arquitectura vigente resuelve la membresía en la base.
+- **F. Parseo o normalización en el cliente antes de subir.** Cambia la frontera de
+  evidencia; los bytes crudos deben conservarse.
+- **G. Reintento automático tras un fallo ambiguo de transporte.** Puede duplicar
+  evidencia o acciones: quien llama no sabe si el servidor ya capturó el documento.
+
+### Consecuencias
+
+- **Una sola frontera fiscal de API**, con RLS como autoridad de tenant en lectura y
+  escritura; el navegador nunca necesita acceso a la base fiscal ni recibe secretos del
+  backend.
+- **La evidencia se preserva exacta** y los contratos web/backend son consistentes; ambos
+  flujos comparten el mismo modelo de confianza.
+- **Los canales futuros podrán reutilizar el dominio fiscal** sin copiar su lógica — sin
+  afirmar que ningún canal futuro esté implementado.
+- Costes asumidos: un salto extra de red/servidor por Next + FastAPI; validación de
+  contrato duplicada entre backend y frontera de frontend; manejo de token en el
+  servidor; la no-enumerabilidad de lectura hace que una colección vacía no distinga
+  empresa no autorizada de empresa genuinamente vacía; y la disciplina de contrato
+  SQL/dominio exige tests que la vigilen.
+
+### Invariantes de seguridad
+
+1. El navegador nunca recibe credenciales de base de datos.
+2. El navegador nunca recibe `service_role`.
+3. El navegador nunca lee tablas fiscales directamente.
+4. FastAPI verifica el JWT de forma independiente.
+5. La autorización de tenant descansa en última instancia en RLS de PostgreSQL.
+6. Un `company_id` en la petición no concede nada por sí solo.
+7. Ni la lectura ni la escritura fiscal pueden puentear RLS.
+8. La evidencia fiscal cruda no es mutada por decodificación en el frontend.
+9. La incertidumbre de transporte no se promociona a falsa certeza de dominio.
+10. La frontera web no produce conclusiones tributarias.
+
+### Lo que este ADR NO decide
+
+- La arquitectura de documentos externos ([ADR-043](#adr-043)).
+- La ingesta por correo, el proveedor o transporte de WhatsApp, ni el motor de
+  notificaciones.
+- La lógica del Tax Engine ni el cálculo de IVA.
+- El radar normativo ni el perfil fiscal de empresa.
+- La dirección venta/compra de los documentos.
+- La arquitectura de reprocesamiento de artefactos pendientes.

@@ -16,12 +16,13 @@ un roadmap que suena a producto terminado es un roadmap que engaña.
 
 **IMPLEMENTADO** — tubería de documentos fiscales costarricenses en el backend: parser
 del comprobante electrónico, validación contra los esquemas oficiales, persistencia
-normalizada, y el endpoint HTTP de subida manual.
+normalizada, el endpoint HTTP de subida manual, la interfaz de subida en el workspace
+de empresa y la bandeja de documentos con estados operativos, paginación y contadores.
 
-**NO IMPLEMENTADO** — interfaz de subida, bandeja de documentos, dominio de documentos
-externos, inteligencia sobre PDF o imagen, clasificación de gasto, ingesta por correo,
-calendario fiscal, Tax Engine de IVA, WhatsApp, motor de notificaciones y radar
-normativo. **Nada de lo anterior existe todavía**, por muy detallado que aparezca aquí.
+**NO IMPLEMENTADO** — dominio de documentos externos, inteligencia sobre PDF o imagen,
+clasificación de gasto, ingesta por correo, calendario fiscal, Tax Engine de IVA,
+WhatsApp, motor de notificaciones y radar normativo. **Nada de lo anterior existe
+todavía**, por muy detallado que aparezca aquí.
 
 ---
 
@@ -140,12 +141,12 @@ Los checkpoints reales viven en `PROJECT_STATE`.
 
 | Etapa | Nombre | Estado |
 |---|---|---|
-| **C3** | Subida manual de XML + workspace + bandeja | 🔵 **EN CURSO** |
+| **C3** | Subida manual de XML + workspace + bandeja | ✅ **COMPLETADO** |
 | D1 | Dominio de documentos externos | ⬜ Planificado |
 | D2 | Inteligencia documental | ⬜ Planificado |
 | D3 | Clasificación de gasto | ⬜ Planificado |
 | D4 | Revisión unificada de documentos | ⬜ Planificado |
-| C4 | Canales de ingesta automatizada | ⬜ Planificado |
+| C4 | Canales de ingesta automatizada | ⬜ Planificado — **SIGUIENTE** (C4-A: arquitectura, correo primero — NOT STARTED) |
 | C5 | Perfil fiscal de empresa + calendario | ⬜ Planificado |
 | C6 | Tax Engine de IVA | ⬜ Planificado |
 | W1 | Notificaciones por WhatsApp | ⬜ Planificado |

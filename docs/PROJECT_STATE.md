@@ -56,7 +56,7 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C2-A  — arquitectura y ciclo de vida — COMPLETED
     C2-A1 — cierre de decisiones — COMPLETED
     C2-B  — implementación — COMPLETED
-  C3  — subida manual de XML — IN PROGRESS
+  C3  — subida manual de XML — COMPLETED
     C3-A  — arquitectura de subida y flujo de producto — COMPLETED
     C3-A1 — cierre de decisiones — COMPLETED
     C3-A2 — identidad del artefacto en fallos posteriores a la captura — COMPLETED
@@ -66,8 +66,9 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C3-B3-A — arquitectura de lectura de la bandeja — COMPLETED
     C3-B3-B — bandeja de documentos — COMPLETED
     C3-B3   — COMPLETED (auditoría final independiente: 0/0/0/0/0)
-    (C3 sigue NOT COMPLETED: falta ADR-045 / cierre arquitectónico final de C3)
-  C4  — ingesta por correo — NOT STARTED
+    ADR-045 — frontera web fiscal — ACCEPTED / COMPLETED
+  C4  — canales de ingesta automatizada (correo primero) — NOT STARTED
+    C4-A — arquitectura de ingesta automatizada — NEXT / NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -85,7 +86,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: ADR-045 / cierre arquitectónico final de C3.
+Next: diseño de C4-A — arquitectura de canales de ingesta automatizada, correo primero.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1348,6 +1349,18 @@ contraprueba de que sin el fallo esa columna sí avanza.
 
 ## Checkpoint G — Fase C3 · Subida manual de XML
 
+**Lo que C3 demuestra de punta a punta** — la primera vertical web completa sobre el
+dominio fiscal. Un usuario puede: entrar al workspace de su empresa · subir manualmente
+un XML de Hacienda · con la evidencia exacta preservada · que FastAPI clasifica, parsea
+y persiste · recibir un resultado inmediato seguro · volver más tarde · ver el estado
+durable de procesamiento en la bandeja fiscal · navegar varias páginas · ver los
+contadores de atención y pendientes · y resolver un desenlace ambiguo de transporte
+comprobando la bandeja.
+
+La frontera web que lo hace posible está registrada en
+[ADR-045](DECISIONS.md#adr-045) — **ACCEPTED**, con aprobación explícita del arquitecto
+y auditoría documental independiente en cero. Con ello, **C3 = COMPLETED**.
+
 ### C3-B3-B — bandeja de documentos — COMPLETED
 
 **Existe la primera lectura fiscal.** `GET /companies/{company_id}/fiscal-documents`,
@@ -2510,10 +2523,10 @@ cerrado en el Checkpoint B del Día 3. Se retira por obsoleta, no por levantarla
 
 ## Next Action
 
-**ADR-045 / cierre arquitectónico final de C3.** C3-B3 está COMPLETED con auditoría
-final independiente en cero; C3 en conjunto sigue **NOT COMPLETED** hasta ese cierre.
-El ADR-045 pertenece al próximo checkpoint: deliberadamente **no** forma parte del
-commit de cierre de B3.
+**Diseño de C4-A — canales de ingesta automatizada, correo primero.** Checkpoint de
+arquitectura, no de implementación: nada de C4 ha comenzado. C3 está **COMPLETED** —
+la primera vertical web completa sobre el dominio fiscal— con el
+[ADR-045](DECISIONS.md#adr-045) aceptado y auditoría documental independiente en cero.
 
 Sigue sin existir: documentos externos, ingesta por correo, WhatsApp, motor de
 notificaciones, Tax Engine, cálculo de IVA, clasificación venta/compra y reprocesador
