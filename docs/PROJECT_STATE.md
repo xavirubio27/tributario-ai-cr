@@ -67,8 +67,11 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C3-B3-B — bandeja de documentos — COMPLETED
     C3-B3   — COMPLETED (auditoría final independiente: 0/0/0/0/0)
     ADR-045 — frontera web fiscal — ACCEPTED / COMPLETED
-  C4  — canales de ingesta automatizada (correo primero) — NOT STARTED
-    C4-A — arquitectura de ingesta automatizada — NEXT / NOT STARTED
+  C4  — canales de ingesta automatizada (correo primero) — IN PROGRESS
+    C4-A — arquitectura de ingesta automatizada — COMPLETED
+    ADR-046 — Buzón Tribuu e intake automatizado — ACCEPTED / COMPLETED
+    C4-B — implementación — NOT STARTED
+    C4-B0 — decisión de proveedor e infraestructura — NEXT / NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -86,7 +89,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: diseño de C4-A — arquitectura de canales de ingesta automatizada, correo primero.
+Next: C4-B0 — decisión de proveedor e infraestructura del canal de correo.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -1347,6 +1350,109 @@ contraprueba de que sin el fallo esa columna sí avanza.
 
 ---
 
+## Checkpoint H — Fase C4 · Canales de ingesta automatizada
+
+### C4-A — arquitectura de intake automatizado y evidencia externa — COMPLETED
+
+**Cierre formal.** Auditoría final independiente y del arquitecto: **0 CRITICAL ·
+0 HIGH · 0 MEDIUM · 0 LOW · 0 INFORMATIONAL — PASS**. El
+**[ADR-046](DECISIONS.md#adr-046)** —Buzón Tribuu: intake automatizado, evidencia
+empresarial y autorización de máquina— está **ACEPTADO**, con todas las decisiones
+aprobadas intactas. El recorrido: diseño inicial → R1 (evolución de producto:
+preservación de toda la evidencia) → R2 (tres capas de certeza, C5 adelantado) → R3
+(mecanismo de D3 abierto, terminología final) → aceptación.
+
+Diseño entregado y REVISADO tras la evolución de producto (R1): C4 ya no es solo
+«correo → XML → C2», sino *«Tribuu recibe toda la evidencia empresarial relevante que
+llega al Buzón Tribuu»*, con el principio *«puede no entender todavía un documento,
+pero si confirma que lo recibió, no debe perderlo»*. Sin implementación, sin
+migraciones, sin proveedor elegido, sin recursos de almacenamiento ni DNS; el
+[ADR-046](DECISIONS.md#adr-046) registra la arquitectura y está ACEPTADO. Núcleo:
+
+- **Buzón Tribuu durable por empresa** (`prefijo-token@…`), aprovisionado al ACTIVAR;
+  prefijo cosmético; token CSPRNG de **≥ 80 bits** (revisado en R1), único, rotable,
+  desactivable; el mismo buzón sirve para reenvío manual, reenvío automático y entrega
+  directa del proveedor, sin rearquitectura.
+- **El remitente NUNCA identifica al tenant**: enruta el destinatario del sobre
+  verificado por el proveedor; la dirección no es autorización de lectura.
+- **Frontera máquina-a-máquina**: webhook firmado, sin JWT de usuario, sin usuario
+  ficticio, sin membresía sintética, sin `service_role`, sin `BYPASSRLS`; contexto de
+  canal con transacción acotada a LA empresa del buzón activo, bajo RLS; el mecanismo
+  exacto pertenece a ADR-046/C4-B1.
+- **Distinción fundamental**: correo ≠ adjunto/evidencia ≠ documento económico o
+  fiscal. `factura.xml` + `factura.pdf` pueden ser UNA factura; el XML CR válido es la
+  fuente canónica de los hechos fiscales REPORTADOS (C2, `IngestionSource.EMAIL` ya
+  existente); el PDF se preserva como representación sin crear segundo documento; sin
+  emparejamiento por nombre en el MVP; la conciliación futura (señal canónica: `Clave`)
+  decide asociación o ExternalDocument.
+- **Preservación durable de evidencia no-XML (revierte la recomendación previa)**:
+  los ADJUNTOS aceptados → bytes exactos tal y como los entrega el proveedor +
+  SHA-256 + metadatos en **almacenamiento de objetos** neutral al proveedor
+  (PostgreSQL: identidad, estado, procedencia; objetos: bytes). El CUERPO del correo
+  es **evidencia de primera clase, no un adjunto** (R2): abstracción conceptual
+  `InboundEvidenceItem` con clases `attachment` y `body`; el cuerpo se preserva como
+  la **representación exacta entregada por el proveedor** (MIME crudo, HTML, texto o
+  campos normalizados — desconocido hasta elegir proveedor) con procedencia explícita
+  de qué representación se recibió; jamás se afirma «bytes originales exactos del
+  cuerpo» antes de la selección. Captura segura sin ejecutar HTML, sin activos
+  remotos; extracción solo sobre representación saneada; retención temporal ACOTADA
+  del cuerpo hasta que exista clasificación (la propia clasificación puede requerir
+  D1/D2), sin plazos inventados. Estado veraz: «Recibido y guardado. Análisis
+  automático pendiente».
+- **Congelado**: captura durable ANTES del ACK al proveedor; idempotencia por
+  `(provider, provider_event_id)` con reanudación por adjunto; un reenvío genuino es
+  OTRA evidencia (semántica C2 intacta). **Abierto adrede**: síncrono vs asíncrono —
+  se decide en C4-B0 con datos reales del proveedor; los reintentos del proveedor NO
+  son la cola de Tribuu.
+- **Tres capas de certeza (R2, terminología final R3), nunca mezcladas**: (1)
+  evidencia monetaria identificada — un total extraído NO es un gasto de la empresa;
+  (2) **clasificación económica observada** — gasto · ingreso · otro · sin resolver,
+  clasificación NO tributaria y con **mecanismo abierto**; (3) tratamiento fiscal —
+  del Tax Engine, después. La inteligencia documental por sí sola NO establece la
+  clasificación económica. Totales multi-moneda por moneda de origen, sin conversión
+  silenciosa.
+- **Quién responde qué (aclaración final del arquitecto)**: **C5** determina SOLO la
+  RELACIÓN del documento con la empresa — comprobante CR: empresa=emisor → EMITIDO
+  (saliente); empresa=receptor → RECIBIDO (entrante); ninguna → ajeno; identidad
+  insuficiente → sin resolver — determinista, jamás delegada a un LLM, y sin congelar
+  «emisor = venta» ni «receptor = gasto». **D3-A** responde qué representa
+  económicamente, con mecanismo NO congelado: podrá combinar reglas deterministas,
+  evidencia estructurada, inteligencia documental, clasificación asistida por
+  modelo/IA, confianza y revisión humana — un modelo puede asistir, pero no convertir
+  en silencio la incertidumbre en un hecho. **C6** responde qué significa
+  tributariamente, con el Tax Engine determinista como única autoridad: `LLM ≠ Tax
+  Engine` no se reinterpreta como «LLM ≠ clasificación económica».
+- **Secuencia revisada (R2)**: C4 → **C5** (perfil fiscal: identidad canónica + SOLO
+  relación/dirección de documento — se adelanta porque sin identidad no se puede
+  llamar «gasto» a nada sin riesgo de llamar gasto a una venta) → **D1-A + D2-A**
+  (dominio mínimo de documento externo + MVP de inteligencia documental: extracción
+  básica con procedencia y confianza, conciliación) → **D3-A** (clasificación
+  económica mínima: gasto · ingreso · otro · sin resolver, con revisión) → C6 (Tax
+  Engine/IVA). La superficie de «gasto observado» llega solo tras D3-A; antes, la
+  interfaz puede mostrar «documentos con importes identificados» por moneda.
+
+**Correcciones R2 aplicadas** (revisión del arquitecto: 0 CRITICAL / 0 HIGH /
+2 MEDIUM / 0 LOW): (1) el modelo de tres capas de certeza sustituye toda redacción
+que sugiriera que la inteligencia documental basta para un «gasto mensual» fiable, y
+C5 se adelanta en la secuencia por la dependencia de identidad; (2) el cuerpo del
+correo es un ítem de evidencia de primera clase (`InboundEvidenceItem`, no un
+adjunto), con fidelidad expresada como «representación exacta entregada por el
+proveedor» y retención temporal acotada hasta que exista clasificación.
+
+**Cuestiones abiertas (registradas, no ocultas):** proveedor de correo entrante ·
+hosting/webhook alcanzable (ADR-011 ⏳) · DNS/dominio del buzón · síncrono vs
+asíncrono (C4-B0) · implementación exacta de identidad/RLS de máquina · proveedor de
+almacenamiento de objetos · estrategia definitiva de retención del cuerpo (la
+clasificación que la habilita puede requerir D1/D2) · modelo físico del ítem de
+evidencia (tabla generalizada vs tablas separadas tras la abstracción común;
+recomendación: separadas) · límites de adjuntos y de objetos · política de retención
+general (sin plazos inventados) · retención del asunto · numeración/colocación exacta
+del MVP de inteligencia (recomendación: D1-A + D2-A tras C5, luego D3-A).
+
+C4-B (implementación) — NOT STARTED. Nada de C4 existe en código.
+
+---
+
 ## Checkpoint G — Fase C3 · Subida manual de XML
 
 **Lo que C3 demuestra de punta a punta** — la primera vertical web completa sobre el
@@ -2523,10 +2629,16 @@ cerrado en el Checkpoint B del Día 3. Se retira por obsoleta, no por levantarla
 
 ## Next Action
 
-**Diseño de C4-A — canales de ingesta automatizada, correo primero.** Checkpoint de
-arquitectura, no de implementación: nada de C4 ha comenzado. C3 está **COMPLETED** —
-la primera vertical web completa sobre el dominio fiscal— con el
-[ADR-045](DECISIONS.md#adr-045) aceptado y auditoría documental independiente en cero.
+**C4-B0 — decisión de proveedor e infraestructura del canal de correo.** C4-A está
+**COMPLETED** con el [ADR-046](DECISIONS.md#adr-046) aceptado; nada de C4 existe en
+código. C4-B0 evaluará con información real y actual: proveedor de correo entrante ·
+hosting del backend / webhook alcanzable (ADR-011) · DNS y dominio de recepción ·
+capacidades de firma/autenticación del webhook · semántica de reintentos y garantías
+de identidad de evento · entrega de adjuntos y disponibilidad de MIME/cuerpo crudo ·
+límites de payload y adjuntos · opciones de almacenamiento de objetos · precio y
+escalabilidad para pymes · idoneidad operativa CR/LATAM · postura de privacidad ·
+la decisión síncrono-vs-asíncrono · y si de verdad hace falta una cola/worker
+interno. Ningún proveedor queda seleccionado en este cierre.
 
 Sigue sin existir: documentos externos, ingesta por correo, WhatsApp, motor de
 notificaciones, Tax Engine, cálculo de IVA, clasificación venta/compra y reprocesador

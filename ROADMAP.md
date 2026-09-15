@@ -146,7 +146,7 @@ Los checkpoints reales viven en `PROJECT_STATE`.
 | D2 | Inteligencia documental | ⬜ Planificado |
 | D3 | Clasificación de gasto | ⬜ Planificado |
 | D4 | Revisión unificada de documentos | ⬜ Planificado |
-| C4 | Canales de ingesta automatizada | ⬜ Planificado — **SIGUIENTE** (C4-A: arquitectura, correo primero — NOT STARTED) |
+| C4 | Canales de ingesta automatizada | 🔵 **EN CURSO** (C4-A: ✅ COMPLETADO, ADR-046 aceptado · **SIGUIENTE: C4-B0**, decisión de proveedor e infraestructura · C4-B: NOT STARTED) |
 | C5 | Perfil fiscal de empresa + calendario | ⬜ Planificado |
 | C6 | Tax Engine de IVA | ⬜ Planificado |
 | W1 | Notificaciones por WhatsApp | ⬜ Planificado |
@@ -195,6 +195,78 @@ Dominio Fiscal          Dominio Externo
 ```
 
 **El canal no contiene lógica fiscal.** Transporta y enruta; nada más.
+
+**Buzón Tribuu — un solo buzón durable, usos progresivamente más automáticos.** Cada
+empresa participante puede activar su propia dirección de recepción de documentos
+(conceptualmente `empresa-x7k3@inbox.tribuu.ai`). La dirección del MVP es la MISMA que
+sobrevive a toda la evolución — nunca una dirección provisional que luego se sustituya:
+
+1. **MVP** — Tribuu aprovisiona la dirección de la empresa; el usuario reenvía
+   manualmente los correos con facturas.
+2. **Reenvío automático configurado por el usuario** — misma dirección; el usuario crea
+   una regla en Gmail/Outlook/otro. Sin OAuth.
+3. **Entrega directa del proveedor** — misma dirección; la empresa la entrega a sus
+   proveedores como su dirección de recepción de documentos. Sin arquitectura nueva.
+4. **Buzón conectado (futuro, fuera del MVP de C4)** — OAuth de Gmail/Outlook; Tribuu
+   detecta documentos en el buzón permitido sin reenvío.
+
+Principio de producto: *«Tribuu recibe tus documentos aunque no abras la aplicación».*
+Ninguna de estas etapas está implementada.
+
+**C4 preserva TODA la evidencia empresarial aceptada, no solo el XML.** El objetivo es
+«Tribuu recibe toda la evidencia empresarial relevante que llega al Buzón Tribuu», con
+un principio rector: *«Tribuu puede no entender todavía un documento, pero si confirma
+que lo recibió, no debe perderlo»*. El XML de Hacienda se entiende fiscalmente de
+inmediato por el C2 existente. Los ADJUNTOS aceptados se preservan con los bytes
+exactos tal y como los entrega el proveedor, con huella SHA-256, en almacenamiento de
+objetos neutral al proveedor. El CUERPO del correo (hay recibos que solo existen como
+correo) es evidencia de primera clase por derecho propio — no un adjunto — y se
+preserva como la **representación exacta que el proveedor entregue** (MIME crudo, HTML,
+texto o campos normalizados: no se sabe cuál hasta elegir proveedor), con procedencia
+explícita de qué representación se recibió. Todo puede quedar sin procesar al
+principio; su estado veraz es «Recibido y guardado. Análisis automático pendiente» —
+nunca «procesado».
+
+**Un documento económico puede tener varias representaciones.** `factura.xml` +
+`factura.pdf` pueden ser UNA factura: el XML válido costarricense es la fuente canónica
+de los hechos fiscales REPORTADOS y produce el ElectronicDocument vía C2; el PDF se
+conserva como evidencia/representación y no crea un segundo documento. En el MVP no hay
+emparejamiento heurístico por nombre de archivo; la conciliación futura decide si una
+evidencia representa un documento ya conocido (la `Clave` reportada es la señal
+canónica de alta confianza) o si puede crear un ExternalDocument (ADR-043 intacto).
+
+**Tres capas de certeza, y no se mezclan.** (1) **Evidencia monetaria identificada** —
+Tribuu identificó hechos monetarios en la evidencia (emisor AWS, USD 486.37): eso aún
+NO demuestra que el importe sea un gasto de la empresa. (2) **Clasificación económica
+observada** — con suficiente contexto de empresa y de documento, el evento se
+clasifica como gasto · ingreso · otro · sin resolver; sigue sin ser una clasificación
+tributaria, y su mecanismo queda abierto: el diseño de D3 podrá combinar reglas
+deterministas con clasificación asistida por modelo, confianza y revisión humana — un
+modelo puede asistir, pero no convertir en silencio la incertidumbre en un hecho.
+(3) **Tratamiento fiscal** — el Tax Engine determinista decide después deducibilidad,
+crédito/débito de IVA, retenciones y periodo; ahí ningún modelo es autoridad. Un total
+identificado NUNCA se llama «gasto» por el mero hecho de haber recibido la factura.
+`LLM ≠ Tax Engine` — que no se reinterpreta como «LLM ≠ clasificación económica».
+
+**Por qué C5 se adelanta.** C5 determina la RELACIÓN del documento con la empresa, no
+su clasificación económica. Con un ElectronicDocument de CRC 500 000: empresa = emisor
+→ **EMITIDO** (saliente); empresa = receptor → **RECIBIDO** (entrante); ninguna de las
+dos → ajeno; identidad insuficiente → sin resolver. Determinación determinista, jamás
+de un LLM — y deliberadamente NO se congela «emisor = venta» ni «receptor = gasto»:
+qué representa económicamente un documento lo responde D3-A, y qué significa
+tributariamente, C6. Sin el perfil fiscal de C5 no hay forma honesta de llamar
+«gasto» a nada — y llamar «gasto» a una venta sería peor que no decir nada.
+
+**Secuencia próxima:** C4 (Buzón + intake automatizado + preservación durable de
+evidencia) → **C5** (perfil fiscal de empresa: identidad fiscal canónica + SOLO la
+relación/dirección determinista del documento) → **D1-A + D2-A** (dominio mínimo de
+documento externo + MVP de inteligencia documental: PDF/imagen/cuerpo, extracción
+básica con procedencia y confianza, conciliación) → **D3-A** (clasificación económica
+mínima: gasto observado · ingreso observado · otro · sin resolver, con revisión donde
+haga falta) → C6 (Tax Engine de IVA). Antes de D3-A la interfaz puede mostrar «Documentos con importes identificados»
+—con totales por moneda si es útil—, pero no «gastos»; los totales multi-moneda se
+muestran por moneda de origen mientras no exista una política determinista de
+conversión aprobada.
 
 ### W1 — Notificaciones por WhatsApp
 

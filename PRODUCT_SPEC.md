@@ -213,6 +213,43 @@ documentos externos · extracción asistida por IA · categorización de gasto �
 fiscal · inteligencia inicial de IVA · y un canal de notificación proactiva, con
 **WhatsApp** como preferencia estratégica.
 
+**Buzón Tribuu.** Cada empresa puede activar su propio buzón de recepción de documentos
+— una dirección de correo propia de la empresa, pensada para la simplicidad de una
+pyme. El MVP empieza con reenvío manual de las facturas que llegan por correo; el mismo
+buzón admite después reenvío automático configurado por el usuario y, más adelante,
+puede entregarse directamente a los proveedores como dirección de recepción de la
+empresa, sin cambiar de arquitectura ni de dirección. El buzón conectado por OAuth
+(Gmail/Outlook) queda para el futuro. Principio: *«Tribuu recibe tus documentos aunque
+no abras la aplicación»*. Nada de esto está implementado todavía.
+
+**Toda la evidencia empresarial aceptada se preserva.** *«Tribuu puede no entender
+todavía un documento, pero si confirma que lo recibió, no debe perderlo.»* El XML de
+Hacienda se entiende fiscalmente de inmediato; un PDF o una imagen se preservan con
+sus bytes exactos tal y como los entregó el proveedor de correo, y un recibo que solo
+existe como cuerpo de correo se preserva como la representación exacta que el
+proveedor entregue, con su procedencia. Una inteligencia documental básica (emisor,
+número, fecha, moneda, importes como cadenas exactas, con procedencia y confianza)
+llega después del intake. `factura.xml` + `factura.pdf` pueden representar UNA sola
+factura: el XML costarricense válido es la fuente canónica de los valores fiscales
+reportados, y la otra evidencia lo acompaña sin sustituirlo ni duplicarlo.
+
+**Tres capas de certeza que nunca se mezclan.** (1) **Importes identificados**: Tribuu
+identificó hechos monetarios en un documento (emisor, moneda, total) — eso todavía no
+dice que sea un gasto de la empresa. (2) **Clasificación económica
+observada**: con la identidad fiscal de la empresa validada y la relación del
+documento resuelta de forma determinista (emitido · recibido · ajeno · sin resolver),
+el evento se clasifica como gasto, ingreso, otro o sin resolver — sigue sin ser una
+afirmación tributaria, y cómo se clasifica queda abierto: podrán combinarse reglas
+deterministas con ayuda de modelos, confianza y revisión humana, sin que la
+incertidumbre se convierta en un hecho en silencio. (3) **Tratamiento fiscal confirmado**: deducibilidad,
+crédito de IVA, retenciones y periodo los determina después el Tax Engine
+determinista, jamás un modelo. A las pymes no se les dice que un total extraído «es un
+gasto» hasta que la capa 2 lo respalde; antes de eso, la interfaz habla de «documentos
+con importes identificados». El objetivo de llegar a una vista mensual completa del
+gasto se mantiene — se llega por capas, no por atajos. Con varias monedas, los totales
+se presentan por moneda de origen; ninguna conversión ocurre en silencio ni sale de un
+modelo.
+
 Ver [ROADMAP.md](ROADMAP.md) para la secuencia y el estado de cada etapa.
 
 ### Fuera del alcance del MVP

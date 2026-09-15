@@ -68,6 +68,7 @@
 | [ADR-043](#adr-043) | Los documentos externos no entran en el dominio fiscal costarricense | ✅ |
 | [ADR-044](#adr-044) | Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla | ✅ |
 | [ADR-045](#adr-045) | Frontera web fiscal: Next.js de servidor → FastAPI → RLS de PostgreSQL | ✅ |
+| [ADR-046](#adr-046) | Buzón Tribuu: intake automatizado, evidencia empresarial y autorización de máquina | ✅ |
 
 ---
 ---
@@ -2964,3 +2965,218 @@ referencia esas decisiones; no las redefine.
 - El radar normativo ni el perfil fiscal de empresa.
 - La dirección venta/compra de los documentos.
 - La arquitectura de reprocesamiento de artefactos pendientes.
+
+---
+
+<a id="adr-046"></a>
+
+## ADR-046 — Buzón Tribuu: intake automatizado, evidencia empresarial y autorización de máquina
+
+**Estado:** ✅ Aceptada (Día 3, fase C4-A) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-012](#adr-012) · [ADR-015](#adr-015) · [ADR-017](#adr-017) ·
+[ADR-020](#adr-020) · [ADR-023](#adr-023) · [ADR-038](#adr-038) · [ADR-039](#adr-039) ·
+[ADR-041](#adr-041) · [ADR-043](#adr-043) · [ADR-044](#adr-044) · [ADR-045](#adr-045)
+
+### Contexto
+
+C3 dejó una vertical web completa, pero exige que el usuario abra la aplicación y suba
+cada XML a mano. El objetivo de C4 es que *«Tribuu recibe toda la evidencia empresarial
+relevante que llega al Buzón Tribuu»*, con un principio rector: **Tribuu puede no
+entender todavía un documento, pero si confirma que lo recibió, no debe perderlo.**
+
+Eso introduce dos fronteras nuevas que ningún ADR anterior cubre: una entrada
+**máquina-a-máquina** (el correo entrante no es una petición autenticada de usuario) y
+un dominio de **evidencia empresarial** más amplio que el XML de Hacienda (PDF, imagen,
+y recibos que solo existen como cuerpo de correo). Este ADR congela la arquitectura
+durable de ambas; los detalles específicos de proveedor pertenecen a C4-B.
+
+### Decisión
+
+**Buzón por empresa, aprovisionado al activar.** Cada empresa participante puede
+activar UN Buzón Tribuu. Configuran owner/editor; viewer ve estado y dirección pero no
+muta. Dirección conceptual `<prefijo>-<token>@inbox.tribuu.ai`: el prefijo es
+únicamente cosmético; el token es aleatorio de **≥ 80 bits de entropía CSPRNG**, único,
+rotable y desactivable. La dirección es **ruta de entrega, jamás autorización para leer
+datos del tenant**.
+
+**El remitente es NO CONFIABLE — invariante fundacional.** `From`, `Reply-To`, el
+display name, el dominio del remitente, el asunto o el contenido de un adjunto jamás
+determinan la empresa. El tenant se resuelve SOLO así: proveedor verificado →
+destinatario del sobre → Buzón Tribuu ACTIVO → `company_id`.
+
+**Borde neutral al proveedor.** El payload específico del webhook se traduce en un
+adaptador de borde al contrato de intake propio de Tribuu. El núcleo del canal y el
+dominio no dependen de Mailgun, Postmark, SES, SendGrid ni de ningún otro; la selección
+pertenece a C4-B0.
+
+**Autorización de máquina.** El correo entrante NO es una petición autenticada de
+usuario. Quedan rechazados: usuario ficticio, membresía sintética, JWT de navegador,
+`service_role` y `BYPASSRLS`. Modelo requerido: evento verificado del proveedor →
+buzón activo de la empresa → contexto dedicado de canal/máquina → transacción acotada
+a ESA empresa → RLS de PostgreSQL → dominios de canal y C2. **RLS sigue siendo la
+autoridad final de tenant** ([ADR-012](#adr-012), [ADR-020](#adr-020)); el rol, las
+funciones y las políticas exactas pertenecen a C4-B1. El contexto de máquina solo
+puede ejecutar las operaciones canónicas de ingesta que C2/C1 necesitan —captura de
+evidencia, lecturas de deduplicación, mutación de ciclo de vida, persistencia del
+documento normalizado y de sus hijos— sin lecturas generales del tenant y sin ningún
+acceso entre empresas.
+
+**Correo ≠ evidencia ≠ documento.** Un mensaje puede contener varios ítems de
+evidencia; un documento económico puede tener varias representaciones
+(`factura.xml` + `factura.pdf` pueden ser UNA factura). La abstracción conceptual
+neutral es **`InboundEvidenceItem`**, con al menos las clases `attachment` y `body`.
+El esquema físico NO se congela aquí (recomendación vigente: almacenes físicos
+separados por clase tras la abstracción común; diseño final en C4-B1).
+
+**Fidelidad de la evidencia.** Para los ADJUNTOS: se preservan los **bytes exactos tal
+y como el proveedor los presenta a Tribuu** — SHA-256, metadatos, procedencia y estado
+durable ANTES de interpretar; sin decode/re-encode previo a la captura. Para el
+CUERPO: puede ser evidencia empresarial por sí mismo y **no se llama adjunto**; hasta
+la selección de proveedor la garantía es la **representación exacta entregada por el
+proveedor** (MIME/RFC822 crudo, HTML, HTML normalizado, texto plano o estructura
+normalizada del proveedor), con procedencia explícita de cuál se recibió. No se afirma
+fidelidad RFC822 original hasta que las capacidades del proveedor la soporten.
+
+**Seguridad del cuerpo.** El HTML de correo jamás se ejecuta: sin scripts, sin carga
+de imágenes remotas, sin píxeles de rastreo, sin contenido activo, sin render de HTML
+arbitrario como interfaz de confianza. La inteligencia documental futura trabaja sobre
+representaciones saneadas.
+
+**Retención del cuerpo.** Se congela solo el requisito arquitectónico: los recibos que
+solo existen como cuerpo deben ser soportables, y puede requerirse un mecanismo de
+retención temporal ACOTADA hasta que D1/D2 puedan clasificar si el contenido es
+evidencia de negocio. El plazo exacto queda ABIERTO; no se inventan periodos legales.
+
+**Principio de evidencia durable.** Si Tribuu acepta evidencia de negocio y confirma
+la recepción, no puede perderla. PDF/imagen/adjuntos de negocio aceptados → bytes
+exactos en almacenamiento durable de objetos. El XML fiscal NO se muda: su evidencia
+canónica sigue siendo `fiscal.source_documents.raw_xml` ([ADR-044](#adr-044)); C2 no
+se rediseña. Frontera de almacenamiento neutral al proveedor: **PostgreSQL** guarda
+identidad, metadatos, estado, procedencia, relaciones, huellas y localizadores;
+**el almacén de objetos** guarda los bytes grandes de evidencia externa. Sin vendor
+elegido.
+
+**El XML es canónico para lo fiscal costarricense.** Para un comprobante electrónico
+CR válido, el XML es la fuente canónica de los hechos fiscales REPORTADOS: va por C2
+(`ingest_fiscal_xml`, `IngestionSource.EMAIL`, bytes exactos) → SourceDocument →
+ElectronicDocument. Un PDF hermano se preserva como representación y **no crea un
+segundo ElectronicDocument**. Ninguna extracción futura por OCR/LLM puede sobrescribir
+ni competir con los valores reportados del XML: la separación `reported_*` frente a
+extraído/derivado/calculado ([ADR-023](#adr-023), [ADR-041](#adr-041)) se mantiene.
+No hay segundo parser fiscal, ni segunda persistencia, ni semántica fiscal específica
+del correo.
+
+**El enrutador clasifica solo representación física**: XML candidato, PDF, imagen,
+cuerpo, otro. No determina validez de Hacienda, tratamiento fiscal, deducibilidad,
+venta/compra ni dirección económica. La verdad del XML fiscal la determina C2.
+
+**Representación antes que documento.** La evidencia preservada NO crea
+automáticamente un ExternalDocument ([ADR-043](#adr-043) intacto). Primero evidencia;
+después: extracción → hechos candidatos → **conciliación** → ¿documento conocido? SÍ →
+se asocia como representación/soporte; NO → elegible para ExternalDocument. La
+conciliación es obligatoria cuando la evidencia puede representar algo ya conocido;
+para comprobantes CR la `Clave` reportada es la señal canónica de alta confianza;
+emisor, número, fecha, moneda y total son señales posteriores que nunca se tratan como
+verdad perfecta. **Invariante de duplicación:** tras demostrar la conciliación que
+XML+PDF o PDF+cuerpo representan UN documento, las representaciones no se cuentan como
+eventos económicos independientes — no se suman adjuntos.
+
+**Idempotencia.** Mismo `provider_event_id` → reintento del proveedor → mismo intake,
+reanudación, sin registro duplicado de entrega. `provider_event_id` nuevo → entrega
+genuina nueva → intake nuevo. No se deduplica entre mensajes genuinos solo por huella
+de contenido; la semántica de evidencia duplicada de C2 sigue siendo autoritativa para
+el XML.
+
+**Captura durable antes del ACK.** autenticar proveedor → resolver destinatario
+activo → capturar idempotente y durablemente la evidencia mínima de intake → solo
+entonces elegible para ACK exitoso. NO se congela si la interpretación ocurre antes o
+después del ACK: **síncrono vs asíncrono queda ABIERTO para C4-B0**, porque exige
+datos reales del proveedor y del hosting (timeout del webhook, contrato de reintentos,
+estabilidad del event-id, vida de recuperación de adjuntos, límites de payload). Los
+reintentos del proveedor son recuperación de entrega de un transporte externo, **no la
+cola de aplicación de Tribuu**.
+
+### Las tres capas de certeza
+
+Tres conceptos de producto y de datos, separados y jamás mezclados:
+
+1. **Evidencia monetaria identificada** — Tribuu identificó hechos monetarios en la
+   evidencia (emisor = AWS, moneda = USD, total = 486.37). Prueba solo lo que se
+   identificó; NO prueba que sea gasto de la empresa.
+2. **Clasificación económica observada** — con suficiente contexto de empresa y de
+   documento: gasto · ingreso · otro · sin resolver. Clasificación NO tributaria.
+   Este ADR **no congela su mecanismo**.
+3. **Tratamiento fiscal** — el Tax Engine determinista decide deducibilidad,
+   crédito/débito de IVA, retenciones, periodo y demás consecuencias. `LLM ≠ Tax
+   Engine`.
+
+**Quién responde qué.** C5 (perfil fiscal de empresa) determina la RELACIÓN del
+documento con la empresa — para XML CR: empresa = emisor → **EMITIDO / saliente**;
+empresa = receptor → **RECIBIDO / entrante**; ninguna → ajeno; identidad insuficiente
+→ sin resolver. C5 responde *«¿cómo se relaciona este documento con esta empresa?»*,
+es **determinista y no se delega jamás a un LLM**, y NO congela emisor = venta/ingreso
+ni receptor = compra/gasto.
+
+La clasificación económica pertenece a **D3-A** (*«¿qué representa económicamente?»*),
+y este ADR **deja abierto su mecanismo**: el diseño futuro de D3 podrá combinar reglas
+deterministas, evidencia estructurada, inteligencia documental, clasificación asistida
+por modelo/IA, confianza y revisión humana — en línea con lo que
+[ADR-043](#adr-043) ya prevé para la clasificación de gasto con señales sugeridas
+separadas de lo reportado. Un modelo PUEDE asistir la clasificación económica; lo que
+no puede hacer es convertir en silencio la incertidumbre en un hecho.
+
+Lo tributario pertenece a **C6** (*«¿qué significa tributariamente?»*): ahí el Tax
+Engine determinista es la única autoridad, y ningún modelo decide deducibilidad,
+crédito/débito de IVA, retenciones, periodo ni consecuencia fiscal alguna. `LLM ≠ Tax
+Engine` significa exactamente eso — y **no** se reinterpreta como «LLM ≠ clasificación
+económica».
+
+**Multi-moneda:** sin conversión silenciosa. Hasta que exista una política FX
+determinista aprobada, los totales se agrupan por moneda de origen; un LLM jamás
+inventa una conversión.
+
+**Inteligencia documental (D1-A/D2-A, futura):** extrae inicialmente solo hechos
+básicos — emisor, número/referencia, fecha, moneda, subtotal e impuesto reportado
+cuando estén claros, total — con los importes como cadenas exactas y **procedencia por
+valor**, distinguiendo siempre: hecho reportado del XML estructurado · extracción
+determinista · hecho derivado de OCR · candidato derivado de modelo · valor corregido
+por humano. Sin conclusiones tributarias. Para los comprobantes CR, la semántica de
+fechas reportadas sigue siendo la de [ADR-039](#adr-039).
+
+**Dependencia del roadmap congelada:** C4 (Buzón + intake + preservación) → C5
+(perfil fiscal + SOLO dirección de documento) → D1-A + D2-A (dominio mínimo externo +
+inteligencia documental) → D3-A (clasificación económica mínima con revisión) → C6
+(Tax Engine/IVA). Sin modelos de gasto intermedios desechables. **Superficies de
+producto:** antes de D3-A, «Documentos con importes identificados» con totales por
+moneda de origen — nunca «Gastos»; tras D3-A, «gasto observado» / «ingreso observado»
+pueden ser seguros; la terminología tributaria espera a C6.
+
+**Evolución del Buzón congelada:** (1) reenvío manual → (2) reenvío automático
+configurado por el usuario → (3) el mismo buzón entregado directamente a proveedores →
+(4) buzón conectado Gmail/Outlook futuro. Misma arquitectura de buzón en todas; sin
+ninguna afirmación de domicilio fiscal legal.
+
+### Consecuencias
+
+- La evidencia empresarial aceptada sobrevive aunque Tribuu aún no la entienda; el
+  producto puede decir «Recibido y guardado. Análisis automático pendiente» con la
+  verdad de su lado.
+- Un solo buzón durable acompaña a la empresa desde el reenvío manual hasta la entrega
+  directa de proveedores, sin migraciones de dirección.
+- La frontera máquina-a-máquina queda bajo la misma autoridad RLS que el resto del
+  sistema, sin atajos de privilegio.
+- Costes asumidos: almacenamiento de objetos nuevo que operar; retención temporal del
+  cuerpo pendiente de una clasificación que aún no existe; y la decisión
+  síncrono/asíncrono deliberadamente pospuesta hasta tener hechos del proveedor.
+
+### Lo que este ADR NO decide
+
+- Proveedor de correo entrante · vendor de almacenamiento de objetos · hosting ·
+  DNS/dominio del buzón.
+- Síncrono vs asíncrono · tecnología de cola, si llega a hacer falta.
+- Esquema físico del `InboundEvidenceItem`.
+- Duración de retención del cuerpo · retención del asunto · límites definitivos de
+  payload.
+- Política de conversión FX.
+- Proveedor de OCR/modelo de inteligencia documental.
+- Tratamiento tributario de documentos externos.
