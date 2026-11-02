@@ -146,7 +146,7 @@ Los checkpoints reales viven en `PROJECT_STATE`.
 | D2 | Inteligencia documental | ⬜ Planificado |
 | D3 | Clasificación de gasto | ⬜ Planificado |
 | D4 | Revisión unificada de documentos | ⬜ Planificado |
-| C4 | Canales de ingesta automatizada | 🔵 **EN CURSO** (C4-A: ✅ COMPLETADO, ADR-046 aceptado · **SIGUIENTE: C4-B0**, decisión de proveedor e infraestructura · C4-B: NOT STARTED) |
+| C4 | Canales de ingesta automatizada | 🔵 **EN CURSO** (C4-A ✅ · C4-B0 ✅: **Resend = proveedor MVP, Mailgun = fallback validado**, batería experimental completa · **SIGUIENTE: C4-B** implementación) |
 | C5 | Perfil fiscal de empresa + calendario | ⬜ Planificado |
 | C6 | Tax Engine de IVA | ⬜ Planificado |
 | W1 | Notificaciones por WhatsApp | ⬜ Planificado |

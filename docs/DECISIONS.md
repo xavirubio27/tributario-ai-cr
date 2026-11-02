@@ -69,6 +69,7 @@
 | [ADR-044](#adr-044) | Ingesta fiscal en dos fases: la evidencia se preserva antes de interpretarla | ✅ |
 | [ADR-045](#adr-045) | Frontera web fiscal: Next.js de servidor → FastAPI → RLS de PostgreSQL | ✅ |
 | [ADR-046](#adr-046) | Buzón Tribuu: intake automatizado, evidencia empresarial y autorización de máquina | ✅ |
+| [ADR-047](#adr-047) | Resend como proveedor inbound MVP y captura durable antes del ACK | ✅ |
 
 ---
 ---
@@ -3180,3 +3181,107 @@ ninguna afirmación de domicilio fiscal legal.
 - Política de conversión FX.
 - Proveedor de OCR/modelo de inteligencia documental.
 - Tratamiento tributario de documentos externos.
+
+---
+
+<a id="adr-047"></a>
+
+## ADR-047 — Resend como proveedor inbound MVP y captura durable antes del ACK
+
+**Estado:** ✅ Aceptada (Día 3, fase C4-B0) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-011](#adr-011) · [ADR-020](#adr-020) · [ADR-043](#adr-043) ·
+[ADR-044](#adr-044) · [ADR-046](#adr-046)
+
+### Contexto
+
+C4-B0 ejecutó una evaluación experimental completa de Resend y Mailgun contra
+un receptor estable desplegado para el spike, con correos reales: enrutamiento
+por destinatario del sobre bajo reenvío real de Gmail, fidelidad byte a byte
+de XML/PDF/imagen hasta 10.5 MB, cuerpo-como-evidencia, catch-all, cadencias
+reales de reintento y recuperación tras más de dos horas de fallo, con los
+códigos HTTP confirmados por los logs de los propios proveedores. La evidencia
+íntegra vive en `docs/C4B0_PROVIDER_EVALUATION.md`; el receptor auditado vive
+en el repositorio desechable `tribuu-spike-inbound`
+(commit `5bed1b9b69368f720bdb05759c5c8325c42b3eb0`).
+
+### Decisión — proveedor
+
+**Resend es el proveedor de correo entrante PRINCIPAL del MVP. Mailgun queda
+como fallback validado experimentalmente.** Los desempates que decidieron:
+identidad de evento estable entre reintentos (`svix-id`), catch-all nativo del
+dominio sin configuración, webhook de ~800 bytes constante incluso con
+adjuntos de 10 MB, metadata limpia de adjunto-vs-inline, y menor complejidad
+operativa — con la misma fidelidad byte-perfecta que Mailgun. La decisión
+**puede revisarse** si cambian el precio, los límites o las necesidades
+operativas (el precio es un hecho externo, no una medición del experimento).
+
+### Decisión — flujo de ACK
+
+**«Captura síncrona durable antes del ACK; procesamiento durable después del
+ACK.»** Tubería conceptual congelada:
+
+```
+webhook Resend verificado
+→ seleccionar recipient bajo el dominio controlado por Tribuu
+→ resolver Buzón Tribuu ACTIVO → company_id
+→ idempotencia
+→ recuperar la representación/evidencia necesaria entregada por Resend
+→ persistir intake/evidencia DURABLEMENTE en el ámbito de la empresa
+→ COMMIT
+→ devolver HTTP 2xx
+→ procesamiento posterior DURABLE
+```
+
+Si la captura durable falla antes del commit: **no se responde 2xx** y se
+permite el reintento del proveedor (ventana y cadencias medidas: Svix llegó a
+re-entregar 2 h 20 min después; Mailgun escaló 10→10→15→30→60 min). Una vez
+durable la evidencia, el parseo, la inteligencia documental, la conciliación,
+la clasificación económica y el Tax Engine **no controlan el ACK**. Queda
+prohibido usar `BackgroundTasks` de FastAPI como único mecanismo post-ACK: el
+trabajo posterior debe tener estado durable y reanudarse tras un reinicio. No
+se introduce Redis/SQS/etc. solo para recuperar transporte del proveedor en el
+MVP; el mecanismo físico durable post-ACK queda abierto para C4-B.
+
+### Decisión — idempotencia
+
+**Resend:** la identidad de evento es el `svix-id`, observado ESTABLE a través
+de todos los reintentos del mismo mensaje; se refuerza con procedencia/huella
+donde corresponda.
+
+**Mailgun (fallback):** `token`/`timestamp`/`signature` identifican el
+INTENTO, no el mensaje — cada reintento llega con material de firma nuevo
+(hecho medido: 6 intentos del mismo correo, 6 tokens distintos). **El token
+jamás se usa como clave de idempotencia de mensaje.** La correlación de
+mensaje se basa conceptualmente en `Message-Id` + recipient, reforzada con
+huella de contenido. La estrategia por proveedor vive detrás de una frontera
+pequeña (ADR-046), sin generalizarse a framework.
+
+### Decisión — durabilidad
+
+**El filesystem local del servicio NO es almacenamiento durable de
+evidencia.** El experimento lo confirmó empíricamente: un reinicio por cambio
+de variable de entorno borró el disco efímero del servicio. Toda evidencia
+aceptada vive en almacenamiento durable (PostgreSQL + almacén de objetos,
+según ADR-046) antes del ACK.
+
+### Invariantes reafirmadas (ADR-046)
+
+- Email Message ≠ Evidence Item ≠ Economic/Fiscal Document.
+- La dirección entrante es SOLO capacidad de enrutamiento/entrega: **jamás
+  autentica al remitente**.
+- El tenant deriva únicamente de: evento verificado del proveedor →
+  recipient bajo dominio controlado → Buzón Tribuu activo → `company_id`.
+- `From`/`Reply-To`/subject/cuerpo permanecen NO confiables.
+- El XML CR válido sigue yendo EXCLUSIVAMENTE por la ingesta C2: ningún
+  segundo parser ni persistencia fiscal ([ADR-044](#adr-044)).
+- `LLM ≠ Tax Engine`.
+
+### Lo que este ADR NO decide
+
+- El hosting de producción ([ADR-011](#adr-011) sigue abierto: el spike en
+  Render es EVIDENCIA — funcionó estable, Starter soportó la carga probada y
+  su disco es efímero — no una selección de producción).
+- El vendor de almacenamiento de objetos, el DNS del dominio de producción,
+  el TTL contractual de la recuperación de raw en Resend (hoy solo
+  observado), el mecanismo físico del worker post-ACK, ni el esquema físico
+  del canal (C4-B).

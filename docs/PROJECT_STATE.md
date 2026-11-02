@@ -71,7 +71,15 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
     C4-A — arquitectura de ingesta automatizada — COMPLETED
     ADR-046 — Buzón Tribuu e intake automatizado — ACCEPTED / COMPLETED
     C4-B — implementación — NOT STARTED
-    C4-B0 — decisión de proveedor e infraestructura — NEXT / NOT STARTED
+    C4-B0 — decisión de proveedor e infraestructura — COMPLETED
+      (batería completa T1/T3/T4/T5/T6/T7/T8/T9 contra receptor estable en Render ·
+       RESEND = proveedor entrante MVP · MAILGUN = fallback validado ·
+       regla congelada: captura durable síncrona antes del ACK, procesamiento
+       asíncrono durable después · ADR-047 ACEPTADA · evidencia en
+       docs/C4B0_PROVIDER_EVALUATION.md §11 · receptor canónico auditado en el
+       repo desechable tribuu-spike-inbound @ 5bed1b9; helpers/evidencia locales
+       no canónicos fuera de Git hasta el teardown)
+    C4-B — implementación del canal — NEXT / NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -89,7 +97,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: C4-B0 — decisión de proveedor e infraestructura del canal de correo.
+Next: C4-B — implementación del canal de correo (diseño físico primero).
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -2629,16 +2637,16 @@ cerrado en el Checkpoint B del Día 3. Se retira por obsoleta, no por levantarla
 
 ## Next Action
 
-**C4-B0 — decisión de proveedor e infraestructura del canal de correo.** C4-A está
-**COMPLETED** con el [ADR-046](DECISIONS.md#adr-046) aceptado; nada de C4 existe en
-código. C4-B0 evaluará con información real y actual: proveedor de correo entrante ·
-hosting del backend / webhook alcanzable (ADR-011) · DNS y dominio de recepción ·
-capacidades de firma/autenticación del webhook · semántica de reintentos y garantías
-de identidad de evento · entrega de adjuntos y disponibilidad de MIME/cuerpo crudo ·
-límites de payload y adjuntos · opciones de almacenamiento de objetos · precio y
-escalabilidad para pymes · idoneidad operativa CR/LATAM · postura de privacidad ·
-la decisión síncrono-vs-asíncrono · y si de verdad hace falta una cola/worker
-interno. Ningún proveedor queda seleccionado en este cierre.
+**C4-B — implementación del canal de correo.** C4-B0 está **COMPLETED**: batería
+experimental completa (T1/T3/T4/T5/T6/T7/T8/T9) con correos reales contra el
+receptor estable en Render, **Resend seleccionado como proveedor entrante del
+MVP y Mailgun validado como fallback**, y la regla congelada *captura durable
+síncrona antes del ACK / procesamiento asíncrono durable después* — todo con
+evidencia en [C4B0_PROVIDER_EVALUATION.md](C4B0_PROVIDER_EVALUATION.md) (§11,
+incluida la lista de pendientes previos a C4-B: rotación del webhook del
+spike, dominio de producción, ADR-011, almacén de objetos, TTL contractual
+del raw, identidad/RLS de máquina y worker durable post-ACK; ADR-047 ya
+está ACCEPTED).
 
 Sigue sin existir: documentos externos, ingesta por correo, WhatsApp, motor de
 notificaciones, Tax Engine, cálculo de IVA, clasificación venta/compra y reprocesador

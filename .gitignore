@@ -120,6 +120,15 @@ desktop.ini
 *.sublime-project
 
 # -----------------------------------------------------------------------------
+# Spike C4-B0 (ADR-047)
+# -----------------------------------------------------------------------------
+# SOLO este spike concreto: su fuente de verdad es el repo desechable auditado
+# tribuu-spike-inbound @ 5bed1b9. La copia de trabajo local (con helpers no
+# canonicos y evidencia descargada) permanece fuera de Git hasta el teardown.
+# Futuros directorios spikes/ NO quedan ocultos por esta regla.
+/spikes/c4b0-email-providers/
+
+# -----------------------------------------------------------------------------
 # Herramientas de agentes / trabajo local
 # -----------------------------------------------------------------------------
 .claude/settings.local.json
