@@ -70,6 +70,7 @@
 | [ADR-045](#adr-045) | Frontera web fiscal: Next.js de servidor → FastAPI → RLS de PostgreSQL | ✅ |
 | [ADR-046](#adr-046) | Buzón Tribuu: intake automatizado, evidencia empresarial y autorización de máquina | ✅ |
 | [ADR-047](#adr-047) | Resend como proveedor inbound MVP y captura durable antes del ACK | ✅ |
+| [ADR-048](#adr-048) | Identidad de máquina inbound y Buzón Tribuu provider-agnostic | ✅ |
 
 ---
 ---
@@ -3285,3 +3286,122 @@ según ADR-046) antes del ACK.
   el TTL contractual de la recuperación de raw en Resend (hoy solo
   observado), el mecanismo físico del worker post-ACK, ni el esquema físico
   del canal (C4-B).
+
+---
+
+<a id="adr-048"></a>
+
+## ADR-048 — Identidad de máquina inbound y Buzón Tribuu provider-agnostic
+
+**Estado:** ✅ Aceptada (Día 3, fase C4-B1) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-012](#adr-012) · [ADR-015](#adr-015) · [ADR-017](#adr-017) ·
+[ADR-020](#adr-020) · [ADR-044](#adr-044) · [ADR-046](#adr-046) · [ADR-047](#adr-047)
+
+### Contexto
+
+ADR-046/047 congelaron el modelo del canal —tenant por destinatario verificado,
+captura durable antes del ACK, Resend como proveedor MVP— y delegaron a C4-B1
+el mecanismo físico: cómo una entrega de correo, que no es una petición de
+usuario, obtiene acceso company-scoped bajo RLS, y dónde vive el registro de
+Buzones Tribuu.
+
+### Decisión — registro provider-agnostic
+
+`inbound.company_inboxes` representa el **Buzón Tribuu de la empresa, no un
+buzón de un proveedor**: no tiene columna de proveedor; qué infraestructura
+recibe el dominio es asunto de la capa de entrega (C4-B2/B3), y cambiar de
+proveedor conserva la dirección. **Máximo UN buzón ACTIVO por empresa**
+(índice parcial único por `company_id`). La **dirección es CANÓNICA y la
+genera la base** (`prefijo-token@inbox.tribuu.ai`, columna GENERATED ALWAYS
+STORED): una sola fuente de verdad, dominio controlado por construcción,
+alfabetos verificados por CHECK — los CHECK validan FORMA y longitud; la
+entropía (token base32 minúsculo, CSPRNG, 20 caracteres = 100 bits) la
+garantizan el backend y sus tests, jamás un CHECK. El mapeo entre dominios de
+ENTREGA (producción o pruebas de proveedor) y la dirección canónica pertenece
+al adaptador de intake (C4-B2) con allowlist de configuración: el registro
+nunca aprende proveedores.
+
+El **ciclo de vida es monotónico**: `active → disabled`, jamás al revés; una
+fila deshabilitada queda CONGELADA (trigger de guardia + grants de UPDATE por
+columna); no existe DELETE físico. La **rotación** es `disable('rotated') +
+insert nuevo` en una transacción, con linaje `rotated_from_id` protegido por
+**FK compuesta tenant-safe** `(company_id, rotated_from_id) →
+(company_id, id)`, verificación por trigger de que el predecesor está
+deshabilitado por rotación, y unicidad de sucesor. La dirección es capability
+de routing/submission y **nunca autentica al remitente**.
+
+`created_by` es **procedencia real** vía `private.current_user_id()` —
+SECURITY DEFINER que encapsula `auth.uid()`: ningún rol de datos obtiene
+acceso nuevo a `auth.*`, el DEFAULT la puebla y el WITH CHECK del INSERT la
+exige — el cliente no puede suministrar procedencia arbitraria, y un INSERT
+sin identidad autenticada falla. El aprovisionamiento no-humano, si llega,
+traerá su propio discriminador por ADR.
+
+### Decisión — identidad de máquina
+
+Rol **`inbound_backend`**: NOLOGIN, NOBYPASSRLS, NOINHERIT, asumible solo por
+`app_backend` vía `SET LOCAL ROLE` (patrón ADR-020), con topología verificada
+en la migración y en el arranque del backend. El contexto de empresa **se
+resuelve EN la base**: `private.enter_inbound_context(recipient)` (SECURITY
+DEFINER; EXECUTE solo para el rol máquina) es **fail-closed**: LIMPIA el
+contexto al inicio de cada invocación y solo lo establece ante EXACTAMENTE un
+buzón activo — cero coincidencias → NULL con contexto vacío; múltiples →
+violación de invariante con error (cardinalidad por `INTO STRICT` con manejo
+explícito de NO_DATA_FOUND/TOO_MANY_ROWS); un contexto previo jamás sobrevive
+a una resolución fallida. **El llamante solo aporta el recipient** — nunca
+company_id ni inbox_id — y el context manager del backend
+(`inbound_transaction(pool, settings, recipient)`) tampoco los acepta en su
+firma. Los lectores `private.inbound_inbox_id()` / `private.inbound_company_id()`
+parsean el GUC defensivamente (vacío/malformado → NULL) y **revalidan el par
+contra un buzón ACTIVO real en cada chequeo**: un GUC forjado o un buzón
+rotado a mitad de transacción niegan en el acto. El rol máquina no tiene
+SELECT del registro. El contexto es transaction-local (`is_local`) y muere en
+COMMIT/ROLLBACK.
+
+Los **grants fiscales de la máquina están medidos sobre el C2 real, por
+columna donde la operación lo permite**: en `fiscal.source_documents`, UPDATE
+solo sobre las nueve columnas de ciclo de vida/enlace (`parse_status,
+parse_error, parse_attempt_count, parse_attempted_at,
+schema_detection_status, detected_document_type, detected_schema_version,
+electronic_document_id, updated_at`) — `raw_xml`, `content_sha256`,
+`company_id`, `ingested_at`, `ingestion_source` e `id` quedan sin privilegio
+de mutación; SELECT solo de las columnas que C2 lee; INSERT en documento e
+hijas por el camino canónico (las cláusulas `RETURNING id` reales exigen
+SELECT de `id` también en `document_lines`). Las políticas de máquina sobre
+las tablas fiscales usan exclusivamente `company_id =
+private.inbound_company_id()`, sin tocar las políticas de `fiscal_backend`.
+**Ningún segundo parser ni persistencia fiscal: C2 sigue canónico.** Un evento
+con N destinatarios Tribuu produce **N transacciones máquina independientes**;
+un contexto jamás abarca dos empresas; identidad conceptual de idempotencia:
+`(provider, provider_event_id, inbox_id)` (física en C4-B2/B3).
+
+### Frontera de confianza
+
+La autoridad para invocar `enter_inbound_context` descansa en el **trusted
+backend tier** — la misma frontera que gobierna `request.jwt.claims`
+(ADR-012): un `app_backend` comprometido es un compromiso de ese tier,
+residual aceptado. Las defensas son la frontera de backend, los roles
+restringidos, el contexto resuelto en base de datos, RLS, los grants mínimos
+y el estado transaction-local. Sin `service_role`, sin usuario ficticio, sin
+JWT de navegador para M2M, sin BYPASSRLS.
+
+### Alternativas rechazadas
+
+`SET LOCAL app.company_id = <uuid>` elegido por el llamante (sin ancla en
+estado durable verificable) · envolver el camino fiscal en funciones SECURITY
+DEFINER (duplicaría C2; prohibido por ADR-044/046) · `service_role`/BYPASSRLS
+· usuario sintético con claims fabricadas · registro por proveedor con
+unicidad `(company, provider)` (ataría la identidad del buzón a la
+infraestructura y rompería la portabilidad de dirección) · dirección como
+columna libre con CHECKs (tres fuentes de verdad divergibles) ·
+`default auth.uid()` directo en la tabla (habría exigido ampliar el acceso de
+`fiscal_backend` a `auth.*`) · rol humano nuevo `inbound_admin` (se reutiliza
+`fiscal_backend`: el registro es parte de la frontera del canal fiscal) ·
+exponer `inbound` por la Data API (frontera backend-only, como `fiscal`).
+
+### Lo que este ADR NO decide
+
+Adaptador Resend / verificación Svix / extracción y canonicalización del
+recipient (C4-B2) · tablas de intake, RAW durable y vendor de objetos (C4-B3)
+· ACK físico y worker durable post-ACK (C4-B3/B4) · constraint física de
+idempotencia · hosting (ADR-011) · aprovisionamiento no-humano de buzones.

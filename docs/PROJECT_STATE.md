@@ -79,7 +79,11 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
        docs/C4B0_PROVIDER_EVALUATION.md §11 · receptor canónico auditado en el
        repo desechable tribuu-spike-inbound @ 5bed1b9; helpers/evidencia locales
        no canónicos fuera de Git hasta el teardown)
-    C4-B — implementación del canal — NEXT / NOT STARTED
+    C4-B — implementación del canal — IN PROGRESS
+      C4-B1 — autorización de máquina y registro de Buzones Tribuu — COMPLETED
+        (Codex final PASS · ADR-048 ACEPTADO · migración 20261102120000 aplicada ·
+         20=20 sin drift · focused 43/43 · backend 1243/1243)
+      C4-B2 — adaptador Resend / verificación Svix — NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -97,7 +101,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: C4-B — implementación del canal de correo (diseño físico primero).
+Next: C4-B2 — adaptador Resend / verificación Svix / extracción de recipient.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -2647,6 +2651,59 @@ incluida la lista de pendientes previos a C4-B: rotación del webhook del
 spike, dominio de producción, ADR-011, almacén de objetos, TTL contractual
 del raw, identidad/RLS de máquina y worker durable post-ACK; ADR-047 ya
 está ACCEPTED).
+
+**C4-B1 — COMPLETED (Codex final PASS, 2026-11-05).** Buzón Tribuu registry
+provider-agnostic e `inbound_backend` implementados; autorización de máquina y
+RLS de mínimo privilegio verificadas; C2 end-to-end bajo `inbound_backend`
+verificado; focused 43/43, backend completo 1243/1243; H1/L1/L2 RESUELTOS;
+advisor FK aceptado como INFO (sin migración); credencial DEV rotada tras el
+incidente de exposición de la auditoría (sin incluir ningún secreto).
+Supabase DEV `ACTIVE_HEALTHY`. Migración
+`20261102120000_create_inbound_inbox_registry.sql` aplicada — 20 local = 20
+remoto, sin drift previo (las 19 anteriores ya estaban en DEV; C4-B1 era la
+única pendiente). Creados por [ADR-048](DECISIONS.md#adr-048): schema
+backend-only `inbound` (fuera de la Data API; `schemas=["public","graphql_public"]`),
+`inbound.company_inboxes` (dirección canónica GENERATED, un activo global por
+empresa, lifecycle monotónico, linaje tenant-safe, `created_by` por
+`private.current_user_id()`), rol `inbound_backend` (NOLOGIN/NOBYPASSRLS/
+NOINHERIT/NOSUPERUSER; `service_role` no lo alcanza), contexto de máquina
+fail-closed (`enter_inbound_context` + getters que revalidan contra buzón
+ACTIVO), RLS humana (owner/editor administran, viewer lee, no-miembro nada) y
+de máquina (`inbound_company_id()`), y grants mínimos medidos sobre C2 (incl.
+`document_lines SELECT(id)` por `RETURNING id`). Verificación directa en
+PostgreSQL A–F en verde.
+
+**Conteo de tests (ejecución final 2026-11-04).** El archivo
+`backend/tests/test_inbound_registry.py` tiene **37 funciones `test_`** que
+pytest expande a **43 casos** por parametrización (`pytest -q` →
+`43 passed`). Incluye la **regresión end-to-end C2 bajo `inbound_backend`**
+añadida para cerrar el gap L2 de Codex: 3 funciones nuevas que invocan los
+primitivos PRODUCTIVOS `capture_source_document` / `process_source_document`
+dentro de `inbound_transaction()` (sin reimplementar C2). El dato previo
+«32/32» era incorrecto —mezclaba funciones con casos—; se corrige aquí.
+`test_backend_role.py` 16/16. Regresión completa del backend **1243/1243**
+(incluye auth/identity/RLS/memberships/C1/C2; el test de topología de roles
+se amplió a tres membresías sin debilitarse, ADR-048).
+
+**Hallazgo del gap L2 (cerrado, sin cambiar grants).** La regresión E2E
+confirmó que C2 canónico corre bajo `inbound_backend` con el mínimo exacto
+ya concedido; el único ajuste fue en el propio test (su query de
+verificación leía `ingestion_source`, columna que la máquina escribe pero no
+tiene en SELECT —C2 nunca la relee—: esos hechos se verifican ahora por el
+camino humano `fiscal_backend`). Ningún privilegio ampliado.
+
+**Advisor FK (INFO/aceptado, no se corrige).** `company_inboxes_rotated_from_fkey`
+es `(company_id, rotated_from_id) → (company_id, id)`; el advisor sugeriría
+un índice sobre `(company_id, rotated_from_id)`, pero ya existe
+`UNIQUE (rotated_from_id) WHERE rotated_from_id IS NOT NULL` (un sucesor por
+predecesor) que lo cubre. No se añade índice solo para silenciar el advisor.
+
+Advisors-equivalente limpios (search_path fijado en las 4 funciones, RLS en
+todo `inbound`, sin grants a anon/authenticated). Credencial PostgreSQL de DEV
+**rotada manualmente** tras el incidente de exposición de la auditoría; la
+conexión opera con la nueva (verificado por `verify_backend_role`, sin
+imprimir secretos). **1 migración · 0 cambios de comportamiento fiscal ·
+0 dependencias.**
 
 Sigue sin existir: documentos externos, ingesta por correo, WhatsApp, motor de
 notificaciones, Tax Engine, cálculo de IVA, clasificación venta/compra y reprocesador

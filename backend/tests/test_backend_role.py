@@ -56,13 +56,15 @@ def test_role_can_login(role_row):
 
 
 def test_role_memberships_are_minimal(pool, settings):
-    """Exactamente `authenticated` y `fiscal_backend`, y sin herencia.
+    """Exactamente `authenticated`, `fiscal_backend` e `inbound_backend`, sin herencia.
 
-    ADR-020 añadió `fiscal_backend` a las pertenencias de `app_backend`. La
-    aserción se amplía, pero NO se debilita: además del conjunto exacto se exige
-    ahora que ninguna pertenencia se herede automáticamente. Una pertenencia con
-    `inherit_option=true` daría a toda conexión del pool los privilegios del rol
-    fiscal sin haberlos pedido, que es justo lo que la frontera evita.
+    ADR-020 añadió `fiscal_backend` a las pertenencias de `app_backend`; ADR-048
+    añadió `inbound_backend` por la misma vía (NOINHERIT, SET permitido, sin
+    admin). La aserción se amplía, pero NO se debilita: además del conjunto
+    exacto se exige a CADA pertenencia que no se herede automáticamente. Una
+    pertenencia con `inherit_option=true` daría a toda conexión del pool los
+    privilegios del rol sin haberlos pedido, que es justo lo que la frontera
+    evita.
     """
     with anonymous_transaction(pool, settings) as conn:
         rows = conn.execute(
@@ -77,7 +79,7 @@ def test_role_memberships_are_minimal(pool, settings):
             (ROLE,),
         ).fetchall()
     memberships = {r["member_of"] for r in rows}
-    assert memberships == {"authenticated", "fiscal_backend"}
+    assert memberships == {"authenticated", "fiscal_backend", "inbound_backend"}
     assert "service_role" not in memberships
     assert "anon" not in memberships
 

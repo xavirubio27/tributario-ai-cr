@@ -52,6 +52,7 @@ from app.config import BACKEND_DB_ROLE, Settings
 # blanca antes de interpolarse.
 TENANCY_DB_ROLE = "authenticated"    # public.companies, public.company_memberships
 FISCAL_DB_ROLE = "fiscal_backend"    # schema fiscal, no expuesto por la Data API
+INBOUND_DB_ROLE = "inbound_backend"  # canal inbound (ADR-048); contexto por recipient, sin claims de usuario
 
 _ALLOWED_DB_ROLES = frozenset({TENANCY_DB_ROLE, FISCAL_DB_ROLE})
 
@@ -92,7 +93,7 @@ _REQUIRED_ROLE_ATTRIBUTES = {
 # `fiscal` por defecto: solo lo alcanza dentro de `fiscal_transaction`, que hace
 # `SET LOCAL ROLE fiscal_backend` y lo revierte al terminar la transacción.
 _REQUIRED_MEMBERSHIP_OPTIONS = {"inherit_option": False, "set_option": True, "admin_option": False}
-_ALLOWED_MEMBERSHIPS = frozenset({TENANCY_DB_ROLE, FISCAL_DB_ROLE})
+_ALLOWED_MEMBERSHIPS = frozenset({TENANCY_DB_ROLE, FISCAL_DB_ROLE, INBOUND_DB_ROLE})
 
 # ── Relación INVERSA: quién puede asumir `fiscal_backend` ─────────────────────
 #
@@ -133,6 +134,50 @@ _FISCAL_ROLE_EXPECTED_MEMBERS: dict[str, dict[str, bool]] = {
 _FISCAL_ROLE_SET_ROLE_CLOSURE = frozenset({BACKEND_DB_ROLE})
 
 
+# `inbound_backend` (ADR-048) replica la topologia de `fiscal_backend`.
+_INBOUND_ROLE_EXPECTED_MEMBERS: dict[str, dict[str, bool]] = {
+    BACKEND_DB_ROLE: {"inherit_option": False, "set_option": True, "admin_option": False},
+    "postgres": {"inherit_option": False, "set_option": False, "admin_option": True},
+}
+_INBOUND_ROLE_SET_ROLE_CLOSURE = frozenset({BACKEND_DB_ROLE})
+
+
+def _check_execution_role_members(
+    rows: list[dict],
+    closure: set[str],
+    role_name: str,
+    expected_members: dict[str, dict[str, bool]],
+    expected_closure: frozenset[str],
+    adr: str,
+) -> None:
+    """Valida la relación inversa de un rol de ejecución. Pura, para poder probarla."""
+    members = {row["member"] for row in rows}
+    expected = set(expected_members)
+    if members != expected:
+        extra = sorted(members - expected)
+        missing = sorted(expected - members)
+        raise RoleVerificationError(
+            f"Miembros inesperados de {role_name!r}: sobran {extra}, faltan {missing}. "
+            f"Alguien puede asumir el rol sin haberlo declarado ({adr})."
+        )
+
+    for row in rows:
+        expected_opts = expected_members[row["member"]]
+        wrong = {k: row[k] for k, v in expected_opts.items() if row[k] is not v}
+        if wrong:
+            detalle = ", ".join(f"{k}={v}" for k, v in sorted(wrong.items()))
+            raise RoleVerificationError(
+                f"La pertenencia {row['member']!r} -> {role_name!r} tiene "
+                f"opciones incorrectas: {detalle} ({adr})."
+            )
+
+    if closure != set(expected_closure):
+        raise RoleVerificationError(
+            f"Roles capaces de `SET ROLE {role_name}`: {sorted(closure)}; "
+            f"se esperaba {sorted(expected_closure)} ({adr})."
+        )
+
+
 def _check_fiscal_role_members(rows: list[dict], closure: set[str]) -> None:
     """Valida la relación inversa de `fiscal_backend`. Pura, para poder probarla.
 
@@ -140,31 +185,18 @@ def _check_fiscal_role_members(rows: list[dict], closure: set[str]) -> None:
     miembro inesperado y comprobar que la verificación falla, sin necesidad de
     crear roles reales en la base de datos.
     """
-    members = {row["member"] for row in rows}
-    expected = set(_FISCAL_ROLE_EXPECTED_MEMBERS)
-    if members != expected:
-        extra = sorted(members - expected)
-        missing = sorted(expected - members)
-        raise RoleVerificationError(
-            f"Miembros inesperados de {FISCAL_DB_ROLE!r}: sobran {extra}, faltan {missing}. "
-            "Alguien puede asumir el rol fiscal sin haberlo declarado (ADR-020)."
-        )
+    _check_execution_role_members(
+        rows, closure, FISCAL_DB_ROLE,
+        _FISCAL_ROLE_EXPECTED_MEMBERS, _FISCAL_ROLE_SET_ROLE_CLOSURE, "ADR-020",
+    )
 
-    for row in rows:
-        expected_opts = _FISCAL_ROLE_EXPECTED_MEMBERS[row["member"]]
-        wrong = {k: row[k] for k, v in expected_opts.items() if row[k] is not v}
-        if wrong:
-            detalle = ", ".join(f"{k}={v}" for k, v in sorted(wrong.items()))
-            raise RoleVerificationError(
-                f"La pertenencia {row['member']!r} -> {FISCAL_DB_ROLE!r} tiene "
-                f"opciones incorrectas: {detalle} (ADR-020)."
-            )
 
-    if closure != set(_FISCAL_ROLE_SET_ROLE_CLOSURE):
-        raise RoleVerificationError(
-            f"Roles capaces de `SET ROLE {FISCAL_DB_ROLE}`: {sorted(closure)}; "
-            f"se esperaba {sorted(_FISCAL_ROLE_SET_ROLE_CLOSURE)} (ADR-020)."
-        )
+def _check_inbound_role_members(rows: list[dict], closure: set[str]) -> None:
+    """Valida la relación inversa de `inbound_backend` (ADR-048). Pura."""
+    _check_execution_role_members(
+        rows, closure, INBOUND_DB_ROLE,
+        _INBOUND_ROLE_EXPECTED_MEMBERS, _INBOUND_ROLE_SET_ROLE_CLOSURE, "ADR-048",
+    )
 
 
 # Cierre transitivo de `SET ROLE` sobre `fiscal_backend`, excluyendo superusuarios.
@@ -311,6 +343,53 @@ def verify_backend_role(pool: ConnectionPool) -> None:
         }
         _check_fiscal_role_members([dict(r) for r in fiscal_member_rows], closure)
 
+        # ── `inbound_backend` (ADR-048): mismos limites duros y relacion inversa ──
+        inbound_attrs = conn.execute(
+            """
+            select rolcanlogin, rolsuper, rolbypassrls,
+                   rolinherit, rolcreaterole, rolcreatedb, rolreplication
+            from pg_roles where rolname = %s
+            """,
+            (INBOUND_DB_ROLE,),
+        ).fetchone()
+        if inbound_attrs is None:
+            raise RoleVerificationError(f"El rol {INBOUND_DB_ROLE!r} no existe (ADR-048).")
+        inbound_wrong = {
+            k: inbound_attrs[k]
+            for k, expected in _REQUIRED_ROLE_ATTRIBUTES.items()
+            if k != "rolcanlogin" and inbound_attrs[k] is not expected
+        }
+        if inbound_attrs["rolcanlogin"]:
+            inbound_wrong["rolcanlogin"] = True   # NO inicia sesion
+        if inbound_attrs["rolreplication"]:
+            inbound_wrong["rolreplication"] = True
+        if inbound_attrs["rolinherit"]:
+            inbound_wrong["rolinherit"] = True    # NOINHERIT exigido (ADR-048)
+        if inbound_wrong:
+            detalle = ", ".join(f"{k}={v}" for k, v in sorted(inbound_wrong.items()))
+            raise RoleVerificationError(
+                f"El rol {INBOUND_DB_ROLE!r} tiene atributos incorrectos: {detalle}."
+            )
+
+        inbound_member_rows = conn.execute(
+            """
+            select mem.rolname as member,
+                   am.inherit_option, am.set_option, am.admin_option
+            from pg_auth_members am
+            join pg_roles r   on r.oid = am.roleid
+            join pg_roles mem on mem.oid = am.member
+            where r.rolname = %s
+            """,
+            (INBOUND_DB_ROLE,),
+        ).fetchall()
+        inbound_closure = {
+            row["rol"]
+            for row in conn.execute(
+                _FISCAL_SET_ROLE_CLOSURE_SQL, {"fiscal": INBOUND_DB_ROLE}
+            ).fetchall()
+        }
+        _check_inbound_role_members([dict(r) for r in inbound_member_rows], inbound_closure)
+
         for role in _FORBIDDEN_REACHABLE_ROLES:
             reachable = conn.execute(
                 "select pg_has_role(%s, %s, 'MEMBER') as can", (BACKEND_DB_ROLE, role)
@@ -448,6 +527,46 @@ def fiscal_transaction(
     del settings
     with _identified_transaction(pool, user, FISCAL_DB_ROLE) as conn:
         yield conn
+
+
+class InboundContextError(DatabaseError):
+    """El recipient no resolvió a ningún Buzón Tribuu ACTIVO: no se abre trabajo."""
+
+
+@contextmanager
+def inbound_transaction(
+    pool: ConnectionPool, settings: Settings, recipient: str
+) -> Iterator[Connection]:
+    """Transacción de MÁQUINA del canal inbound (ADR-048).
+
+    La firma NO acepta company_id, inbox_id ni usuario: el único insumo es el
+    RECIPIENT (en producción, extraído de un evento del proveedor ya verificado
+    — responsabilidad de C4-B2). La transición recipient → buzón ACTIVO →
+    company la resuelve la BASE DE DATOS dentro de
+    `private.enter_inbound_context`, que además limpia cualquier contexto
+    previo antes de resolver (fail-closed).
+
+    Si el recipient no corresponde a un buzón activo, levanta
+    `InboundContextError` sin ceder jamás la conexión: no se abre trabajo de
+    tenant. El contexto es transaction-local y muere en COMMIT/ROLLBACK, igual
+    que la identidad de usuario de `_identified_transaction`.
+    """
+    if not isinstance(recipient, str) or not recipient.strip():
+        raise InboundContextError("recipient vacío: no hay nada que resolver.")
+
+    del settings  # el rol es un invariante de código, no configuración
+    with pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(f"SET LOCAL ROLE {INBOUND_DB_ROLE}")
+            fila = conn.execute(
+                "select private.enter_inbound_context(%s) as company_id",
+                (recipient,),
+            ).fetchone()
+            if fila["company_id"] is None:
+                raise InboundContextError(
+                    "El recipient no corresponde a ningún Buzón Tribuu activo."
+                )
+            yield conn
 
 
 @contextmanager
