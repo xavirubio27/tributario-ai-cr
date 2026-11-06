@@ -72,6 +72,7 @@
 | [ADR-047](#adr-047) | Resend como proveedor inbound MVP y captura durable antes del ACK | ✅ |
 | [ADR-048](#adr-048) | Identidad de máquina inbound y Buzón Tribuu provider-agnostic | ✅ |
 | [ADR-049](#adr-049) | Adaptador inbound de Resend, verificación Svix e identidad de evento | ✅ |
+| [ADR-050](#adr-050) | Abstracción EvidenceBlob: BYTEA inicial y migración planificada a Object Storage | 📝 |
 
 ---
 ---
@@ -3507,3 +3508,104 @@ captura durable y recién entonces activará el endpoint real con ACK. No se usa
 `BackgroundTasks` como sustituto de captura durable. Sin `service_role`, sin
 JWT de navegador, sin usuario/membresía ficticios. La idempotencia física, el
 RAW durable, los adjuntos y el ACK pertenecen a C4-B3.
+
+---
+
+<a id="adr-050"></a>
+
+## ADR-050 — Abstracción EvidenceBlob: BYTEA inicial y migración planificada a Object Storage
+
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de revisión/aprobación · **Criticidad: alta**
+
+> **Alcance del estado.** La evolución CONCEPTUAL de almacenamiento
+> `postgres_bytea` (MVP) → `object_storage` (futuro), junto con su invariante de
+> identidad y la deuda técnica «Evidence Blob Object Storage migration», está
+> **aprobada**. El resto del ADR —diseño FÍSICO de C4-B3: captura durable
+> pre-ACK, RAW RFC822, `EvidenceBlob`, provider events, email messages,
+> idempotencia, conflictos, tenancy, lifecycle y semántica de errores— está
+> **PROPUESTO y aún no revisado/aprobado**. Por tanto ADR-050 **no es ACCEPTED
+> todavía**; pasará a ✅ cuando el diseño físico se revise y se acepte.
+
+
+**Relacionada con:** [ADR-044](#adr-044) · [ADR-046](#adr-046) · [ADR-047](#adr-047) ·
+[ADR-048](#adr-048) · [ADR-049](#adr-049)
+
+### Contexto
+
+C4-B3 capturará evidencia inbound durable antes del ACK (ADR-047). El backend
+durable INICIAL del MVP/pilotos será **PostgreSQL BYTEA**, porque permite que
+metadata, bytes e idempotencia queden bajo UNA sola transacción PostgreSQL
+antes de responder 2xx — la atomicidad pre-ACK que ADR-047 exige. Esa elección
+**no es la arquitectura final para escala**: los bytes pesados deberán vivir en
+Object Storage antes de escala comercial significativa. Para que esa migración
+futura no obligue a reescribir C4-B4, C2 ni los consumidores de evidencia, la
+abstracción debe desacoplarse DESDE AHORA.
+
+### Decisión — desacoplar identidad lógica de ubicación física
+
+Se introduce la abstracción conceptual **`EvidenceBlob`**: separa la IDENTIDAD
+LÓGICA de una evidencia de la UBICACIÓN FÍSICA de sus bytes. Los consumidores
+posteriores (C4-B4, C2, inteligencia documental, conciliación) dependen del
+`EvidenceBlob`, **nunca directamente de una columna BYTEA**.
+
+```text
+EmailMessage
+    ↓ raw_blob_id
+EvidenceBlob
+    ├── id
+    ├── company_id
+    ├── sha256
+    ├── size_bytes
+    ├── storage_backend          (MVP: 'postgres_bytea'; futuro: 'object_storage')
+    ├── bytes en PostgreSQL / locator inicial
+    ├── object key/locator futuro
+    ├── created_at
+    └── provenance
+```
+
+**MVP** — `storage_backend = 'postgres_bytea'`: los bytes viven en PostgreSQL,
+atomicidad pre-ACK garantizada. **Target futuro** — `storage_backend =
+'object_storage'`: los bytes pesados en Object Storage y PostgreSQL conserva
+blob/evidence id, company_id, SHA-256, size, provenance, storage_backend,
+object key/locator, lifecycle/status y las relaciones con EmailMessage/Evento
+— es decir, PostgreSQL permanece como ÍNDICE y fuente de verdad de metadata,
+no de bytes.
+
+El diseño físico EXACTO (nombres de tablas/columnas, tipos, constraints) se
+decide en C4-B3, pero debe preservar esta abstracción.
+
+### Invariante
+
+**Mover una evidencia entre backends NO cambia su identidad.** La identidad y
+la verificación dependen de `blob/evidence id` + `SHA-256` + `size/provenance`,
+jamás de la ubicación física. Un consumidor que pida un `EvidenceBlob` por su
+id obtiene los mismos bytes verificables con independencia del backend.
+
+### Migración futura segura (mínimo obligatorio)
+
+1. leer el BYTEA original;
+2. verificar su SHA-256;
+3. subir a Object Storage;
+4. recuperar/verificar el objeto almacenado;
+5. comprobar mismo SHA-256 y tamaño;
+6. actualizar de forma transaccional el locator/backend en PostgreSQL;
+7. solo tras verificación exitosa, permitir eliminar el BYTEA;
+8. nunca perder la única copia durable durante la transición.
+
+### Deuda técnica planificada — «Evidence Blob Object Storage migration»
+
+> C4-B3 usa PostgreSQL BYTEA como backend durable inicial para obtener
+> atomicidad pre-ACK durante MVP/pilotos. Esta elección no es permanente. Antes
+> de escala comercial significativa, los blobs de evidencia deberán migrarse a
+> Object Storage. PostgreSQL permanecerá como índice y fuente de verdad de
+> metadata, provenance, hash, tenant y ubicación lógica.
+
+**`PostgreSQL BYTEA MUST NOT be treated as the permanent scaled storage backend.`**
+
+### Lo que este ADR NO decide / NO hace
+
+No implementa Object Storage en C4-B3 · no introduce credenciales de S3 /
+Storage ahora · no fija el esquema físico del `EvidenceBlob` (eso es C4-B3) ·
+no toca C2, Tax Engine ni consumidores existentes. Solo fija la abstracción
+para que la migración futura no requiera reescribir C4-B4, C2 ni los
+consumidores de evidencia.
