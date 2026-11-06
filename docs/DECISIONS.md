@@ -33,12 +33,12 @@
 | [ADR-008](#adr-008) | Precisión monetaria decimal exacta | ✅ |
 | [ADR-009](#adr-009) | Knowledge Base compartida vs. datos fiscales aislados | ✅ |
 | [ADR-010](#adr-010) | `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma | ✅ |
-| [ADR-011](#adr-011) | Hosting del backend FastAPI | ⏳ |
+| [ADR-011](#adr-011) | Hosting del backend FastAPI | 📝 |
 | [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ✅ |
 | [ADR-013](#adr-013) | Proveedor LLM inicial | ⏳ |
 | [ADR-014](#adr-014) | Estrategia de embeddings | ⏳ |
 | [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ✅ |
-| [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | ⏳ |
+| [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | 📝 |
 | [ADR-017](#adr-017) | Frontera entre datos de identidad/tenancy y datos fiscales | ✅ |
 | [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
 | [ADR-019](#adr-019) | Confirmación de email desactivada solo en desarrollo | ✅ |
@@ -408,30 +408,68 @@ envejecer bien si el equipo crece.
 <a id="adr-011"></a>
 ## ADR-011 — Hosting del backend FastAPI
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de aceptación · **A cerrar en:** antes de
+implementar C4-B3 · **Relacionada con:** [ADR-016](#adr-016) · [ADR-047](#adr-047) ·
+diseño `docs/design/C4-B3.md`
 
-### Contexto
+> **DRAFT abierto por mandato del orquestador (C4-B3).** No se acepta todavía. No se
+> despliega. Las cifras de costo exactas deben verificarse en el momento de decidir
+> (cambian con frecuencia): aquí se comparan **modelos** de costo, no precios.
 
-El hosting del frontend está previsto en Vercel. Para el backend solo se ha definido
-"servicio administrado compatible con FastAPI", sin elección concreta.
+### Contexto y alcance ampliado
 
-### Por qué importa
+El frontend va en Vercel. El backend se definió como "servicio administrado compatible
+con FastAPI", sin elección concreta. **C4-B3 amplía el alcance:** el hosting debe soportar
+DOS cargas distintas:
 
-La elección condiciona la Fase 2. Si el servicio tiene arranques en frío o límites
-estrictos de duración de petición, la ingesta de XML no podrá procesarse de forma
-síncrona y requerirá procesamiento en segundo plano (**ADR-016**).
+1. **Endpoint webhook (HTTP, síncrono):** debe responder **2xx en ≤15 s** (timeout Svix
+   verificado). Un arranque en frío que consuma ese presupuesto es inaceptable en el
+   camino del ACK.
+2. **Worker durable (proceso de larga vida):** la fase 2 de C4-B3 (ADR-016) sondea una
+   cola/outbox en PostgreSQL, descarga el RAW (hasta 64 MiB) y lo persiste. Necesita un
+   **proceso persistente**, no una función efímera por petición, y memoria suficiente
+   (≈ `W × 64 MiB`).
 
-También condiciona: gestión de secretos, conectividad con Supabase, observabilidad,
-backups y costes.
+### Criterios de selección
 
-### Qué falta
+Soporte de **worker de larga vida**; **cold start** nulo o mínimo en el servicio web;
+límites de duración/memoria de petición (la fase 1 es corta; la fase 2 vive en el worker);
+gestión de **secretos** (`RESEND_WEBHOOK_SECRET` rotado, credenciales de DB);
+**conectividad y latencia a Supabase** (región/US); **observabilidad** (logs/métricas);
+**backups**; **facilidad de despliegue** (desde GitHub); **modelo de costo** (always-on vs
+scale-to-zero vs por-petición); **región**; carga operativa.
 
-Definir criterios de selección (coste, arranque en frío, límites de ejecución, región,
-facilidad de despliegue, observabilidad) y evaluar opciones concretas.
+### Alternativas (matriz cualitativa `[PROPUESTO]`)
 
-### Situación actual
+| Opción | Worker larga vida | Cold start web | Límites req | Despliegue | Modelo de costo | Carga ops |
+|---|---|---|---|---|---|---|
+| **Render** (usado en spike C4-B0) | ✔ (background worker + cron) | evitable (always-on de pago) | holgados | GitHub nativo | always-on / por servicio | baja |
+| **Fly.io** | ✔ (machines persistentes) | configurable (evitar scale-to-zero en web) | holgados | CLI/GitHub | por máquina/uso | media |
+| **Railway** | ✔ (servicios + worker) | evitable | holgados | GitHub | por uso | baja-media |
+| **Vercel** (frontend ya aquí) | ✖ (funciones efímeras) | sí (serverless) | estrictos (duración) | GitHub | por invocación | baja |
+| **AWS (Fargate/App Runner + Lambda)** | ✔ | evitable | configurables | más setup | granular | alta |
+| **VPS** (p. ej. Hetzner/DO) | ✔ | n/a (always-on) | ninguno impuesto | manual | compute plano | alta (parcheo, TLS) |
 
-Abierta. No bloquea la Fase 0.
+### Opción líder provisional `[PROPUESTO, NO ACEPTADO]`
+
+Un **PaaS de contenedores** que ejecute **web service always-on + background worker + cron**
+desde GitHub (p. ej. **Render** —ya validado en el spike C4-B0— o **Fly.io**), porque:
+soporta el worker durable sin reintroducir serverless con cold start en el camino del ACK;
+despliega ambos procesos desde el mismo repo; secretos y conectividad a Supabase sencillos.
+**Frontend permanece en Vercel.** Vercel queda descartado para el backend por el worker de
+larga vida y los límites de duración.
+
+### Seguridad y despliegue
+
+Secretos en el gestor del proveedor (nunca en el repo; `RESEND_WEBHOOK_SECRET` rotado,
+jamás el del spike); egress/TLS a Supabase; aislamiento del proceso worker; observabilidad
+con logs estructurados sin PII (ver `docs/design/C4-B3.md` §4.9).
+
+### Lo que este ADR NO decide / NO hace
+
+No se acepta la opción todavía · no se despliega nada · no se fijan precios (verificar
+vigentes al decidir) · no se crea infraestructura. Depende de este ADR el dimensionado de
+concurrencia/memoria del worker de ADR-016.
 
 ---
 
@@ -679,28 +717,66 @@ dato fiscal. Es la fuente que consultará el mecanismo de [ADR-012](#adr-012).
 <a id="adr-016"></a>
 ## ADR-016 — Estrategia de procesamiento en segundo plano
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 2
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de aceptación · **A cerrar en:** antes de
+implementar C4-B3 (fase 2) · **Relacionada con:** [ADR-011](#adr-011) · [ADR-047](#adr-047)
+· [ADR-049](#adr-049) · diseño `docs/design/C4-B3.md`
+
+> **DRAFT abierto por mandato del orquestador (C4-B3).** No se acepta todavía. No se
+> implementa. Define el mecanismo del **procesamiento asíncrono durable** que ADR-047 exige
+> "después del ACK".
 
 ### Contexto
 
-La ingesta de XML (parseo, validación, normalización, almacenamiento, hash) puede no ser
-apropiada para ejecución síncrona dentro de una petición HTTP, especialmente en cargas
-de múltiples documentos.
+C4-B3 adopta captura en **dos fases**: la fase 1 persiste el evento verificado y responde
+el ACK en ≤15 s; la **fase 2** descarga el RAW (hasta 64 MiB), lo hashea y lo persiste de
+forma durable. La fase 2 **no puede** vivir en la petición del webhook. Hace falta un
+mecanismo de trabajo asíncrono durable, idempotente y seguro multitenant.
 
-### Por qué importa
+### Decisión propuesta `[PROPUESTO]` — cola/outbox durable sobre PostgreSQL
 
-Depende directamente de **ADR-011**: los límites del hosting elegido determinan si el
-procesamiento síncrono es viable. Afecta a la experiencia de carga, al manejo de errores
-parciales y a la idempotencia de la reingesta.
+Reutilizar **`inbound.provider_events`** como cola/outbox: las filas con `state='received'`
+son trabajo pendiente. Sin infraestructura nueva, todo bajo RLS y en la misma DB
+transaccional.
 
-### Qué falta
+- **Polling:** el worker consulta filas *due* (`state='received' AND next_attempt_at<=now()
+  AND (leased_until IS NULL OR leased_until<=now())`), en lotes acotados, orden por
+  `created_at`.
+- **Lease / claim (visibility timeout):** claim atómico en transacción **corta** con
+  `SELECT … FOR UPDATE SKIP LOCKED` que fija `leased_until = now() + T_lease`; el trabajo
+  pesado (descarga de hasta 64 MiB) ocurre **fuera** de toda transacción; la persistencia
+  final va en otra transacción corta. No se mantiene un lock de DB durante la descarga.
+- **Recuperación ante fallos:** si el worker muere a mitad, `leased_until` expira y otro
+  worker reclama la fila → **at-least-once**; los INSERT posteriores son idempotentes
+  (`UNIQUE` + `ON CONFLICT`), así que el reproceso es inocuo.
+- **Reintentos + backoff:** `attempts` y `next_attempt_at` con backoff exponencial y
+  presupuesto máximo de intentos/tiempo (muy dentro de la retención `[OBSERVADO ≥17 d]`).
+- **Dead-letter:** al agotar → `state='fetch_failed_exhausted'` + alerta + visibilidad para
+  **replay manual** (Resend soporta replay).
+- **Concurrencia:** varios workers coexisten con `SKIP LOCKED`; pool acotado `W` dimensionado
+  a memoria/host (**ADR-011**).
+- **Aislamiento multitenant del despachador:** el despachador debe tomar trabajo de **todos**
+  los tenants sin `BYPASSRLS`. Opción líder: una función **`SECURITY DEFINER`**
+  (`private.inbound_claim_next`) que reclama atómicamente la siguiente fila *due* across-tenant
+  y devuelve SOLO los identificadores de enrutado + el contexto de tenant (jamás bytes de
+  evidencia). El worker entra entonces en el contexto del tenant
+  (`private.enter_inbound_context`) y TODA la E/S de evidencia queda bajo RLS. El despachador
+  nunca lee evidencia cross-tenant. Requiere añadir `leased_until timestamptz` a
+  `provider_events` (ver `docs/design/C4-B3.md`).
 
-Decidir si la ingesta es síncrona, asíncrona o mixta, y qué mecanismo se utiliza.
-Evaluar tras cerrar ADR-011.
+### Alternativas consideradas
 
-### Situación actual
+| Opción | Veredicto |
+|---|---|
+| **PG-outbox + polling + SKIP LOCKED + lease** (propuesta) | **Líder**: sin infra nueva, durable, RLS-nativo |
+| Cola externa (SQS / RabbitMQ / Redis) | Diferir: más infra/credenciales; rompe "todo en PG bajo RLS" |
+| Cron serverless drenando la cola | Cold start/latencia; peor para el worker durable |
+| `LISTEN`/`NOTIFY` | No durable por sí solo; puede **complementar** el polling como señal, no sustituirlo |
 
-Abierta. No bloquea la Fase 1.
+### Lo que este ADR NO decide / NO hace
+
+No se acepta todavía · no implementa worker ni función · no crea migraciones. Depende de
+**ADR-011** para dimensionar concurrencia/memoria. El diseño detallado vive en
+`docs/design/C4-B3.md`.
 
 ---
 ---
