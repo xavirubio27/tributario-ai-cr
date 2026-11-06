@@ -83,7 +83,10 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
       C4-B1 — autorización de máquina y registro de Buzones Tribuu — COMPLETED
         (Codex final PASS · ADR-048 ACEPTADO · migración 20261102120000 aplicada ·
          20=20 sin drift · focused 43/43 · backend 1243/1243)
-      C4-B2 — adaptador Resend / verificación Svix — NOT STARTED
+      C4-B2 — adaptador Resend / verificación Svix / routing — COMPLETED
+        (Codex final PASS · ADR-049 ACEPTADO · 0 migraciones · svix==2.9.1 ·
+         focalizado 46/46)
+      C4-B3 — captura durable / idempotencia / RAW / adjuntos / ACK — NOT STARTED
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -101,7 +104,7 @@ Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
   W3 — alertas normativas por WhatsApp
   W4 — Tribuu conversacional
   Ninguna de estas etiquetas es un nombre inmutable de checkpoint.
-Next: C4-B2 — adaptador Resend / verificación Svix / extracción de recipient.
+Next: C4-B3 — captura durable, idempotencia, RAW/adjuntos y ACK productivo.
 ```
 
 **Auditoría externa (Codex) — sign-off final:**
@@ -2651,6 +2654,38 @@ incluida la lista de pendientes previos a C4-B: rotación del webhook del
 spike, dominio de producción, ADR-011, almacén de objetos, TTL contractual
 del raw, identidad/RLS de máquina y worker durable post-ACK; ADR-047 ya
 está ACCEPTED).
+
+**C4-B2 — COMPLETED (Codex final PASS, 2026-11-05).** Capa provider-specific
+de Resend ([ADR-049](DECISIONS.md#adr-049)),
+función pura sin endpoint HTTP: verificación Svix sobre el RAW body con
+`svix==2.9.1` (dependencia de producción fijada) ANTES de parsear JSON →
+`email.received` (otros tipos → `IGNORED_EVENT_TYPE`) → modelo neutral
+`NormalizedInboundEvent` que separa las tres identidades (`provider_event_id`
+= svix-id, `provider_email_id` = data.email_id, `internet_message_id` =
+data.message_id) → normalización conservadora de recipients → enrutamiento
+multi-tenant que resuelve cada recipient de entrega (`data.to`; `received_for`
+es solo traza, nunca autoridad) en su
+propia `inbound_transaction()` contra el registro C4-B1, fail-closed
+(unknown/disabled colapsan a UNKNOWN para no enumerar). Tenant solo desde el
+La autoridad de routing es **`Resend data.to`** (campo provider-level de destinatarios de entrega); el header MIME `To:` del mensaje, From, Reply-To, Subject, cuerpo y adjuntos son contenido NO confiable, nunca autoridad de tenant; `received_for` es solo traza.
+**0 migraciones.** C4-B2 NO descarga adjuntos, NO llama a C2, NO captura
+evidencia durable y NO expone ACK productivo.
+
+**Resultados de tests (factual).** Focalizado C4-B2
+(`test_inbound_resend_adapter.py`): **46 passed** (incluye las regresiones
+HIGH de autoridad `data.to`: ataque received_for con tenant ajeno, trace-only,
+missing-to sin fallback, y la matriz multi-recipient). Full backend: **1288
+passed, 1 failed** — el único fallo fue `test_identity_disappears_after_rollback`,
+un **flake ambiental NO BLOQUEANTE**: es un test preexistente que NO pertenece
+a C4-B2, el propio test se autodeclara «prueba no concluyente» cuando el pooler
+de Supabase cierra/pierde la conexión de sesión única entre usos, y C4-B2 no
+modifica esa ruta. Rerun aislado de `test_transaction_identity.py`: **6/6
+passed** sin cambios de código entre el fallo y el rerun. (No se afirma
+«1289/1289 full suite»: ese número no ocurrió en una única corrida.)
+
+**Frontera B2 vs B3.** C4-B2 = Resend/Svix/normalización/routing. **C4-B3** =
+captura durable, idempotencia física, RAW/adjuntos, object storage y endpoint
+con ACK. Nada de B3 iniciado.
 
 **C4-B1 — COMPLETED (Codex final PASS, 2026-11-05).** Buzón Tribuu registry
 provider-agnostic e `inbound_backend` implementados; autorización de máquina y

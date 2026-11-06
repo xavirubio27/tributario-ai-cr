@@ -19,6 +19,11 @@ dependencies = [
     # esquemas -- app/fiscal/parser/document.py, app/fiscal/xsd/registry.py y
     # app/fiscal/xsd/bundle.py --, no solo los tests.
     "lxml==6.0.2",
+    # Verificacion de firma de webhooks Svix (C4-B2, ADR-049). Resend firma sus
+    # webhooks con el esquema Svix; se usa la libreria oficial sobre el RAW body
+    # ANTES de parsear JSON. La importan app/inbound/resend_adapter.py (produccion),
+    # no solo los tests. Verificacion HMAC offline, sin red.
+    "svix==2.9.1",
 ]
 
 [project.optional-dependencies]

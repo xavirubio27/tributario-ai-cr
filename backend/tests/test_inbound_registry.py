@@ -28,13 +28,39 @@ DOMINIO = "@inbox.tribuu.ai"
 
 # ─────────────────────────────── infraestructura ─────────────────────────────
 
+# Marcadores de fallo TRANSITORIO del CLI de Supabase (login temporal, 401, 5xx):
+# el teardown reintenta ante ellos para no dejar estado residual que rompa el
+# siguiente test con company_inboxes_one_active. Patrón calcado de test_fiscal_inbox.
+_CLI_TRANSITORIOS = ("unexpected status 401", "unexpected login role status 401",
+                     "LegacyDbConfigConnectTempRoleError", "LegacyDbConfigLoginRoleStatusError",
+                     "unexpected status 5", "cli_login_postgres")
+
+
+def _limpiar_inboxes(admin_sql, company_ids, intentos=4):
+    ids = ", ".join(f"'{c}'" for c in company_ids)
+    sql = f"delete from inbound.company_inboxes where company_id in ({ids})"
+    ultimo = None
+    for i in range(intentos):
+        try:
+            admin_sql(sql)
+            return
+        except Exception as exc:            # noqa: BLE001
+            if not any(t in str(exc) for t in _CLI_TRANSITORIOS):
+                raise
+            ultimo = str(exc)[:120]
+            time.sleep(1 + i)
+    raise AssertionError(f"cleanup de inboxes falló por transporte del CLI: {ultimo}")
+
+
 @pytest.fixture(autouse=True)
 def limpio(admin_sql, user_a, user_b):
+    # Limpieza DETERMINISTA: antes (por si un teardown previo falló) y después,
+    # con reintento ante fallos transitorios del CLI. Un test fallido no debe
+    # dejar un active inbox que rompa el siguiente con one_active.
+    companies = (user_a.company_id, user_b.company_id)
+    _limpiar_inboxes(admin_sql, companies)
     yield
-    admin_sql(
-        "delete from inbound.company_inboxes where company_id in "
-        f"('{user_a.company_id}', '{user_b.company_id}')"
-    )
+    _limpiar_inboxes(admin_sql, companies)
 
 
 def _crear(conn, company_id, prefijo="empresa", token=None):
@@ -582,6 +608,7 @@ def _fe_bytes() -> bytes:
 
 @pytest.fixture
 def limpio_fiscal(admin_sql, user_a, user_b):
+    _limpiar_inboxes(admin_sql, (user_a.company_id, user_b.company_id))
     yield
     ambas = f"('{user_a.company_id}','{user_b.company_id}')"
     admin_sql(

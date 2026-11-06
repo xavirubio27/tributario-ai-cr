@@ -71,6 +71,7 @@
 | [ADR-046](#adr-046) | Buzón Tribuu: intake automatizado, evidencia empresarial y autorización de máquina | ✅ |
 | [ADR-047](#adr-047) | Resend como proveedor inbound MVP y captura durable antes del ACK | ✅ |
 | [ADR-048](#adr-048) | Identidad de máquina inbound y Buzón Tribuu provider-agnostic | ✅ |
+| [ADR-049](#adr-049) | Adaptador inbound de Resend, verificación Svix e identidad de evento | ✅ |
 
 ---
 ---
@@ -3405,3 +3406,104 @@ Adaptador Resend / verificación Svix / extracción y canonicalización del
 recipient (C4-B2) · tablas de intake, RAW durable y vendor de objetos (C4-B3)
 · ACK físico y worker durable post-ACK (C4-B3/B4) · constraint física de
 idempotencia · hosting (ADR-011) · aprovisionamiento no-humano de buzones.
+
+---
+
+<a id="adr-049"></a>
+
+## ADR-049 — Adaptador inbound de Resend, verificación Svix e identidad de evento
+
+**Estado:** ✅ Aceptada (Día 3, fase C4-B2) · **Criticidad: alta** ·
+**Relacionada con:** [ADR-046](#adr-046) · [ADR-047](#adr-047) · [ADR-048](#adr-048)
+
+### Contexto
+
+ADR-047 eligió Resend como proveedor entrante del MVP y ADR-048 construyó la
+autorización de máquina y el registro de Buzones. C4-B2 añade la capa
+específica de Resend que convierte un webhook en un evento interno enrutado al
+tenant, SIN capturar evidencia durable todavía (eso es C4-B3).
+
+### Decisión — verificación antes de confiar
+
+La firma Svix se verifica sobre el **RAW body** con la librería oficial
+(`svix==2.9.1`, dependencia de producción fijada) ANTES de parsear JSON. El
+orden es inquebrantable: raw + cabeceras `svix-id`/`svix-timestamp`/
+`svix-signature` → `Webhook(secret).verify(raw, headers)` → solo entonces
+`json.loads` del MISMO raw. Nunca se parsea-y-reserializa para verificar. La
+librería valida el HMAC y la ventana temporal (anti-replay). `RESEND_WEBHOOK_SECRET`
+es configuración privada: jamás se registra, ni se devuelve en errores, ni
+aparece en repr; su ausencia es fail-closed. No hay criptografía propia.
+
+### Decisión — tipo de evento
+
+C4-B2 solo procesa `email.received`. Un evento válidamente firmado de otro
+tipo se reconoce y devuelve `IGNORED_EVENT_TYPE`: sin resolver tenant, sin
+tocar contenido. No se implementa lógica para email.sent/delivered/bounced.
+
+### Decisión — tres identidades que no se mezclan
+
+- `provider_event_id` ← cabecera `svix-id` (identidad del EVENTO; base de la
+  idempotencia durable futura de C4-B3).
+- `provider_email_id` ← `data.email_id` (identidad del CORREO en Resend).
+- `internet_message_id` ← `data.message_id` (Message-ID RFC; opcional en el
+  contrato real, se transporta si viene).
+
+El `svix-id` jamás se sustituye por `email_id` ni por `message_id`. C4-B2 NO
+crea tabla ni constraint de idempotencia durable; solo transporta los tres
+identificadores en el evento normalizado.
+
+### Decisión — modelo neutral y autoridad de tenant
+
+`NormalizedInboundEvent` es independiente de Resend. El tenant deriva
+EXCLUSIVAMENTE de los recipients de ENTREGA del proveedor, que provienen SOLO de **`data.to`** —el campo PROVIDER-LEVEL de destinatarios
+de entrega que Resend expone en el evento, distinto del header MIME `To:` del
+mensaje crudo (ese header es contenido no confiable que C4-B3 verá en el RAW)—
+resueltos contra el registro C4-B1. **`data.received_for`
+NO es autoridad**: se conserva como señal de traza/informativa
+(`trace_received_for`) y nunca alimenta `recipients`, ni abre transacción, ni
+produce company/inbox — no se le llama «envelope recipient». **No hay fallback
+de `to` hacia `received_for`**: si `data.to` falta o está vacío, el evento es
+inválido (fail-closed). Motivo: `received_for` deriva de información de
+trazabilidad/Received y no está suficientemente sustentado como autoridad de
+sobre, en particular bajo forwarding; la evidencia C4-B0 solo muestra el caso
+directo `to == received_for`, insuficiente para autorizar con `received_for`.
+From, Reply-To, Subject, cuerpo, nombres y bytes de adjuntos, y el dominio del
+remitente quedan marcados como NO CONFIABLES y nunca son autoridad. La
+normalización de recipients es conservadora: recorta espacios, baja a
+minúsculas SOLO el dominio (la parte local se respeta), rechaza vacío o
+sintácticamente inválido, sin alias ni fuzzy matching.
+
+### Decisión — enrutamiento multi-tenant aislado
+
+Un evento con N recipients produce N resoluciones INDEPENDIENTES, una
+`inbound_transaction()` por recipient: ninguna transacción abarca dos
+empresas, y el contexto transaction-local de C4-B1 garantiza que un recipient
+desconocido no herede el contexto del anterior. Desenlaces por recipient:
+`ACTIVE_RESOLVED` (inbox+company), `UNKNOWN_RECIPIENT` e `INVALID_RECIPIENT`.
+Desconocido y deshabilitado colapsan a `UNKNOWN_RECIPIENT` hacia fuera para no
+permitir enumerar qué buzones existen; la distinción fina vive solo en logs
+internos. Fail-closed: sin buzón activo no se abre trabajo. La autoridad sigue
+siendo C4-B1; el router no acepta company_id ni inbox_id de ninguna fuente
+externa.
+
+### Forwarding futuro (restricción)
+
+La política actual es terminante: **`data.to` → candidatos de routing;
+`received_for` → metadata de traza; sin fallback**. Si en el futuro la
+evidencia de forwarding exigiera cambiar esta regla, NO podrá relajarse en
+silencio: requerirá una NUEVA decisión arquitectónica (ADR propio), deberá
+preservar el aislamiento de tenant, y deberá apoyarse en evidencia real /
+contrato del proveedor más nuevas regresiones de seguridad. Hasta entonces,
+`received_for` nunca autoriza.
+
+### Lo que este ADR NO decide / NO hace (frontera C4-B3)
+
+C4-B2 NO descarga adjuntos (solo metadata declarada), NO consulta la API de
+Resend por bytes, NO guarda RAW/XML/PDF/imágenes, NO usa object storage, NO
+llama a C2 (`capture_source_document`/`process_source_document`), parser,
+persistencia, Tax Engine, clasificador, OCR ni LLM. **No añade endpoint HTTP
+productivo**: el adaptador es función pura importable; C4-B3 lo conectará a la
+captura durable y recién entonces activará el endpoint real con ACK. No se usa
+`BackgroundTasks` como sustituto de captura durable. Sin `service_role`, sin
+JWT de navegador, sin usuario/membresía ficticios. La idempotencia física, el
+RAW durable, los adjuntos y el ACK pertenecen a C4-B3.
