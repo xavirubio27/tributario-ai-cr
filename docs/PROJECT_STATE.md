@@ -86,7 +86,10 @@ Checkpoint E — Fase E4-B · Parser Fiscal de Producción
       C4-B2 — adaptador Resend / verificación Svix / routing — COMPLETED
         (Codex final PASS · ADR-049 ACEPTADO · 0 migraciones · svix==2.9.1 ·
          focalizado 46/46)
-      C4-B3 — captura durable / idempotencia / RAW / adjuntos / ACK — NOT STARTED
+      C4-B3 — captura durable / idempotencia / RAW / adjuntos / ACK — DESIGN / NOT IMPLEMENTED
+        (restricción vinculante ADR-050: evidencia vía abstracción EvidenceBlob;
+         backend durable inicial postgres_bytea; migración a Object Storage es
+         deuda técnica planificada, NO permanente)
 (*) La corrección de contrato de C2 aprobada en C3-A2 quedó IMPLEMENTADA en C3-B1: los
     fallos posteriores al commit de T1 conservan ya la identidad del artefacto.
 Roadmap de producto (PLANNED / NOT STARTED — ver ROADMAP.md):
@@ -2682,6 +2685,19 @@ de Supabase cierra/pierde la conexión de sesión única entre usos, y C4-B2 no
 modifica esa ruta. Rerun aislado de `test_transaction_identity.py`: **6/6
 passed** sin cambios de código entre el fallo y el rerun. (No se afirma
 «1289/1289 full suite»: ese número no ocurrió en una única corrida.)
+
+**Almacenamiento de evidencia (ADR-050, decisión previa a C4-B3).** C4-B3
+capturará evidencia durable mediante la abstracción **`EvidenceBlob`**, que
+desacopla la identidad lógica de la evidencia (id + SHA-256 + size/provenance)
+de la ubicación física de sus bytes. Backend durable INICIAL del MVP/pilotos:
+**PostgreSQL BYTEA** (atomicidad metadata+bytes+idempotencia en una sola
+transacción antes del ACK). **Deuda técnica planificada — «Evidence Blob Object Storage migration»:** antes de escala comercial significativa los blobs
+migrarán a Object Storage, con PostgreSQL como índice/fuente de verdad de
+metadata, provenance, hash, tenant y ubicación lógica. **PostgreSQL BYTEA NO
+es el backend de almacenamiento permanente a escala** — literal
+normativo: `PostgreSQL BYTEA MUST NOT be treated as the permanent scaled storage backend.` C4-B3 no implementa
+Object Storage ni introduce credenciales; solo preserva la abstracción para
+que la migración futura no obligue a reescribir C4-B4, C2 ni los consumidores.
 
 **Frontera B2 vs B3.** C4-B2 = Resend/Svix/normalización/routing. **C4-B3** =
 captura durable, idempotencia física, RAW/adjuntos, object storage y endpoint

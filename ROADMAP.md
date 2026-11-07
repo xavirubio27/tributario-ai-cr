@@ -543,6 +543,27 @@ excepciones por antigüedad del proyecto.
 
 ---
 
+## Deuda técnica planificada
+
+_Sección nueva: el ROADMAP no contaba con un apartado de infraestructura/post-MVP;
+se añade para dejar constancia de deuda ya decidida y datada._
+
+### Evidence Blob Object Storage migration (ADR-050)
+
+C4-B3 usa **PostgreSQL BYTEA** como backend durable inicial para obtener
+atomicidad pre-ACK durante MVP/pilotos. Esta elección **no es permanente**.
+Antes de escala comercial significativa, los blobs de evidencia deberán migrarse
+a **Object Storage**; PostgreSQL permanecerá como índice y fuente de verdad de
+metadata, provenance, hash, tenant y ubicación lógica. La evidencia se expone
+desde ya mediante la abstracción `EvidenceBlob` (identidad lógica desacoplada de
+la ubicación física), de modo que la migración futura no obligue a reescribir
+C4-B4, C2 ni los consumidores de evidencia.
+
+**`PostgreSQL BYTEA MUST NOT be treated as the permanent scaled storage backend.`** No se implementa Object Storage ni se introducen credenciales en
+C4-B3. Detalle en [docs/DECISIONS.md → ADR-050](docs/DECISIONS.md#adr-050).
+
+---
+
 ## Principios que atraviesan todas las fases
 
 1. **Nunca inventar** legislación, tasas, APIs ni contratos externos.
