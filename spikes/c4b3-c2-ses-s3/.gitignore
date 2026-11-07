@@ -1,0 +1,14 @@
+# Terraform state y artefactos locales — NUNCA al repo (pueden contener datos sensibles).
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/.build/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.zip
+crash.log
+# Nunca credenciales
+*.pem
+*_accesskey*
+.env
+.env.*
