@@ -6,15 +6,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.4"
-    }
   }
 }
 
 provider "aws" {
-  region = "us-east-1" # SES Email Receiving autorizado solo en regiones soportadas; us-east-1 (PoC)
+  region = "us-east-1" # SES Email Receiving solo en regiones soportadas; us-east-1 (PoC)
   default_tags {
     tags = {
       Project = "tribuu"

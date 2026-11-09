@@ -1,21 +1,59 @@
 # =============================================================================
 # Spike C4-B3 / C2 — PoC AWS SES Receiving -> S3. BORRADOR IaC, NO APLICADO.
-# Requiere `terraform validate`/`plan` y APROBACIÓN de inventario/presupuesto
-# (../README.md §A) antes de `apply`. Marcadores `# VERIFY` = confirmar al planear.
+# Requiere `terraform fmt/init -backend=false/validate` por el propietario y
+# APROBACIÓN de inventario/presupuesto (../README.md §A) antes de `apply`.
+#
+# Diseño: SES receipt rule -> acción S3 (MIME crudo) + notificación SNS nativa
+# -> SQS (portador DURABLE y AUTORITATIVO de receipt.recipients + objectKey).
+# SIN Lambda: los destinatarios del SOBRE vienen de SES, no de un sidecar ni
+# de cabeceras MIME. Resuelve el hueco "Lambda falla antes del sidecar".
 # =============================================================================
 
 data "aws_caller_identity" "current" {}
 
 locals {
-  account_id  = data.aws_caller_identity.current.account_id
-  bucket_name = "tribuu-${var.bucket_suffix}-inbound-raw-${local.account_id}"
+  account_id    = data.aws_caller_identity.current.account_id
+  bucket_name   = "tribuu-${var.bucket_suffix}-inbound-raw-${local.account_id}"
+  rule_set_name = "tribuu-poc-c4b3"
+  rule_name     = "capture-to-s3"
+  # ARN de la receipt-rule (string, no referencia a recurso) para romper ciclos en las policies.
+  receipt_rule_arn = "arn:aws:ses:us-east-1:${local.account_id}:receipt-rule-set/${local.rule_set_name}:receipt-rule/${local.rule_name}"
 }
 
-# --- KMS CMK para SSE-KMS del bucket (NO se usa la message-encryption client-side de SES) ---
+# --- KMS CMK para SSE-KMS del bucket (NO la message-encryption client-side de SES) ---
 resource "aws_kms_key" "evidence" {
   description             = "Tribuu PoC C4B3 - SSE-KMS inbound evidence"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+
+  # La key policy REEMPLAZA la default: incluir root (evita lockout) + SES GenerateDataKey.
+  # El worker obtiene kms:Decrypt vía su IAM policy (la sentencia root habilita IAM).
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableRootAndIAM"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${local.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        # REQUERIDO: sin esto, el PutObject de SES a un bucket SSE-KMS FALLA (-> rebote).
+        Sid       = "AllowSESGenerateDataKey"
+        Effect    = "Allow"
+        Principal = { Service = "ses.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = {
+            "AWS:SourceAccount" = local.account_id
+            "AWS:SourceArn"     = local.receipt_rule_arn
+          }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_kms_alias" "evidence" {
@@ -58,13 +96,13 @@ resource "aws_s3_bucket_lifecycle_configuration" "raw" {
   rule {
     id     = "poc-expire"
     status = "Enabled"
+    filter {}
     expiration { days = var.object_expiration_days }
     noncurrent_version_expiration { noncurrent_days = var.object_expiration_days }
   }
 }
 
-# Bucket policy: TLS-only + permiso de escritura SOLO a SES (con condiciones de cuenta/ARN).
-# Debe existir ANTES de crear la receipt rule (SES escribe AMAZON_SES_SETUP_NOTIFICATION al crearla).
+# Bucket policy: TLS-only + PutObject SOLO a SES (SourceAccount + SourceArn=receipt-rule).
 resource "aws_s3_bucket_policy" "raw" {
   bucket = aws_s3_bucket.raw.id
   policy = jsonencode({
@@ -85,14 +123,42 @@ resource "aws_s3_bucket_policy" "raw" {
         Action    = "s3:PutObject"
         Resource  = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*"
         Condition = {
-          StringEquals = { "aws:Referer" = local.account_id } # VERIFY: AWS recomienda aws:SourceAccount/SourceArn
+          StringEquals = {
+            "AWS:SourceAccount" = local.account_id
+            "AWS:SourceArn"     = local.receipt_rule_arn
+          }
         }
       }
     ]
   })
 }
 
-# --- SQS: notificación durable + DLQ ---
+# --- SNS: notificación nativa de SES (recipients + objectKey), sin body ---
+resource "aws_sns_topic" "receipt" {
+  name = "tribuu-poc-c4b3-receipt"
+}
+
+resource "aws_sns_topic_policy" "receipt" {
+  arn = aws_sns_topic.receipt.arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowSESPublish"
+      Effect    = "Allow"
+      Principal = { Service = "ses.amazonaws.com" }
+      Action    = "SNS:Publish"
+      Resource  = aws_sns_topic.receipt.arn
+      Condition = {
+        StringEquals = {
+          "AWS:SourceAccount" = local.account_id
+          "AWS:SourceArn"     = local.receipt_rule_arn
+        }
+      }
+    }]
+  })
+}
+
+# --- SQS: cola durable que consume el worker + DLQ ---
 resource "aws_sqs_queue" "dlq" {
   name                      = "tribuu-poc-c4b3-dlq"
   message_retention_seconds = 1209600 # 14 d
@@ -108,59 +174,26 @@ resource "aws_sqs_queue" "intake" {
   })
 }
 
-# --- Lambda enqueue: lee receipt.recipients (SOBRE), escribe sidecar, encola ---
-data "archive_file" "enqueue" {
-  type        = "zip"
-  source_file = "${path.module}/lambda/enqueue.py"
-  output_path = "${path.module}/.build/enqueue.zip"
-}
-
-resource "aws_iam_role" "lambda" {
-  name = "tribuu-poc-c4b3-lambda"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
-  })
-}
-
-resource "aws_iam_role_policy" "lambda" {
-  name = "tribuu-poc-c4b3-lambda"
-  role = aws_iam_role.lambda.id
+resource "aws_sqs_queue_policy" "intake" {
+  queue_url = aws_sqs_queue.intake.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      { Effect = "Allow", Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource = "arn:aws:logs:*:*:*" },
-      { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*" },
-      { Effect = "Allow", Action = ["sqs:SendMessage"], Resource = aws_sqs_queue.intake.arn },
-      { Effect = "Allow", Action = ["kms:GenerateDataKey", "kms:Encrypt"], Resource = aws_kms_key.evidence.arn }
-    ]
+    Statement = [{
+      Sid       = "AllowSNSSendMessage"
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.intake.arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.receipt.arn } }
+    }]
   })
 }
 
-resource "aws_lambda_function" "enqueue" {
-  function_name    = "tribuu-poc-c4b3-enqueue"
-  role             = aws_iam_role.lambda.arn
-  runtime          = "python3.12"
-  handler          = "enqueue.handler"
-  filename         = data.archive_file.enqueue.output_path
-  source_code_hash = data.archive_file.enqueue.output_base64sha256
-  timeout          = 30
-  memory_size      = 256
-  environment {
-    variables = {
-      INTAKE_QUEUE_URL = aws_sqs_queue.intake.url
-      RAW_BUCKET       = aws_s3_bucket.raw.id
-      RAW_PREFIX       = var.raw_object_prefix
-    }
-  }
-}
-
-resource "aws_lambda_permission" "ses_invoke" {
-  statement_id  = "AllowSESInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.enqueue.function_name
-  principal     = "ses.amazonaws.com"
-  source_account = local.account_id
+resource "aws_sns_topic_subscription" "intake" {
+  topic_arn            = aws_sns_topic.receipt.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.intake.arn
+  raw_message_delivery = true
 }
 
 # --- SES Email Receiving ---
@@ -169,7 +202,7 @@ resource "aws_ses_domain_identity" "poc" {
 }
 
 resource "aws_ses_receipt_rule_set" "poc" {
-  rule_set_name = "tribuu-poc-c4b3"
+  rule_set_name = local.rule_set_name
 }
 
 resource "aws_ses_active_receipt_rule_set" "poc" {
@@ -177,9 +210,9 @@ resource "aws_ses_active_receipt_rule_set" "poc" {
 }
 
 resource "aws_ses_receipt_rule" "capture" {
-  name          = "capture-to-s3-and-enqueue"
+  name          = local.rule_name
   rule_set_name = aws_ses_receipt_rule_set.poc.rule_set_name
-  recipients    = [var.subdomain] # captura todo el subdominio (catch-all PoC)
+  recipients    = [var.subdomain] # catch-all del subdominio (PoC)
   enabled       = true
   scan_enabled  = true
   tls_policy    = "Require"
@@ -187,15 +220,15 @@ resource "aws_ses_receipt_rule" "capture" {
   s3_action {
     bucket_name       = aws_s3_bucket.raw.id
     object_key_prefix = var.raw_object_prefix
+    topic_arn         = aws_sns_topic.receipt.arn # notificación nativa con recipients + objectKey
     position          = 1
   }
-  lambda_action {
-    function_arn    = aws_lambda_function.enqueue.arn
-    invocation_type = "Event"
-    position        = 2
-  }
 
-  depends_on = [aws_s3_bucket_policy.raw, aws_lambda_permission.ses_invoke]
+  depends_on = [
+    aws_s3_bucket_policy.raw,
+    aws_kms_key.evidence,
+    aws_sns_topic_policy.receipt
+  ]
 }
 
 # --- Usuario IAM worker (PoC, scoped, de corta vida; eliminar en teardown) ---
@@ -217,10 +250,10 @@ resource "aws_iam_user_policy" "worker" {
     ]
   })
 }
-# NOTA: la access key se crea fuera de TF (o con aws_iam_access_key) y se ELIMINA en teardown.
-# No se emite aquí para no persistir secretos en el state. # VERIFY
+# NOTA: la access key del worker se crea FUERA de TF (o con aws_iam_access_key en un apply
+# aparte) y se ELIMINA en el teardown. No se emite aquí para no persistir secretos en el state.
 
-# --- Control de costos: AWS Budgets + alarma ---
+# --- Control de costos: AWS Budgets (ALERTA, no límite de gasto) + ver README §G ---
 resource "aws_budgets_budget" "poc" {
   name         = "tribuu-poc-c4b3"
   budget_type  = "COST"
