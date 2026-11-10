@@ -119,6 +119,23 @@ python3 poc_smoke_test.py            → complete/orphan(+cuarentena durable+ale
 terraform v1.9.8 (local, sin AWS): fmt -check exit 0 · validate "Success! valid." · plan NO ejecutado
 ```
 
+## Ronda 4 — cierre de preflight (reauditoría de `3e3ba2e`)
+
+| Problema | Fix | Evidencia |
+|---|---|---|
+| 1 Alertas durables (HIGH) | Ledger en S3: `alerts/pending/<id>` ANTES de publicar; `alerts/sent/<id>` SOLO tras confirmación; **reintento del backlog** en ejecuciones posteriores (aunque el RAW ya esté en cuarentena); `sns:Publish` acotado al topic de alertas. Reconciliación **manual** reproducible (sin EventBridge). | `test_18_alert_durable_retry` (SNS falla→2ª OK), `test_05` |
+| 2 Heartbeat (MEDIUM) | `stop_and_check()` (stop+join+resultado final); un fallo —incluido en el **cierre**— impide confirmar SQS | `test_22_heartbeat_fails_at_close`, `test_08b` |
+| 3 Conflictos (MEDIUM) | Ambos locators completos; markers inmutables; **estado `conflict` separado** en el reconciliador (no `complete`); alerta durable; DeleteMessage solo tras preservar+verificar | `test_19_conflict_is_separate_state`, `test_02` |
+| 4 Manifest (MEDIUM) | `_validate_manifest`: schema/tipos, event_id/bucket/key, recipients normalizados, coherencia `recipients_clear`↔`expected_recipients`; VersionId no se confunde con idempotencia; inconsistencia → cuarentena durable | `test_20_manifest_malformed`, `test_21_..._incoherent`, `test_13` |
+| 5 Terraform | `sns:Publish` estrictamente limitado; `lifecycle` depende de `versioning`; validación `bucket_suffix`; STS específico (se mantiene); `activate_rule_set=false` (se mantiene) | `terraform fmt/init/validate` PASS |
+
+**Verificaciones ejecutadas (ronda 4, reales):**
+```
+python3 tests/test_poc.py   → Ran 23 tests — OK
+python3 poc_smoke_test.py   → orphan con alerta DURABLE (pending; sin sink en smoke)
+terraform v1.9.8 (local, sin AWS): fmt -check exit 0 · init -backend=false exit 0 · validate "Success! valid." · plan NO ejecutado
+```
+
 ## Commit final para reauditoría
 Ver el commit de esta remediación en la rama `docs/adr-050-draft` del PR #1 (no merge). Auditar
 con `CODEX_AUDIT_PROMPT.md`. **C4B3-01 NO se declara cerrado**: requiere ejecutar la PoC (P1–P5)

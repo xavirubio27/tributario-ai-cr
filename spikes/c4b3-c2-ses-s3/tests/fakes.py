@@ -128,9 +128,26 @@ class FakeSQS:
 
 
 class CollectingSink:
-    """Sink de alertas accionables para tests (en producción publicaría a SNS)."""
+    """Sink de alertas para tests: recoge y confirma publicación (True)."""
     def __init__(self):
         self.alerts: list[dict] = []
 
-    def __call__(self, alert: dict):
+    def __call__(self, alert: dict) -> bool:
         self.alerts.append(alert)
+        return True
+
+
+class FlakySink:
+    """Falla las primeras `fail_times` publicaciones y luego confirma (para probar reintento)."""
+    def __init__(self, fail_times: int = 1, mode: str = "raise"):
+        self.fail_times, self.mode, self.calls = fail_times, mode, 0
+        self.alerts: list[dict] = []
+
+    def __call__(self, alert: dict) -> bool:
+        self.calls += 1
+        self.alerts.append(alert)
+        if self.calls <= self.fail_times:
+            if self.mode == "raise":
+                raise FakeClientError("InternalError", 500)
+            return False
+        return True

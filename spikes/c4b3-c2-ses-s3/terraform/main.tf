@@ -105,6 +105,8 @@ resource "aws_s3_bucket_versioning" "raw" {
 # Retención >= 30 d: supera SQS (máx 14 d), DLQ y ventana de reconciliación/investigación (H7).
 resource "aws_s3_bucket_lifecycle_configuration" "raw" {
   bucket = aws_s3_bucket.raw.id
+  # noncurrent_version_expiration requiere el versioning ya habilitado.
+  depends_on = [aws_s3_bucket_versioning.raw]
   rule {
     id     = "poc-expire"
     status = "Enabled"
@@ -346,6 +348,8 @@ resource "aws_iam_role_policy" "worker" {
       { Sid = "Sqs", Effect = "Allow", Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"], Resource = aws_sqs_queue.intake.arn },
       # Decrypt para leer RAW; GenerateDataKey para ESCRIBIR markers cifrados SSE-KMS.
       { Sid = "Kms", Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey*"], Resource = aws_kms_key.evidence.arn },
+      # Alertas de reconciliación: Publish ESTRICTAMENTE limitado al topic de alertas.
+      { Sid = "AlertsPublish", Effect = "Allow", Action = ["sns:Publish"], Resource = aws_sns_topic.alerts.arn },
       # Permisos NEGATIVOS (M/L): nunca borrar ni escribir sobre el RAW.
       { Sid = "DenyRawMutation", Effect = "Deny", Action = ["s3:DeleteObject", "s3:PutObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*" }
     ]

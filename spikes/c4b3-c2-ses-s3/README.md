@@ -99,7 +99,7 @@ Terraform v1.9.8 (binario descargado localmente, **sin tocar AWS**):
 - `terraform plan` → **NO ejecutado** (requiere credenciales sandbox autorizadas).
 
 Pruebas locales (sin AWS, stdlib + fakes):
-- `python3 tests/test_poc.py` → **Ran 18 tests — OK** (12 escenarios + concurrencia real 8 hilos + heartbeat async + version-pinning + manifest-mismatch + cuarentena independiente + aceptación).
+- `python3 tests/test_poc.py` → **Ran 23 tests — OK** (12 escenarios + concurrencia real 8 hilos + heartbeat async/cierre + version-pinning + manifest malformado/incoherente + cuarentena independiente + alerta durable con reintento + estado conflict + aceptación).
 - `python3 poc_smoke_test.py` → E2E: complete=1, orphan=1, quarantine=1.
 - `python3 -m py_compile` (worker/reconcile/smoke/fakes/test) → PASS · scan de secretos → limpio.
 
@@ -159,6 +159,34 @@ SNS→SQS es durable (reintentos + DLQ de suscripción); los huérfanos son un c
 ## G. AWS Budgets = ALERTA, no límite (item 7)
 AWS Budgets **no detiene el gasto**; solo notifica. El control real = radio de impacto pequeño
 (<$5), teardown reproducible y vigilancia manual.
+
+## Reconciliación manual (sin EventBridge) — comando + checklist OBLIGATORIO
+La reconciliación/alertas NO son automáticas en esta PoC. Procedimiento reproducible:
+```
+cd spikes/c4b3-c2-ses-s3
+# credenciales TEMPORALES del rol worker (STS):
+#   aws sts assume-role --role-arn <worker_role_arn> --role-session-name poc-recon --duration-seconds 3600
+RAW_BUCKET=<raw_bucket> RAW_PREFIX=inbound-raw/ MARKERS_PREFIX=markers/ \
+  ALERTS_TOPIC_ARN=<alerts_topic_arn> python3 poc_reconcile.py
+```
+Checklist obligatorio tras cada corrida:
+- [ ] Revisar `states` (orphan/partial/conflict > 0 => acción).
+- [ ] Verificar `pending_retried_sent` y que no queden `alerts/pending/*` sin `alerts/sent/*`.
+- [ ] Atender cada alerta `action_required` (orphan → cuarentena manual; conflict → revisar
+      canonical vs observed; partial → reprocesar recipients pendientes).
+- [ ] Confirmar que la suscripción de email del topic de alertas está **confirmada**.
+> No existe ejecución automática; esta reconciliación debe lanzarse manualmente de forma periódica.
+
+## Preparar `terraform plan` (comandos) — requiere credenciales sandbox autorizadas
+```
+cd terraform
+terraform init                       # backend real del sandbox (o -backend=false para validar)
+terraform plan \
+  -var='subdomain=poc-inbox.ejemplo-test.xyz' \
+  -var='budget_alarm_email=owner@ejemplo-test.xyz' \
+  -var='worker_assumer_principal_arn=arn:aws:iam::<ACCT>:user/<bootstrap>'
+# (activate_rule_set=false por defecto; activar solo tras verificar que no hay rule set activo)
+```
 
 ## H. Gobierno
 PR #1 DRAFT · ADR aceptados intactos · ADR-047/050/016 DRAFT · sin merge · **IaC no aplicada** ·

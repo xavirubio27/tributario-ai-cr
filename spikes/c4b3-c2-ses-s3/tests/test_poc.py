@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import poc_reconcile as R  # noqa: E402
 import poc_worker as W  # noqa: E402
-from fakes import CollectingSink, FakeS3, FakeSQS  # noqa: E402
+from fakes import CollectingSink, FakeS3, FakeSQS, FlakySink  # noqa: E402
 
 BUCKET, RAWP = "tribuu-poc-bucket", "inbound-raw/"
 
@@ -82,8 +82,8 @@ class PoCTests(unittest.TestCase):
         rep = R.reconcile(c, now=4000, alert_sink=sink)
         self.assertEqual(rep["states"]["orphan"], 1)
         self.assertTrue(s3.exists("markers/quarantine/m5.json"))          # cuarentena DURABLE
-        self.assertEqual(sink.alerts[0]["level"], "action_required")       # alerta accionable
-        self.assertTrue(sink.alerts[0]["quarantine_durable"])
+        self.assertTrue(s3.exists("markers/alerts/sent/orphan-m5.json"))  # alerta confirmada
+        self.assertEqual(sink.alerts[0]["level"], "action_required")
         rep2 = R.reconcile(c, now=4100, alert_sink=CollectingSink())       # ya no re-alerta orphan
         self.assertEqual(rep2["states"]["orphan"], 0)
         self.assertEqual(rep2["states"]["quarantine"], 1)
@@ -163,7 +163,7 @@ class PoCTests(unittest.TestCase):
         self.assertTrue(W.process_message(make_note("mm", ["a@d", "b@d"]), c))  # expected distinto
         q = W._get_marker(c, "markers/quarantine/mm.json")
         self.assertIsNotNone(q)
-        self.assertEqual(q["kind"], "manifest_mismatch")
+        self.assertTrue(q["kind"].startswith("manifest_"))  # recipients/object/etc. incoherente
 
     def test_14_quarantine_independent_identity(self):
         # Dos notificaciones inválidas SIN messageId -> dos cuarentenas INDEPENDIENTES (no 'unknown').
@@ -214,6 +214,65 @@ class PoCTests(unittest.TestCase):
         s3 = FakeS3(); s3.seed_raw(RAWP + "ok", b"x"); c = ctx(s3)
         self.assertTrue(W.process_message(make_note("ok", ["a@d"]), c))
         self.assertTrue(s3.exists(f"markers/completed/ok/{W._rref('a@d')}.json"))
+
+
+    def test_18_alert_durable_retry(self):
+        # SNS falla en la 1ª ejecución y funciona en la 2ª; la alerta debe ENVIARSE (pending->sent).
+        s3 = FakeS3(); s3.seed_raw(RAWP + "ar", b"x", lm_ts=1000.0); c = ctx(s3)
+        flaky = FlakySink(fail_times=1, mode="raise")
+        R.reconcile(c, now=5000, alert_sink=flaky)                  # 1ª: publish falla
+        self.assertTrue(s3.exists("markers/alerts/pending/orphan-ar.json"))
+        self.assertFalse(s3.exists("markers/alerts/sent/orphan-ar.json"))
+        R.reconcile(c, now=5100, alert_sink=flaky)                  # 2ª: retry backlog -> sent
+        self.assertTrue(s3.exists("markers/alerts/sent/orphan-ar.json"))
+
+    def test_19_conflict_is_separate_state(self):
+        s3 = FakeS3(); s3.seed_raw(RAWP + "cf", b"v1"); c = ctx(s3)
+        self.assertTrue(W.process_message(make_note("cf", ["a@d"]), c))
+        s3.seed_raw(RAWP + "cf", b"v2-distinta")
+        self.assertTrue(W.process_message(make_note("cf", ["a@d"]), c))   # genera conflicto
+        sink = CollectingSink()
+        rep = R.reconcile(c, now=6000, alert_sink=sink)
+        self.assertEqual(rep["states"]["conflict"], 1)
+        self.assertEqual(rep["states"]["complete"], 0)                     # NO complete
+        self.assertTrue(any(a["state"] == "conflict" for a in sink.alerts))
+
+    def test_20_manifest_malformed(self):
+        s3 = FakeS3(); s3.seed_raw(RAWP + "mb", b"x"); c = ctx(s3)
+        s3.put_object(Bucket=BUCKET, Key="markers/manifest/mb.json",
+                      Body=b'{"garbage":true}')                            # manifest corrupto (sin If-None-Match)
+        self.assertTrue(W.process_message(make_note("mb", ["a@d"]), c))
+        q = W._get_marker(c, "markers/quarantine/mb.json")
+        self.assertIsNotNone(q)
+        self.assertTrue(q["kind"].startswith("manifest_"))
+        self.assertEqual(completed_keys(s3), [])
+
+    def test_21_manifest_recipients_incoherent(self):
+        s3 = FakeS3(); s3.seed_raw(RAWP + "mi", b"x"); c = ctx(s3)
+        # expected_recipients NO coincide con recipients_clear
+        bad = {"schema": "manifest/v2", "event_id": "mi",
+               "object": {"bucket": BUCKET, "key": RAWP + "mi", "version_id": "v1"},
+               "expected_recipients": [W._rref("a@d")], "recipients_clear": ["b@d"], "ts": 1}
+        s3.put_object(Bucket=BUCKET, Key="markers/manifest/mi.json", Body=json.dumps(bad).encode())
+        self.assertTrue(W.process_message(make_note("mi", ["a@d"]), c))
+        q = W._get_marker(c, "markers/quarantine/mi.json")
+        self.assertEqual(q["kind"], "manifest_recipients_clear_incoherent")
+
+    def test_22_heartbeat_fails_at_close(self):
+        # Fallo EXACTAMENTE en el cierre: fan-out completa, pero stop_and_check() reporta fallo.
+        class CloseFailHB:
+            def __init__(self, *a, **k):
+                self.failed = threading.Event()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def stop_and_check(self):
+                self.failed.set(); return True
+        s3 = FakeS3(); s3.seed_raw(RAWP + "hc", b"x"); c = ctx(s3)
+        orig = W.Heartbeat; W.Heartbeat = CloseFailHB
+        try:
+            self.assertFalse(W.process_message(make_note("hc", ["a@d"]), c))  # no confirma
+        finally:
+            W.Heartbeat = orig
 
 
 if __name__ == "__main__":

@@ -27,9 +27,13 @@ variable "monthly_budget_usd" {
 }
 
 variable "bucket_suffix" {
-  description = "Sufijo único para el nombre global del bucket S3."
+  description = "Sufijo para el nombre global del bucket S3 (DNS-safe)."
   type        = string
   default     = "poc-c4b3"
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$", var.bucket_suffix))
+    error_message = "bucket_suffix: minúsculas/dígitos/guiones, 3-40 chars, sin guion inicial/final (DNS-safe)."
+  }
 }
 
 variable "raw_object_prefix" {

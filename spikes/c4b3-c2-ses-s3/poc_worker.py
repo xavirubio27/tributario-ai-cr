@@ -136,9 +136,15 @@ class Heartbeat:
         self._t.start()
         return self
 
-    def __exit__(self, *_):
+    def stop_and_check(self) -> bool:
+        """Detiene el hilo, hace join y devuelve el RESULTADO FINAL (True si falló alguna
+        renovación de visibilidad). Idempotente. Un True aquí debe impedir confirmar SQS."""
         self._stop.set()
-        self._t.join(timeout=5)  # cierre limpio del hilo
+        self._t.join(timeout=5)
+        return self.failed.is_set()
+
+    def __exit__(self, *_):
+        self.stop_and_check()
 
 
 def validate_notification(note: dict, ctx: Ctx) -> dict:
@@ -162,6 +168,29 @@ def validate_notification(note: dict, ctx: Ctx) -> dict:
     if not isinstance(recipients, list) or not recipients or not all(isinstance(r, str) and r for r in recipients):
         raise SchemaError("recipients invalido")
     return {"message_id": message_id, "bucket": bucket, "key": key, "recipients": recipients}
+
+
+def _validate_manifest(existing: dict, message_id: str, bucket: str, key: str,
+                       expected: list[str], recipients: list[str]) -> tuple[bool, str | None]:
+    """Valida un manifest reutilizado: schema/tipos, identidad y coherencia de recipients."""
+    if not isinstance(existing, dict):
+        return False, "corrupt"
+    if not str(existing.get("schema", "")).startswith("manifest"):
+        return False, "schema"
+    if existing.get("event_id") != message_id:
+        return False, "event_id"
+    obj = existing.get("object")
+    if not isinstance(obj, dict) or obj.get("bucket") != bucket or obj.get("key") != key:
+        return False, "object"
+    exp = existing.get("expected_recipients")
+    if not isinstance(exp, list) or sorted(set(map(str, exp))) != expected:
+        return False, "recipients"
+    clear = existing.get("recipients_clear")
+    if not isinstance(clear, list) or not all(isinstance(r, str) for r in clear):
+        return False, "recipients_clear"
+    if sorted({_rref(r) for r in clear}) != sorted(set(map(str, exp))):
+        return False, "recipients_clear_incoherent"
+    return True, None
 
 
 def _stream_sha256_size(ctx: Ctx, key: str, version_id: str | None, hb: Heartbeat) -> tuple[str, int]:
@@ -236,20 +265,21 @@ def process_message(sqs_msg: dict, ctx: Ctx) -> bool:
             log.error("manifest no durable msg=%s -> reintento", _redact(message_id))
             return False
         if status == "exists":
-            same = (sorted(set(existing.get("expected_recipients", []))) == expected
-                    and existing.get("object", {}).get("key") == key)
-            if not same:
-                ok = _quarantine(ctx, f"{message_id}", {
-                    "schema": "quarantine/v2", "kind": "manifest_mismatch", "event_id": message_id,
+            # Validación ÍNTEGRA del manifest reutilizado (fix 4): schema/tipos, identidad y
+            # coherencia recipients_clear <-> expected_recipients. VersionId NO se reutiliza
+            # (la versión se toma del HEAD de esta invocación para poder detectar conflictos;
+            # la mera existencia del manifest NO es idempotencia — eso lo da el marker completed).
+            ok_m, reason = _validate_manifest(existing, message_id, bucket, key, expected, recipients)
+            if not ok_m:
+                okq = _quarantine(ctx, f"{message_id}", {
+                    "schema": "quarantine/v2", "kind": f"manifest_{reason}", "event_id": message_id,
                     "existing": {"expected": existing.get("expected_recipients"),
                                  "object": existing.get("object")},
                     "incoming": {"expected": expected, "object": manifest["object"]}, "ts": now})
-                log.error("MANIFEST_MISMATCH msg=%s durable=%s", _redact(message_id), ok)
-                return ok
+                log.error("MANIFEST_INCONSISTENTE msg=%s reason=%s durable=%s",
+                          _redact(message_id), reason, okq)
+                return okq
             manifest = existing
-            # NO se reusa la versión del manifest: se lee la versión del HEAD de ESTA
-            # invocación (consistencia anti-carrera intra-invocación) para poder detectar
-            # conflictos si una reentrega cambió el objeto.
         expected = sorted(set(manifest["expected_recipients"]))
 
         try:
@@ -299,8 +329,10 @@ def process_message(sqs_msg: dict, ctx: Ctx) -> bool:
         if set(expected) - completed:
             log.warning("INCOMPLETO msg=%s -> no borrar", _redact(message_id))
             return False
-        if hb.failed.is_set():  # VERIFICACIÓN FINAL antes de confirmar SQS (fix 6)
-            log.warning("heartbeat fallo (final) msg=%s -> no confirmar", _redact(message_id))
+        # VERIFICACIÓN FINAL (fix 6): stop_and_check detiene+join y evalúa el resultado;
+        # un fallo de renovación (incluido durante el CIERRE) impide confirmar SQS.
+        if hb.stop_and_check():
+            log.warning("heartbeat fallo (cierre) msg=%s -> no confirmar", _redact(message_id))
             return False
         log.info("COMPLETO msg=%s recipients=%d size=%d sha=%s…",
                  _redact(message_id), len(expected), size, sha_hex[:12])
