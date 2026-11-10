@@ -9,9 +9,14 @@
 
 ## 0. Resumen y recomendación
 
-C2 coloca la **copia durable del `.eml` original en un bucket S3 nuestro ANTES de que SES
-acepte el correo**: si SES no puede almacenarlo, **rebota al remitente** — nunca aceptamos lo
-que no podemos preservar. Resuelve C4B3-01 de raíz (sin dependencia de retención externa).
+> **Actualización (remediación INFRA):** diseño unificado **SES → S3 → SNS → SQS** (sin Lambda
+> ni sidecar). La afirmación de que una escritura S3 exitosa **precede** a toda aceptación SMTP
+> queda **`[PENDIENTE DE PRUEBA]`** (se observará el resultado SMTP real en P1/§C de la PoC);
+> no se declara C4B3-01 cerrado sin evidencia real y reauditoría.
+
+C2 busca colocar la **copia durable del `.eml` original en un bucket S3 nuestro antes de
+considerar el correo recibido**; `[PENDIENTE DE PRUEBA]` que, si SES no puede almacenarlo,
+**rebote al remitente**. Objetivo: resolver C4B3-01 sin dependencia de retención externa.
 Técnicamente **viable** y **barato a escala MVP** (ver §8). Principales costos no monetarios:
 **cambio de proveedor** (Resend→SES, revisaría ADR-047), **infra/credenciales AWS** nuevas,
 techo **40 MB**, región SES **no local** (us-east-1), y un **caveat de cifrado** verificado.
@@ -28,16 +33,15 @@ Internet ──(SMTP)──▶ MX: inbox.tribuu.ai → inbound-smtp.us-east-1.am
         rule (match por recipient del dominio):
           1) [opcional] spam/virus scan
           2) ACCIÓN S3  → escribe el MIME CRUDO en  s3://tribuu-inbound-raw/<prefix>/<messageId>  (≤40 MB)
-          3) ACCIÓN Lambda (misma región) → lee receipt.recipients (ENVELOPE, autoritativo)
-                 → escribe sidecar s3://.../<messageId>.meta.json {recipients, messageId, ts}
-                 → encola en SQS {s3Key, recipients, messageId, ts, size, etag}
-   └─ SQS (cola durable, retención 14 d, DLQ)
+          3) NOTIFICACIÓN SNS NATIVA (topic_arn del S3 action) → receipt.recipients (ENVELOPE,
+                 autoritativo) + action.objectKey/bucketName.  SIN Lambda, SIN sidecar.
+   └─ SNS → SQS (cola durable, retención 14 d; DLQ propia de la suscripción)
         └─ Worker Tribuu (ADR-011): long-poll SQS
               a) HeadObject S3 → CONFIRMA que el objeto existe y su tamaño/etag (antes de procesar)
               b) resuelve tenant(s) desde receipt.recipients (NO desde cabeceras MIME)
               c) por tenant activo: GetObject (stream) → SHA-256 → EvidenceBlob(object_storage,
                  locator=s3Key) + provider_event(provider='ses') + email_message  (idempotente)
-              d) borra el mensaje SQS al confirmar persistencia
+              d) escribe el ledger DURABLE (markers/) y SOLO entonces borra el mensaje SQS
    └─ Reconciliación (backstop, §5): barrido periódico del bucket vs. locators ya ingeridos
 ```
 
@@ -45,14 +49,15 @@ Internet ──(SMTP)──▶ MX: inbox.tribuu.ai → inbound-smtp.us-east-1.am
 optimización, no la garantía. El evento `s3:ObjectCreated` / la acción SES sólo ocurren **tras**
 la escritura durable del objeto.
 
-## 2. El objeto queda almacenado ANTES de procesar · fallo de escritura de SES `[VERIFICADO]`
+## 2. El objeto queda almacenado antes de procesar · fallo de escritura de SES `[PENDIENTE DE PRUEBA]`
 
 - El worker **sólo** procesa tras (i) recibir la notificación —que SES/S3 emiten **después** de
   almacenar durablemente el objeto— y (ii) un `HeadObject` que confirma existencia y
   tamaño/etag. No hay procesamiento sin objeto durable confirmado.
-- **Si SES no puede escribir el objeto** (permisos, bucket/región inválidos, **>40 MB**): la
-  acción del receipt rule **falla → SES rebota el mensaje al remitente** (no se acepta). Es el
-  comportamiento deseado: **no aceptamos lo que no podemos preservar**.
+- **Si SES no puede escribir el objeto** (permisos, bucket/región inválidos, **>40 MB**): se
+  **espera** que la acción falle → **rebote al remitente** (no aceptación). `[PENDIENTE DE
+  PRUEBA]`: el resultado SMTP real ante éxito, AccessDenied, fallo KMS y error de
+  almacenamiento se observa en P1/§C antes de afirmarlo.
 - **Riesgo verificado:** una mala configuración (p. ej. Access Denied) puede causar "aceptado
   pero fallo silencioso de entrega a S3". Mitigación: el archivo de prueba
   `AMAZON_SES_SETUP_NOTIFICATION` (SES verifica permiso de escritura al configurar), **alarmas
@@ -63,15 +68,15 @@ la escritura durable del objeto.
 - **Autoridad de tenant = `receipt.recipients` de SES** (los destinatarios de ENVELOPE que SES
   aceptó para nuestro dominio), análogo a la autoridad `data.to` de Resend (ADR-049). **NO** se
   usan las cabeceras MIME `To:`/`Cc:` (manipulables).
-- La Lambda (en la región SES, de confianza) extrae `receipt.recipients` y los propaga por SQS
-  + sidecar. El worker parsea la dirección canónica `prefix-token@inbox.tribuu.ai`, resuelve el
+- La **notificación SNS nativa de SES** lleva `receipt.recipients` (autoritativo) + `objectKey`
+  a SQS; **sin Lambda ni sidecar**. El worker parsea la dirección `prefix-token@inbox.tribuu.ai`, resuelve el
   **inbox activo** vía el registro **C4-B1** (`inbound.company_inboxes`, `enter_inbound_context`,
   validación de token), **fail-closed** ante desconocido/deshabilitado. **Se preservan las
   garantías de aislamiento y autorización de C4-B1** intactas.
 
 ## 4. Asociación objeto S3 ↔ destinatario(s); correos multi-empresa `[PROPUESTO]`
 
-- Mapeo `{s3Key → recipients}` proviene de **SES** (Lambda), no del MIME.
+- Mapeo `{s3Key → recipients}` proviene de la **notificación SNS de SES**, no del MIME.
 - **Multi-recipient:** si `receipt.recipients` contiene varias direcciones Tribuu → **fan-out a
   varios tenants**. Para respetar "nunca compartir blob cross-tenant", se hace **copia
   server-side por tenant** (`CopyObject` a prefijo por tenant) de modo que **cada EvidenceBlob
@@ -87,18 +92,17 @@ la escritura durable del objeto.
   Inventory** diario) y compara contra los `object_locator` ya registrados en `inbound`;
   cualquier objeto sin captura correspondiente → se encola para procesar. Descubrimiento de
   evidencia pendiente **independiente de la entrega de la notificación**.
-- El **sidecar `.meta.json`** (escrito por la Lambda desde `receipt.recipients`) hace que un
-  objeto barrido conserve su enrutado autoritativo sin depender del MIME.
+- Si un objeto queda **sin `receipt.recipients` recuperables** (notificación SNS perdida), el
+  sobre SMTP **no es recuperable** del objeto → **cuarentena durable + alerta**, **nunca** MIME
+  (ver `poc_reconcile.py` y §"RAW conservado sin sobre recuperable").
 - Defensa en profundidad: SQS (durable, DLQ) como vía primaria + barrido de reconciliación como
   backstop.
 
 ## 6. IAM mínimo, cifrado, privacidad, integridad, retención, ciclo de vida `[PROPUESTO]`
 
 - **IAM (least privilege):**
-  - Rol de SES (receipt rule): `s3:PutObject` **solo** en `tribuu-inbound-raw/<prefix>/*`;
-    `kms:GenerateDataKey` en la CMK concreta; `lambda:InvokeFunction` en la función; condición
-    `aws:SourceAccount`/`aws:SourceArn` = la receipt rule específica.
-  - Lambda: `s3:PutObject` (sidecar), `sqs:SendMessage` en la cola; nada más.
+  - SES (bucket/KMS/SNS policy): `s3:PutObject` en `<prefix>/*`; `kms:GenerateDataKey*`+`kms:Decrypt`
+    en la CMK; `SNS:Publish` en el topic; condición `AWS:SourceAccount`/`AWS:SourceArn` = la receipt rule.
   - Worker: `s3:GetObject` (solo lectura, prefijo), `sqs:ReceiveMessage/DeleteMessage`,
     `kms:Decrypt` en la CMK; **sin** permisos de borrado ni admin de bucket.
 - **Cifrado — caveat verificado:** la opción "message encryption" de SES usa el **cliente de
@@ -129,8 +133,8 @@ la escritura durable del objeto.
   de `postgres_bytea` MVP → object_storage futuro). Eso **revisa la decisión de backend MVP de
   ADR-050**. (No se modifica aquí.)
 - **ADR-047:** cambia el proveedor inbound (Resend → **AWS SES**) y **refuerza** la semántica:
-  "recibido" pasa a significar "almacenado durablemente en nuestro S3" (SES rebota si no puede
-  almacenar) — más fuerte que el ACK de Resend. **Revisión requerida.** (No se modifica aquí.)
+  "recibido" pasaría a significar "almacenado durablemente en nuestro S3" `[PENDIENTE DE PRUEBA]`
+  — potencialmente más fuerte que el ACK de Resend. **Revisión requerida.** (No se modifica aquí.)
 - **ADR-016:** la cola durable puede pasar a **SQS** (nativa, DLQ) + reconciliación S3, en vez
   del outbox PG como primario; `provider_events` sigue registrando el intake durable. La
   seguridad multitenant del despachador (SECURITY DEFINER) sigue aplicando al lado PG; el consumo
@@ -147,17 +151,17 @@ calcula el almacenamiento del flujo de **1 mes**; precios de las páginas oficia
 **Tarifas unitarias verificadas:** SES recepción **$0.10/1.000 emails** + **$0.09/1.000
 chunks(256 KB)**; S3 Standard **$0.023/GB-mes**, **PUT $0.005/1.000**, **GET $0.0004/1.000**;
 egress a Internet **primeros 100 GB/mes gratis**, luego ~$0.09/GB; SQS **$0.40/millón** (1M
-gratis/mes); SNS $0.50/millón (1M gratis); Lambda free tier amplio; KMS ~$0.03/10.000 req +
+gratis/mes); SNS $0.50/millón (1M gratis); KMS ~$0.03/10.000 req +
 **$1/mes por CMK**.
 
 | Concepto (mensual) | 1.000 emails | 10.000 | 100.000 |
 |---|---|---|---|
 | SES recepción ($0.10/1k) | $0.10 | $1.00 | $10.00 |
 | SES chunks (2×, $0.09/1k) | $0.18 | $1.80 | $18.00 |
-| S3 PUT (raw+sidecar, 2×) | ~$0.00 | $0.10 | $1.00 |
-| S3 GET (raw+sidecar, 2×) | ~$0.00 | ~$0.01 | $0.08 |
+| S3 PUT (raw + markers) | ~$0.00 | $0.10 | $1.00 |
+| S3 GET (raw) | ~$0.00 | ~$0.01 | $0.08 |
 | S3 almacenamiento (500 KB × N, 1 mes) | ~$0.01 | $0.12 | $1.15 |
-| SQS / Lambda / SNS | free tier | free tier | ~$0.00–0.20 |
+| SQS / SNS | free tier | free tier | ~$0.00–0.20 |
 | KMS (req + $1 CMK) | ~$1.01 | ~$1.06 | ~$1.60 |
 | Egress S3 (0.5/5/50 GB, <100 GB) | **$0 (gratis)** | **$0 (gratis)** | **$0 (gratis)** |
 | **Total aprox./mes** | **~$1.3–1.5** | **~$4–4.5** | **~$31–33** |
@@ -182,8 +186,8 @@ Verificaciones:
    configurada → detección.
 4. **Seguridad multitenant:** dos destinatarios de prueba → resolución correcta desde
    `receipt.recipients`; un **MIME `To:` falsificado NO debe reenrutar**.
-5. **Pérdida de notificación → reconciliación:** borrar/omitir el mensaje SQS → el barrido
-   descubre el objeto pendiente vía sidecar.
+5. **Pérdida de notificación → reconciliación:** borrar/omitir el mensaje SQS → `poc_reconcile.py`
+   (S3 fuente de verdad) descubre el objeto huérfano; sin recipients autoritativos → cuarentena, nunca MIME.
 6. **Cifrado y descifrado en Python:** objeto SSE-KMS leído y descifrado por el worker Python
    (confirmar que NO se usó la client-side encryption de SES).
 

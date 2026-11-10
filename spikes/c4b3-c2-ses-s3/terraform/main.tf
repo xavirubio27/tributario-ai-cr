@@ -1,12 +1,11 @@
 # =============================================================================
-# Spike C4-B3 / C2 — PoC AWS SES Receiving -> S3. BORRADOR IaC, NO APLICADO.
+# Spike C4-B3 / C2 — PoC AWS SES Receiving -> S3 -> SNS -> SQS. BORRADOR, NO APLICADO.
 # Requiere `terraform fmt/init -backend=false/validate` por el propietario y
 # APROBACIÓN de inventario/presupuesto (../README.md §A) antes de `apply`.
 #
-# Diseño: SES receipt rule -> acción S3 (MIME crudo) + notificación SNS nativa
-# -> SQS (portador DURABLE y AUTORITATIVO de receipt.recipients + objectKey).
-# SIN Lambda: los destinatarios del SOBRE vienen de SES, no de un sidecar ni
-# de cabeceras MIME. Resuelve el hueco "Lambda falla antes del sidecar".
+# Remediación INFRA-H1..L3 (ver ../REMEDIATION_INFRA_H1_L3.md). Diseño sin Lambda:
+# SES -> acción S3 (MIME crudo, SSE-KMS) + notificación SNS nativa (receipt.recipients
+# + objectKey) -> SQS. El ledger durable (processed/quarantine/rejected) vive en S3.
 # =============================================================================
 
 data "aws_caller_identity" "current" {}
@@ -16,18 +15,17 @@ locals {
   bucket_name   = "tribuu-${var.bucket_suffix}-inbound-raw-${local.account_id}"
   rule_set_name = "tribuu-poc-c4b3"
   rule_name     = "capture-to-s3"
-  # ARN de la receipt-rule (string, no referencia a recurso) para romper ciclos en las policies.
+  # ARN de la receipt-rule como STRING (no referencia a recurso) para romper ciclos de policy.
   receipt_rule_arn = "arn:aws:ses:us-east-1:${local.account_id}:receipt-rule-set/${local.rule_set_name}:receipt-rule/${local.rule_name}"
 }
 
-# --- KMS CMK para SSE-KMS del bucket (NO la message-encryption client-side de SES) ---
+# --- KMS CMK para SSE-KMS de S3 y SNS (NO la message-encryption client-side de SES) ---
 resource "aws_kms_key" "evidence" {
   description             = "Tribuu PoC C4B3 - SSE-KMS inbound evidence"
   deletion_window_in_days = 7
   enable_key_rotation     = true
 
-  # La key policy REEMPLAZA la default: incluir root (evita lockout) + SES GenerateDataKey.
-  # El worker obtiene kms:Decrypt vía su IAM policy (la sentencia root habilita IAM).
+  # La key policy REEMPLAZA la default: root (evita lockout) + SES (S3 SSE-KMS y SNS).
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -39,11 +37,12 @@ resource "aws_kms_key" "evidence" {
         Resource  = "*"
       },
       {
-        # REQUERIDO: sin esto, el PutObject de SES a un bucket SSE-KMS FALLA (-> rebote).
-        Sid       = "AllowSESGenerateDataKey"
+        # REQUERIDO (INFRA-H4): sin GenerateDataKey el PutObject SSE-KMS de SES falla (-> rebote).
+        # Decrypt es necesario para la entrega a bucket SSE-KMS y para SNS cifrado.
+        Sid       = "AllowSESUseOfKey"
         Effect    = "Allow"
         Principal = { Service = "ses.amazonaws.com" }
-        Action    = ["kms:GenerateDataKey*"]
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
         Resource  = "*"
         Condition = {
           StringEquals = {
@@ -61,7 +60,7 @@ resource "aws_kms_alias" "evidence" {
   target_key_id = aws_kms_key.evidence.key_id
 }
 
-# --- S3 bucket: copia durable del MIME crudo ---
+# --- S3 bucket: copia durable del MIME crudo + ledger durable (markers/) ---
 resource "aws_s3_bucket" "raw" {
   bucket        = local.bucket_name
   force_destroy = true # PoC: permite destroy con objetos presentes
@@ -91,6 +90,7 @@ resource "aws_s3_bucket_versioning" "raw" {
   versioning_configuration { status = "Enabled" }
 }
 
+# Retención >= 30 d: supera SQS (máx 14 d), DLQ y ventana de reconciliación/investigación (H7).
 resource "aws_s3_bucket_lifecycle_configuration" "raw" {
   bucket = aws_s3_bucket.raw.id
   rule {
@@ -133,9 +133,10 @@ resource "aws_s3_bucket_policy" "raw" {
   })
 }
 
-# --- SNS: notificación nativa de SES (recipients + objectKey), sin body ---
+# --- SNS: notificación nativa de SES (recipients + objectKey), cifrada en reposo (H4/M5) ---
 resource "aws_sns_topic" "receipt" {
-  name = "tribuu-poc-c4b3-receipt"
+  name              = "tribuu-poc-c4b3-receipt"
+  kms_master_key_id = aws_kms_key.evidence.id # SSE en reposo. SES publica bajo AllowSESUseOfKey. # VERIFY
 }
 
 resource "aws_sns_topic_policy" "receipt" {
@@ -158,22 +159,32 @@ resource "aws_sns_topic_policy" "receipt" {
   })
 }
 
-# --- SQS: cola durable que consume el worker + DLQ ---
+# --- SQS: cola intake + DLQ del consumidor + DLQ de la suscripción SNS (H3) ---
+# SSE gestionada por SQS (cifrado en reposo sin cross-grant de CMK) (M5/H4).
 resource "aws_sqs_queue" "dlq" {
-  name                      = "tribuu-poc-c4b3-dlq"
-  message_retention_seconds = 1209600 # 14 d
+  name                      = "tribuu-poc-c4b3-consumer-dlq"
+  message_retention_seconds = 1209600 # 14 d (máx)
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_sqs_queue" "sns_dlq" {
+  name                      = "tribuu-poc-c4b3-sns-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
 }
 
 resource "aws_sqs_queue" "intake" {
   name                       = "tribuu-poc-c4b3-intake"
-  message_retention_seconds  = 1209600 # 14 d
-  visibility_timeout_seconds = 300     # VERIFY: > peor tiempo de procesamiento del worker
+  message_retention_seconds  = 1209600
+  visibility_timeout_seconds = 300 # VERIFY: alineado con el heartbeat del worker (ChangeMessageVisibility)
+  sqs_managed_sse_enabled    = true
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq.arn
     maxReceiveCount     = 5
   })
 }
 
+# La cola intake acepta SOLO de este SNS; la SNS-DLQ acepta SOLO de este SNS.
 resource "aws_sqs_queue_policy" "intake" {
   queue_url = aws_sqs_queue.intake.id
   policy = jsonencode({
@@ -189,11 +200,68 @@ resource "aws_sqs_queue_policy" "intake" {
   })
 }
 
+resource "aws_sqs_queue_policy" "sns_dlq" {
+  queue_url = aws_sqs_queue.sns_dlq.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowSNSSendMessage"
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.sns_dlq.arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.receipt.arn } }
+    }]
+  })
+}
+
+# Suscripción SNS->SQS con DLQ INDEPENDIENTE para fallos de entrega de la suscripción (H3).
 resource "aws_sns_topic_subscription" "intake" {
   topic_arn            = aws_sns_topic.receipt.arn
   protocol             = "sqs"
   endpoint             = aws_sqs_queue.intake.arn
   raw_message_delivery = true
+  redrive_policy       = jsonencode({ deadLetterTargetArn = aws_sqs_queue.sns_dlq.arn })
+  depends_on           = [aws_sqs_queue_policy.intake, aws_sqs_queue_policy.sns_dlq]
+}
+
+# --- Alarmas efectivamente provisionadas (M4): profundidad de ambas DLQ ---
+resource "aws_sns_topic" "alerts" {
+  name = "tribuu-poc-c4b3-alerts"
+}
+
+resource "aws_sns_topic_subscription" "alerts_email" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.budget_alarm_email
+}
+
+resource "aws_cloudwatch_metric_alarm" "consumer_dlq" {
+  alarm_name          = "tribuu-poc-c4b3-consumer-dlq-nonempty"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "sns_dlq" {
+  alarm_name          = "tribuu-poc-c4b3-sns-dlq-nonempty"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.sns_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  treat_missing_data  = "notBreaching"
 }
 
 # --- SES Email Receiving ---
@@ -205,7 +273,9 @@ resource "aws_ses_receipt_rule_set" "poc" {
   rule_set_name = local.rule_set_name
 }
 
+# Protección (INFRA-L): activar el rule set REEMPLAZA el activo existente. Opt-in explícito.
 resource "aws_ses_active_receipt_rule_set" "poc" {
+  count         = var.activate_rule_set ? 1 : 0
   rule_set_name = aws_ses_receipt_rule_set.poc.rule_set_name
 }
 
@@ -220,7 +290,7 @@ resource "aws_ses_receipt_rule" "capture" {
   s3_action {
     bucket_name       = aws_s3_bucket.raw.id
     object_key_prefix = var.raw_object_prefix
-    topic_arn         = aws_sns_topic.receipt.arn # notificación nativa con recipients + objectKey
+    topic_arn         = aws_sns_topic.receipt.arn
     position          = 1
   }
 
@@ -231,7 +301,7 @@ resource "aws_ses_receipt_rule" "capture" {
   ]
 }
 
-# --- Usuario IAM worker (PoC, scoped, de corta vida; eliminar en teardown) ---
+# --- Usuario IAM worker (PoC, scoped). Preferir STS/role; access key temporal + revocación (M7) ---
 resource "aws_iam_user" "worker" {
   name          = "tribuu-poc-c4b3-worker"
   force_destroy = true
@@ -243,17 +313,22 @@ resource "aws_iam_user_policy" "worker" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*" },
-      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = aws_s3_bucket.raw.arn, Condition = { StringLike = { "s3:prefix" = ["${var.raw_object_prefix}*"] } } },
-      { Effect = "Allow", Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"], Resource = aws_sqs_queue.intake.arn },
-      { Effect = "Allow", Action = ["kms:Decrypt"], Resource = aws_kms_key.evidence.arn }
+      # Lectura del RAW y escritura del ledger durable (markers/). NADA más en el bucket.
+      { Sid = "ReadRaw", Effect = "Allow", Action = ["s3:GetObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*" },
+      { Sid = "RWMarkers", Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.markers_prefix}*" },
+      { Sid = "ListScoped", Effect = "Allow", Action = ["s3:ListBucket"], Resource = aws_s3_bucket.raw.arn, Condition = { StringLike = { "s3:prefix" = ["${var.raw_object_prefix}*", "${var.markers_prefix}*"] } } },
+      { Sid = "Sqs", Effect = "Allow", Action = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"], Resource = aws_sqs_queue.intake.arn },
+      # Decrypt para leer RAW; GenerateDataKey para ESCRIBIR markers cifrados SSE-KMS.
+      { Sid = "Kms", Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey*"], Resource = aws_kms_key.evidence.arn },
+      # Permisos NEGATIVOS (M/L): nunca borrar ni escribir sobre el RAW.
+      { Sid = "DenyRawMutation", Effect = "Deny", Action = ["s3:DeleteObject", "s3:PutObject"], Resource = "${aws_s3_bucket.raw.arn}/${var.raw_object_prefix}*" }
     ]
   })
 }
-# NOTA: la access key del worker se crea FUERA de TF (o con aws_iam_access_key en un apply
-# aparte) y se ELIMINA en el teardown. No se emite aquí para no persistir secretos en el state.
+# NOTA (M7): NO se emite access key en TF (no persistir secretos en el state). El propietario
+# usa STS AssumeRole/sesión temporal; si usa access key, la ROTA/ELIMINA en el teardown (§D).
 
-# --- Control de costos: AWS Budgets (ALERTA, no límite de gasto) + ver README §G ---
+# --- Control de costos: AWS Budgets (ALERTA, no límite; ver README §G). Precios verif. 2026-11 ---
 resource "aws_budgets_budget" "poc" {
   name         = "tribuu-poc-c4b3"
   budget_type  = "COST"

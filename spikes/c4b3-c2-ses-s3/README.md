@@ -1,172 +1,155 @@
-# Spike C4-B3 / C2 — AWS SES → S3 (PoC aislada)
+# Spike C4-B3 / C2 — AWS SES → S3 → SNS → SQS (PoC aislada)
 
-> **PoC NO PRODUCTIVA.** Investiga la resolución del CRITICAL **C4B3-01** (preservar la
-> evidencia primaria en almacenamiento propio antes de aceptar el correo). **No** es
-> implementación productiva. PR #1 en DRAFT; no se tocan ADR aceptados.
+> **PoC NO PRODUCTIVA.** Investiga la resolución del CRITICAL **C4B3-01**. **IaC NO APLICADA.**
+> **Ninguna persona de Claude Code puede aprovisionar esto** (sin credenciales AWS, cuenta ni
+> DNS): lo aplica y ejecuta el **propietario** tras aprobar §A. **Solo datos sintéticos.**
+> PR #1 en DRAFT; ADR aceptados intactos; ADR-047/050/016 en DRAFT.
 >
-> **IaC NO APLICADA.** Terraform reproducible **sin ejecutar**. **Ninguna persona de Claude
-> Code puede aprovisionar esto** (no hay credenciales AWS, cuenta ni control de DNS en el
-> entorno): lo aplica y ejecuta el **propietario** tras aprobar §A. **Solo datos sintéticos**,
-> nunca documentos fiscales reales ni PII.
+> **Diseño unificado:** `SES receipt rule → acción S3 (MIME crudo, SSE-KMS) + notificación SNS
+> nativa (receipt.recipients + objectKey) → SQS → worker`. **Sin Lambda ni sidecar.** Ledger
+> durable de resultados en S3 bajo `markers/`.
+
+## Remediación INFRA-H1→L3 (resumen)
+Matriz completa con estado/modificación/prueba/evidencia en
+[`REMEDIATION_INFRA_H1_L3.md`](REMEDIATION_INFRA_H1_L3.md). Cambios clave de esta ronda:
+- **Cuarentena/ledger DURABLE en S3** (`markers/processed|quarantine|rejected`); el worker **no
+  borra de SQS** sin resultado durable y verificado (H1/H2).
+- **`poc_reconcile.py`**: S3 fuente de verdad; detecta huérfanos (id, antigüedad, motivo, sin PII) (H3).
+- **DLQ independiente** para la suscripción SNS→SQS + alarmas CloudWatch de ambas DLQ (H3/M4).
+- **KMS key policy** con SES `GenerateDataKey*`+`Decrypt` (o el PutObject SSE-KMS falla) y
+  SourceAccount/SourceArn; **cifrado en reposo** en S3 (SSE-KMS), SNS (CMK) y SQS (SSE-SQS) (H4/M5).
+- **Retención S3 = 30 d** (> SQS/DLQ/reconciliación) (H7).
+- Worker: **idempotencia durable** (markers en S3, no solo SQLite), **heartbeat** de visibilidad,
+  **logs redactados** sin PII (M1/M2/M3).
+- Terraform: **validaciones de variables**, **protección del rule set activo** (`activate_rule_set`
+  opt-in), orden de dependencias, credenciales temporales (M6/M7/L1/L2).
+- Docs **unificadas**; la afirmación "escritura S3 precede a la aceptación SMTP" reclasificada
+  **PENDIENTE DE PRUEBA** (H5/H6).
 
 ---
 
-## Resoluciones de esta ronda (preflight)
-
-| # | Petición del orquestador | Resolución |
-|---|---|---|
-| 1 | Worker de prueba SQS (P1/P3/P4/P5) | `poc_worker.py`: idempotencia (SQLite por `messageId`+recipient), SHA-256 en streaming, visibility/DLQ, errores → reintento, logging sin PII |
-| 2 | Pérdida de `receipt.recipients` si S3 ok y Lambda falla antes del sidecar | **Rediseño: se elimina la Lambda.** Los `receipt.recipients` (SOBRE) + `objectKey` viajan en la **notificación SNS nativa de SES** → SQS, portador **durable y autoritativo**, independiente de cualquier Lambda. El hueco desaparece. Residual (S3 ok pero SNS perdida) → **cuarentena + alerta**, **nunca MIME** (ver P3) |
-| 3 | Compatibilidad real SES + SSE-KMS | Verificado: SES necesita **`kms:GenerateDataKey*`** en la CMK (key policy con `ses.amazonaws.com` + SourceAccount/SourceArn) o el `PutObject` falla; bucket policy con **SourceAccount+SourceArn** (no `aws:Referer`); worker con `kms:Decrypt`. Todo en el TF |
-| 4 | Restricciones Terraform | `depends_on` (bucket/KMS/SNS policy antes de la rule), ARN de rule como string para romper ciclos, `active_receipt_rule_set`, `force_destroy`, ventana CMK, teardown (§D) |
-| 5 | Validaciones no destructivas | **`terraform`/`tofu` NO están instalados en este entorno** → `fmt/init/validate` **no ejecutables aquí**; el propietario debe correrlos (§C). Revisión manual de sintaxis hecha |
-| 6 | Matriz IAM + inventario exacto | §A.2 (inventario) y §A.6 (matriz IAM) |
-| 7 | AWS Budgets $10 = alerta, no límite | Aclarado en §A.3/§G: **Budgets NO detiene el gasto**, solo **notifica** |
-| 8 | Prompt de auditoría Codex | `CODEX_AUDIT_PROMPT.md` (recuperación, permisos AWS, Terraform, SQS, aislamiento multitenant) |
-
-**Arquitectura (revisada, sin Lambda):**
-```
-MX subdominio → inbound-smtp.us-east-1.amazonaws.com
-  → SES receipt rule (catch-all del subdominio)
-       acción S3  → MIME crudo en s3://…/<messageId>  (SSE-KMS, ≤40 MB)
-       + topic_arn → SNS (notificación NATIVA: receipt.recipients + objectKey, SIN body)
-  → SNS → SQS (raw delivery, DLQ)
-  → poc_worker.py: HeadObject → GetObject/stream → SHA-256 → captura idempotente (por tenant)
-  → reconciliación (S3 fuente de verdad); orphans sin recipients autoritativos → CUARENTENA
-```
-
----
-
-## A. Paquete de aprobación previo al aprovisionamiento (requerido antes de crear recursos)
+## A. Paquete de aprobación previo al aprovisionamiento
 
 ### A.1 Cuenta y dominio (a confirmar por el propietario)
-- **Cuenta AWS sandbox autorizada:** `<ACCOUNT_ID>` (NO productiva).
-- **Subdominio desechable:** `<p.ej. poc-inbox.ejemplo-test.xyz>` — **NUNCA `inbox.tribuu.ai`**.
-- **Región:** `us-east-1`.
+- **Cuenta AWS sandbox:** `<ACCOUNT_ID>` (NO productiva). **Subdominio desechable:**
+  `<poc-inbox.ejemplo-test.xyz>` (NUNCA `inbox.tribuu.ai`; validado por `variables.tf`).
+  **Región:** `us-east-1`.
 
-### A.2 Inventario de recursos (lo que crea la IaC)
-| Recurso | Propósito | Costo recurrente |
+### A.2 Inventario de recursos
+| Recurso | Propósito | Costo |
 |---|---|---|
-| KMS CMK + alias | SSE-KMS del bucket (cifrado en reposo) | **$1/mes** |
-| S3 bucket + BPA + SSE-KMS + versioning + lifecycle(7 d) + policy TLS-only/SES-puts | Copia durable del MIME crudo | ~$0 (volumen PoC) |
-| SNS topic + topic policy | Notificación nativa SES (recipients+objectKey) | free tier |
-| SNS→SQS subscription | Entrega durable al worker | — |
-| SQS cola + DLQ + queue policy | Cola que consume el worker | free tier |
-| SES domain identity + receipt rule set (activo) + rule (S3 + SNS) | Recepción → S3 + notificación | $0.10/1k + chunks (PoC: céntimos) |
-| IAM: usuario worker scoped | Lectura S3/SQS + Decrypt | $0 |
-| CloudWatch/AWS Budgets | Alertas (no límite) | $0–$0.10 |
+| KMS CMK + alias | SSE-KMS de S3 y SNS | $1/mes |
+| S3 bucket (BPA, SSE-KMS, versioning, lifecycle **30 d**, policy TLS-only/SES-puts) | RAW + ledger `markers/` | ~$0 |
+| SNS topic (SSE) + topic policy | Notificación nativa SES (recipients+objectKey) | free tier |
+| SNS→SQS subscription (con DLQ propia) | Entrega durable | — |
+| SQS intake + **consumer-DLQ** + **sns-DLQ** (SSE-SQS) + policies | Cola del worker + DLQs | free tier |
+| CloudWatch alarms (2× DLQ) + SNS `alerts` + email | Alarmas provisionadas | ~$0 |
+| SES domain identity + receipt rule set (+ rule) | Recepción → S3 + SNS | céntimos |
+| IAM usuario worker (scoped, con Deny negativos) | Lectura RAW, R/W markers, SQS, KMS | $0 |
+| AWS Budgets $10 (ALERTA) | Aviso de costo | ~$0 |
 
-**No hay Lambda** (eliminada en el rediseño del item 2).
+**Sin Lambda.** **Costo máximo previsto: < $5** (CMK $1/mes + uso sintético trivial).
 
-### A.3 Costo máximo previsto y presupuesto
-- **Costo máximo previsto de la PoC: < $5** (dominado por $1/mes de la CMK; uso sintético
-  trivial; egress gratis <100 GB).
-- **AWS Budget `monthly_budget_usd` = $10/mes** con alarmas 50/80/100 %. **ES UNA ALERTA, NO UN
-  LÍMITE DE GASTO** (ver §G): AWS Budgets **notifica**, no detiene recursos.
+### A.3 Presupuesto, rollback, identidades
+- **AWS Budget $10/mes**, alarmas 50/80/100 % — **ES ALERTA, NO LÍMITE** (§G).
+- **Rollback:** `terraform destroy` (bucket `force_destroy`; CMK ventana 7 d). MX/TXT y access
+  key del worker: manual (§D).
+- **Identidades:** aplicar = admin sandbox; worker = **credenciales temporales (STS AssumeRole)**
+  preferidas; si se usa access key, se **revoca** en teardown (M7).
 
-### A.4 Rollback / eliminación
-- `terraform destroy` (bucket con `force_destroy`). CMK entra en ventana de borrado (7 d).
-- **MX/TXT del subdominio:** el propietario los añade y elimina manualmente (fuera de TF si el
-  DNS no está en Route53). No se tocan registros productivos.
-- **Access key del worker:** se crea fuera de TF y se **elimina** en el teardown (§D).
-
-### A.5 Identidades y permisos requeridos
-- **Para aplicar la IaC:** principal admin del **sandbox** (S3/KMS/SQS/SNS/SES/IAM/Budgets/CW).
-- **Worker de la PoC:** usuario IAM scoped (§A.6), access key de corta vida, se elimina al final.
-
-### A.6 Matriz de permisos IAM / recursos (item 6)
-| Principal | Acciones | Recurso | Condición |
+### A.4 Matriz de permisos IAM (item 6 + permisos negativos)
+| Principal | Acciones | Recurso | Condición/Nota |
 |---|---|---|---|
-| `ses.amazonaws.com` (bucket policy) | `s3:PutObject` | `…/inbound-raw/*` | SourceAccount + SourceArn=receipt-rule |
-| `ses.amazonaws.com` (KMS key policy) | `kms:GenerateDataKey*` | CMK | SourceAccount + SourceArn=receipt-rule |
-| `ses.amazonaws.com` (SNS topic policy) | `SNS:Publish` | topic | SourceAccount + SourceArn=receipt-rule |
-| `sns.amazonaws.com` (SQS queue policy) | `sqs:SendMessage` | cola intake | SourceArn=SNS topic |
-| root de la cuenta (KMS key policy) | `kms:*` | CMK | (habilita IAM; evita lockout) |
-| usuario worker (IAM) | `s3:GetObject` | `…/inbound-raw/*` | — |
-| usuario worker (IAM) | `s3:ListBucket` | bucket | prefix `inbound-raw/*` |
-| usuario worker (IAM) | `sqs:ReceiveMessage/DeleteMessage/GetQueueAttributes` | cola intake | — |
-| usuario worker (IAM) | `kms:Decrypt` | CMK | — |
+| `ses.amazonaws.com` (bucket policy) | `s3:PutObject` | `…/inbound-raw/*` | SourceAccount+SourceArn=rule |
+| `ses.amazonaws.com` (KMS key policy) | `kms:GenerateDataKey*`,`kms:Decrypt` | CMK | SourceAccount+SourceArn=rule |
+| `ses.amazonaws.com` (SNS topic policy) | `SNS:Publish` | topic | SourceAccount+SourceArn=rule |
+| `sns.amazonaws.com` (SQS policies) | `sqs:SendMessage` | intake + sns-DLQ | SourceArn=topic |
+| root (KMS) | `kms:*` | CMK | habilita IAM; evita lockout |
+| worker (IAM) | `s3:GetObject` | `inbound-raw/*` | — |
+| worker (IAM) | `s3:GetObject`,`s3:PutObject` | `markers/*` | ledger durable |
+| worker (IAM) | `s3:ListBucket` | bucket | prefix `inbound-raw/*`,`markers/*` |
+| worker (IAM) | `sqs:Receive/Delete/ChangeMessageVisibility/GetQueueAttributes` | intake | heartbeat |
+| worker (IAM) | `kms:Decrypt`,`kms:GenerateDataKey*` | CMK | leer RAW / escribir markers cifrados |
+| worker (IAM) **DENY** | `s3:DeleteObject`,`s3:PutObject` | `inbound-raw/*` | **permiso negativo** (no mutar RAW) |
 
-> **Acción solicitada:** aprobar A.1–A.6 (cuenta, subdominio, inventario, presupuesto $10,
+> **Acción solicitada:** aprobar A.1–A.4 (cuenta, subdominio, inventario, presupuesto $10,
 > identidades) **antes** de cualquier `terraform apply`.
 
 ---
 
-## B. Terraform (`./terraform`)
-`versions.tf`, `variables.tf`, `main.tf`, `outputs.tf`. Flujo (propietario, **tras** aprobar A):
+## B. Terraform (`./terraform`) — flujo del propietario (tras aprobar A)
 ```
 cd terraform
-terraform fmt -check
-terraform init -backend=false   # o con backend remoto del sandbox
-terraform validate
+terraform fmt -check && terraform init -backend=false && terraform validate
 terraform plan -var='subdomain=poc-inbox.ejemplo-test.xyz' \
-               -var='budget_alarm_email=owner@ejemplo-test.xyz' -var='monthly_budget_usd=10'
-# REVISAR plan/costos ⇒ si OK y aprobado:
-terraform apply                 # <-- solo tras aprobación explícita (A)
-# añadir MX + TXT del subdominio (ver outputs) en el DNS del propietario
-# ... ejecutar P1–P5 con poc_worker.py ...
-terraform destroy               # teardown (§D)
+               -var='budget_alarm_email=owner@ejemplo-test.xyz'
+# REVISAR ⇒ si aprobado:  terraform apply
+# activar el rule set SOLO tras verificar que no hay otro activo:
+#   terraform apply -var='activate_rule_set=true'   (o activarlo manual en la consola SES)
+# añadir MX + TXT del subdominio (outputs) en el DNS del propietario
+# ejecutar P1–P5 (poc_worker.py / poc_reconcile.py) ; luego  terraform destroy
 ```
 
----
+## C. Validaciones no destructivas — resultado honesto (M8/item F)
+- **`terraform fmt` / `init -backend=false` / `validate`: NO ejecutados** — no hay binario
+  `terraform`/`tofu` en el entorno de Claude Code (`terraform/tofu/opentofu not found`). **NO se
+  sustituye `validate` por inspección manual declarada como PASS.** El propietario debe
+  ejecutarlos y adjuntar la salida antes de `apply`.
+- **Sí ejecutado:** `python3 -m py_compile poc_worker.py poc_reconcile.py` (ver matriz).
+- Chequeo de balance de llaves/corchetes de los `.tf` (NO es un `validate`, solo descarta
+  desbalances triviales).
 
-## C. Validaciones no destructivas (item 5) — resultado
-- `terraform fmt` / `init -backend=false` / `validate`: **NO ejecutados en el entorno de Claude
-  Code** porque **no hay binario `terraform`/`tofu` instalado** (comprobado: `terraform/tofu/
-  opentofu not found`). **El propietario debe ejecutarlos** antes de `apply` y adjuntar la
-  salida. Se hizo **revisión manual de sintaxis** y se marcaron puntos `# VERIFY` en `main.tf`.
-
----
-
-## D. Checklist de teardown
+## D. Teardown
 - [ ] `terraform destroy` OK (bucket vaciado por `force_destroy`).
-- [ ] Access key del usuario worker **eliminada**.
-- [ ] CMK programada para borrado (ventana 7 d).
+- [ ] Access key / sesión STS del worker **revocada**.
+- [ ] CMK programada para borrado (7 d).
 - [ ] **MX/TXT del subdominio eliminados** del DNS del propietario.
-- [ ] $0 de recursos residuales en Cost Explorer / Budgets.
+- [ ] $0 residual en Cost Explorer / Budgets; markers y DLQs vacíos.
 
 ---
 
-## E. Plan de pruebas obligatorias (PASS/FAIL)
+## E. Plan de pruebas (PASS/FAIL) — a ejecutar en la PoC
 
-**P1 — Durabilidad.** Correo sintético con adjunto → **PASS** si el MIME crudo aparece íntegro
-en S3, `HeadObject` da tamaño/etag, el worker calcula **SHA-256** y recupera bytes idénticos.
-**Fallo de escritura S3** (quitar permiso de SES) → registrar el **resultado SMTP real** (se
-espera **rebote**). **PASS** si no hay aceptación silenciosa.
+**P1 — Durabilidad y resultado SMTP (H6).** Correo sintético → MIME crudo íntegro en S3;
+`HeadObject`; **SHA-256** reproducible. **Observar el código SMTP real** ante: éxito (se espera
+250), **AccessDenied** de S3, **fallo KMS** (sin GenerateDataKey), y **error de almacenamiento**.
+**PASS** si ninguna condición produce aceptación silenciosa; registrar el resultado SMTP de cada
+caso (NO se declara el orden "almacenado antes de aceptar" sin esta evidencia).
 
-**P2 — Seguridad multitenant.** Dos buzones simulados → cada evidencia al tenant correcto desde
-`receipt.recipients`. **MIME `To:` falsificado** → **PASS** si enruta por el **sobre SES** y
-**no** se expone evidencia entre empresas.
+**P2 — Seguridad multitenant (H8) — alcance explícito.** Dos buzones simulados + **MIME `To:`
+falsificado**. Distinguir y marcar por separado:
+- **autoridad del sobre** (routing **solo** desde `receipt.recipients`) → **probable en la PoC**;
+- **almacenamiento tenant-scoped** (copia/markers por tenant) → **probable en la PoC**;
+- **resolución de empresa vía C4-B1** (registro Supabase) → **PENDIENTE (fuera del alcance PoC)**;
+- **aislamiento real con RLS** (Postgres) → **PENDIENTE (fuera del alcance PoC)**.
+Si una garantía no se prueba, se declara **PENDIENTE**, nunca PASS.
 
-**P3 — Recuperación / reconciliación.** **Pérdida de notificación** (borrar el mensaje SQS) → el
-**barrido** (S3 fuente de verdad) descubre el objeto. **Objeto sin `receipt.recipients`
-recuperables** (SNS perdida, sin sidecar): **NO** se usa MIME → **CUARENTENA + alerta**; **PASS**
-si el sistema lo marca para revisión y **nunca** mis-enruta. Si alguien propusiera recuperar el
-sobre desde el MIME → **registrar HALLAZGO BLOQUEANTE** (el MIME no es autoridad de sobre).
+**P3 — Recuperación.** Pérdida de notificación (borrar SQS) → `poc_reconcile.py` descubre el
+huérfano. **Sin `receipt.recipients` recuperables** → **CUARENTENA durable + alerta**, **nunca
+MIME**; **PASS** si se marca para revisión manual (la cuarentena **no** es recuperación
+automática del tenant). Proponer recuperar el sobre desde el MIME → **HALLAZGO BLOQUEANTE**.
 
-**P4 — Fallos e idempotencia.** Notificación duplicada → una sola captura (por `messageId`).
-**Caída del worker** a mitad → visibility timeout re-entrega y se recupera sin duplicar.
-**>40 MB** → rebote.
+**P4 — Fallos e idempotencia.** Duplicados → una sola captura (marker durable). **Caída del
+worker** a mitad → visibility/heartbeat re-entrega y recupera sin duplicar ni perder; el worker
+**no borró** sin marker durable. **>40 MB** → rebote.
 
-**P5 — Seguridad y operaciones.** Verificar IAM/KMS mínimas (§A.6), **BPA**, **SSE-KMS**
-(descifrado por el worker **Python**, confirmando que NO se usó la client-side encryption de
-SES), **logs sin PII**. Medir **memoria/latencia/costos** reales y validar **teardown** (§D).
+**P5 — Seguridad/operaciones.** IAM/KMS mínimas (§A.4) + Deny negativos; **BPA**; **SSE** en S3
+(KMS)/SNS(CMK)/SQS(SSE-SQS); descifrado del worker en **Python** (no client-side SES); **logs sin
+PII**; memoria/latencia/costos reales; **teardown** (§D).
 
----
+## F. RAW conservado sin sobre recuperable (documentación expresa, item A7)
+Si la acción S3 tiene éxito pero **la notificación SNS se pierde** y no hay otro portador
+autoritativo, el `.eml` queda en S3 **pero el sobre SMTP (`receipt.recipients`) no es
+recuperable** del objeto (las cabeceras MIME **no** son autoridad). Resultado: el objeto es un
+**huérfano** → `poc_reconcile.py` lo detecta → **cuarentena + alerta**, **sin** enrutar. No se
+pierde la evidencia (RAW preservado), pero **el tenant no se resuelve automáticamente**. Mitigación:
+SNS→SQS es durable (reintentos + DLQ de suscripción); los huérfanos son un caso límite acotado.
 
-## F. Entregable final de la PoC
-Informe **PASS/FAIL** por prueba, evidencia (sintética), **costos reales**, riesgos residuales y
-recomendación de adopción → **nueva auditoría Codex** para decidir si **C4B3-01** puede cerrarse.
-No se cierra sin esa auditoría; no hay merge ni cambios productivos.
-
-## G. Nota sobre AWS Budgets (item 7)
-**AWS Budgets es un mecanismo de ALERTA, no un límite de gasto obligatorio.** No detiene ni
-elimina recursos al superar el umbral; solo envía notificaciones. Un corte efectivo requeriría
-*budget actions*/automatización adicional (no incluida en la PoC). El control real del gasto se
-apoya en: el **radio de impacto pequeño** de la PoC (<$5 previsto), el **teardown reproducible**,
-y la **vigilancia manual** del propietario ante las alarmas.
+## G. AWS Budgets = ALERTA, no límite (item 7)
+AWS Budgets **no detiene el gasto**; solo notifica. El control real = radio de impacto pequeño
+(<$5), teardown reproducible y vigilancia manual.
 
 ## H. Gobierno
-PR #1 en DRAFT · ADR aceptados intactos · ADR-047/050/016 en DRAFT · sin merge · **IaC no
-aplicada** · sin recursos facturables hasta aprobar §A · sin DNS productivo · sin datos
-reales/PII · teardown reproducible.
+PR #1 DRAFT · ADR aceptados intactos · ADR-047/050/016 DRAFT · sin merge · **IaC no aplicada** ·
+sin recursos AWS/DNS · sin datos reales/PII · **C4B3-01 NO se declara cerrado** sin PoC real +
+reauditoría Codex.
