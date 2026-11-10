@@ -59,13 +59,44 @@
    aquí; queda PENDIENTE para la integración posterior.
 5. **`terraform validate` no ejecutado** en este entorno: el propietario debe correrlo antes de apply.
 
-## Verificaciones ejecutadas (evidencia reproducible)
+## Ronda 2 — reauditoría de `23f6ffd` (NEW-H1..H5, NEW-M1/M2)
+
+| ID | Hallazgo | Estado | Modificación | Prueba |
+|---|---|---|---|---|
+| **NEW-H1** | `check→put` no atómico; conflictos que podían sobrescribir | Remediado(código) | **Escritura condicional `IfNoneMatch="*"`**; `412 PreconditionFailed` → lee existente y compara; **verificación de contenido** (GetObject) no solo Head; conflictos **append-only** por sha; ids canónicos con delimitador | test_01/02/10/14/15 PASS |
+| **NEW-H2** | Completitud multirecipient | Remediado(código) | **Manifest inmutable** con `expected_recipients`; completitud por conjunto `expected-completed` | test_03/14 PASS |
+| **NEW-H3** | Reconciliador declaraba éxito por un solo marker; prefijos ambiguos | Remediado(código) | Estados complete/partial/rejected/quarantine; **claves exactas con delimitador** (sin `abc`/`abcd`) | test_03/04/05 PASS |
+| **NEW-H4** | Cuarentena/alertas | Remediado(código/IaC) | Cuarentena durable (condicional, verificada) + alarmas DLQ (ronda 1) | test_06/07/11 PASS |
+| **NEW-H5** | Heartbeat no cubría el fan-out; borrado inseguro | Remediado(código) | Heartbeat envuelve TODO el procesamiento; **fallo de visibilidad → abortar sin borrar**; `DeleteMessage` solo con resultado durable completo | test_08/12/13 PASS |
+| **NEW-M1** | Referencia inequívoca al RAW | Remediado(código) | Cada marker lleva bucket, key, **VersionId**, sha256, size, tipo, event_id, recipient_ref | test_15 PASS |
+| **NEW-M2** | Validación de schema SES; bucket ajeno | Remediado(código) | `validate_notification` estricta; bucket≠configurado o key fuera de prefijo → **cuarentena**; nunca MIME | test_11 PASS |
+| **P5** | IAM user → rol asumible; deps; prefijos; email confirm | Remediado(IaC) | `aws_iam_role.worker` (STS, `max_session_duration`); `check` de prefijos; `depends_on` (SSE, policies, activación final); output de confirmación de email | terraform validate PASS |
+
+## Verificaciones ejecutadas (evidencia reproducible, ronda 2)
 ```
-python3 -m py_compile poc_worker.py poc_reconcile.py   → PASS
-command -v terraform / tofu / opentofu                 → not found (fmt/init/validate NO ejecutados)
-balance de llaves/corchetes de *.tf                    → OK (no es un validate)
-scan de secretos                                       → sin secretos
+python3 tests/test_poc.py                         → Ran 15 tests — OK  (12 escenarios + manifest-fail + concurrencia + raw-ref)
+python3 poc_smoke_test.py                         → complete=1, orphan=1, quarantine=1 (E2E con fakes)
+python3 -m py_compile (worker,reconcile,smoke,fakes,test) → PASS
+terraform v1.9.8 (binario local; sin tocar AWS):
+  terraform fmt -check -diff                       → exit 0 (sin cambios)
+  terraform init -backend=false                    → OK (hashicorp/aws v5.100.0)
+  terraform validate                               → "Success! The configuration is valid." (exit 0)
+  terraform plan                                   → NO ejecutado (requiere credenciales sandbox autorizadas)
+scan de secretos                                   → sin secretos
 ```
+> Las notas "terraform validate NO ejecutado" de la ronda 1 quedan **superadas**: en esta ronda
+> se ejecutó `validate` real (PASS). `plan` sigue pendiente de credenciales sandbox.
+
+## Condiciones que SIGUEN requiriendo AWS real (no verificables sin sandbox)
+1. `terraform plan`/`apply` contra la cuenta sandbox (credenciales autorizadas).
+2. **Orden S3-antes-de-aceptación-SMTP** y **resultado SMTP** ante éxito/AccessDenied/fallo KMS/
+   error de almacenamiento (P1).
+3. Que **SES publique a un SNS cifrado con CMK** con la key policy dada (`# VERIFY` en `main.tf`).
+4. Entrega real **SNS→SQS** y DLQ de suscripción ante fallo (P3/P4 con infra real).
+5. Confirmación efectiva de la **suscripción de email** de las alarmas.
+6. Comportamiento real de **>40 MB** (rebote) y límites por región/configuración SES.
+7. Aislamiento **C4-B1 + RLS** (fuera del alcance de esta PoC; integración posterior).
+8. Costos reales medidos.
 
 ## Commit final para reauditoría
 Ver el commit de esta remediación en la rama `docs/adr-050-draft` del PR #1 (no merge). Auditar

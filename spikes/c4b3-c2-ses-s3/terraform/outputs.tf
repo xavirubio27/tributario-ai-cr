@@ -38,9 +38,14 @@ output "kms_key_arn" {
   value = aws_kms_key.evidence.arn
 }
 
-output "worker_user_name" {
-  description = "Preferir STS AssumeRole/sesión temporal. Si se crea access key, ELIMINARLA en teardown."
-  value       = aws_iam_user.worker.name
+output "worker_role_arn" {
+  description = "Rol asumible por el worker (credenciales temporales): aws sts assume-role --role-arn <este>."
+  value       = aws_iam_role.worker.arn
+}
+
+output "alerts_email_confirmation_required" {
+  description = "La suscripción de email al SNS 'alerts' nace PENDIENTE: el propietario debe CONFIRMARLA (clic en el correo de AWS) o las alarmas no se entregan."
+  value       = "CONFIRMAR la suscripción de ${var.budget_alarm_email} al topic alerts antes de confiar en las alarmas."
 }
 
 output "rule_set_active" {

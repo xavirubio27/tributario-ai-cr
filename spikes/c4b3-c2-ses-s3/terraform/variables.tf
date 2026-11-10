@@ -54,6 +54,16 @@ variable "object_expiration_days" {
   }
 }
 
+variable "worker_assumer_principal_arn" {
+  description = "ARN del principal (bootstrap) que puede asumir el rol worker vía STS (credenciales temporales). Vacío => root de la cuenta (amplio; se RECOMIENDA fijar uno explícito)."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.worker_assumer_principal_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:(root|user/.+|role/.+)$", var.worker_assumer_principal_arn))
+    error_message = "Debe ser vacío o un ARN IAM válido (root/user/role)."
+  }
+}
+
 variable "activate_rule_set" {
   description = "Si true, activa el receipt rule set. PELIGRO: reemplaza el rule set ACTIVO existente en la cuenta. Dejar en false y activar manualmente tras verificar que el sandbox no tiene otro activo (INFRA-L: protección de rule set existente)."
   type        = bool

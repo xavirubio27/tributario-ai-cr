@@ -45,7 +45,7 @@ Matriz completa con estado/modificación/prueba/evidencia en
 | SQS intake + **consumer-DLQ** + **sns-DLQ** (SSE-SQS) + policies | Cola del worker + DLQs | free tier |
 | CloudWatch alarms (2× DLQ) + SNS `alerts` + email | Alarmas provisionadas | ~$0 |
 | SES domain identity + receipt rule set (+ rule) | Recepción → S3 + SNS | céntimos |
-| IAM usuario worker (scoped, con Deny negativos) | Lectura RAW, R/W markers, SQS, KMS | $0 |
+| IAM **rol** worker asumible (STS, scoped, Deny negativos) | Lectura RAW, R/W markers, SQS, KMS — credenciales temporales | $0 |
 | AWS Budgets $10 (ALERTA) | Aviso de costo | ~$0 |
 
 **Sin Lambda.** **Costo máximo previsto: < $5** (CMK $1/mes + uso sintético trivial).
@@ -82,7 +82,8 @@ Matriz completa con estado/modificación/prueba/evidencia en
 cd terraform
 terraform fmt -check && terraform init -backend=false && terraform validate
 terraform plan -var='subdomain=poc-inbox.ejemplo-test.xyz' \
-               -var='budget_alarm_email=owner@ejemplo-test.xyz'
+               -var='budget_alarm_email=owner@ejemplo-test.xyz' \
+               -var='worker_assumer_principal_arn=arn:aws:iam::<ACCT>:user/<bootstrap>'
 # REVISAR ⇒ si aprobado:  terraform apply
 # activar el rule set SOLO tras verificar que no hay otro activo:
 #   terraform apply -var='activate_rule_set=true'   (o activarlo manual en la consola SES)
@@ -90,14 +91,24 @@ terraform plan -var='subdomain=poc-inbox.ejemplo-test.xyz' \
 # ejecutar P1–P5 (poc_worker.py / poc_reconcile.py) ; luego  terraform destroy
 ```
 
-## C. Validaciones no destructivas — resultado honesto (M8/item F)
-- **`terraform fmt` / `init -backend=false` / `validate`: NO ejecutados** — no hay binario
-  `terraform`/`tofu` en el entorno de Claude Code (`terraform/tofu/opentofu not found`). **NO se
-  sustituye `validate` por inspección manual declarada como PASS.** El propietario debe
-  ejecutarlos y adjuntar la salida antes de `apply`.
-- **Sí ejecutado:** `python3 -m py_compile poc_worker.py poc_reconcile.py` (ver matriz).
-- Chequeo de balance de llaves/corchetes de los `.tf` (NO es un `validate`, solo descarta
-  desbalances triviales).
+## C. Validaciones ejecutadas (resultado real)
+Terraform v1.9.8 (binario descargado localmente, **sin tocar AWS**):
+- `terraform fmt -check -diff` → **exit 0** (sin cambios).
+- `terraform init -backend=false` → **OK** (provider `hashicorp/aws` v5.100.0).
+- `terraform validate` → **"Success! The configuration is valid."** (exit 0).
+- `terraform plan` → **NO ejecutado** (requiere credenciales sandbox autorizadas).
+
+Pruebas locales (sin AWS, stdlib + fakes):
+- `python3 tests/test_poc.py` → **Ran 15 tests — OK** (12 escenarios + manifest-fail + concurrencia + raw-ref).
+- `python3 poc_smoke_test.py` → E2E: complete=1, orphan=1, quarantine=1.
+- `python3 -m py_compile` (worker/reconcile/smoke/fakes/test) → PASS · scan de secretos → limpio.
+
+## C-bis. Cómo correr las pruebas locales
+```
+cd spikes/c4b3-c2-ses-s3
+python3 tests/test_poc.py      # suite unittest con fakes AWS (sin red, sin AWS)
+python3 poc_smoke_test.py      # demo E2E en memoria
+```
 
 ## D. Teardown
 - [ ] `terraform destroy` OK (bucket vaciado por `force_destroy`).

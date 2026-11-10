@@ -17,6 +17,21 @@ locals {
   rule_name     = "capture-to-s3"
   # ARN de la receipt-rule como STRING (no referencia a recurso) para romper ciclos de policy.
   receipt_rule_arn = "arn:aws:ses:us-east-1:${local.account_id}:receipt-rule-set/${local.rule_set_name}:receipt-rule/${local.rule_name}"
+  # Principal que puede ASUMIR el rol worker (credenciales temporales STS). Por defecto root
+  # de la cuenta (amplio) — se RECOMIENDA fijar un bootstrap principal explícito (variables.tf).
+  worker_assumer = var.worker_assumer_principal_arn != "" ? var.worker_assumer_principal_arn : "arn:aws:iam::${local.account_id}:root"
+}
+
+# Prefijos: ambos deben terminar en '/' y NO solaparse (evita colisiones RAW/markers).
+check "prefixes_disjuntos" {
+  assert {
+    condition = (
+      endswith(var.raw_object_prefix, "/") && endswith(var.markers_prefix, "/") &&
+      !startswith(var.raw_object_prefix, var.markers_prefix) &&
+      !startswith(var.markers_prefix, var.raw_object_prefix)
+    )
+    error_message = "raw_object_prefix y markers_prefix deben terminar en '/' y no solaparse."
+  }
 }
 
 # --- KMS CMK para SSE-KMS de S3 y SNS (NO la message-encryption client-side de SES) ---
@@ -274,9 +289,11 @@ resource "aws_ses_receipt_rule_set" "poc" {
 }
 
 # Protección (INFRA-L): activar el rule set REEMPLAZA el activo existente. Opt-in explícito.
+# Activación FINAL: solo tras existir la regla (dependencia explícita).
 resource "aws_ses_active_receipt_rule_set" "poc" {
   count         = var.activate_rule_set ? 1 : 0
   rule_set_name = aws_ses_receipt_rule_set.poc.rule_set_name
+  depends_on    = [aws_ses_receipt_rule.capture]
 }
 
 resource "aws_ses_receipt_rule" "capture" {
@@ -294,22 +311,34 @@ resource "aws_ses_receipt_rule" "capture" {
     position          = 1
   }
 
+  # Dependencias explícitas: cifrado (SSE+KMS), policy del bucket y policy del SNS deben existir
+  # ANTES de crear la regla (SES escribe AMAZON_SES_SETUP_NOTIFICATION al crearla).
   depends_on = [
     aws_s3_bucket_policy.raw,
+    aws_s3_bucket_server_side_encryption_configuration.raw,
     aws_kms_key.evidence,
     aws_sns_topic_policy.receipt
   ]
 }
 
-# --- Usuario IAM worker (PoC, scoped). Preferir STS/role; access key temporal + revocación (M7) ---
-resource "aws_iam_user" "worker" {
-  name          = "tribuu-poc-c4b3-worker"
-  force_destroy = true
+# --- Rol IAM worker ASUMIBLE (credenciales TEMPORALES vía STS) (NEW-P5/M7) ---
+resource "aws_iam_role" "worker" {
+  name = "tribuu-poc-c4b3-worker"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowAssumeByBootstrap"
+      Effect    = "Allow"
+      Principal = { AWS = local.worker_assumer }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  max_session_duration = 3600 # credenciales de corta vida
 }
 
-resource "aws_iam_user_policy" "worker" {
+resource "aws_iam_role_policy" "worker" {
   name = "tribuu-poc-c4b3-worker"
-  user = aws_iam_user.worker.name
+  role = aws_iam_role.worker.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -325,8 +354,9 @@ resource "aws_iam_user_policy" "worker" {
     ]
   })
 }
-# NOTA (M7): NO se emite access key en TF (no persistir secretos en el state). El propietario
-# usa STS AssumeRole/sesión temporal; si usa access key, la ROTA/ELIMINA en el teardown (§D).
+# NOTA (M7/P5): el worker usa CREDENCIALES TEMPORALES vía `aws sts assume-role` del rol de
+# arriba (max 1 h). No se crean access keys estáticas. La revocación es natural (expiración de
+# la sesión) + eliminación del rol en el teardown (§D). Si on-AWS, usar instance/task role.
 
 # --- Control de costos: AWS Budgets (ALERTA, no límite; ver README §G). Precios verif. 2026-11 ---
 resource "aws_budgets_budget" "poc" {
