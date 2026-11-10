@@ -17,9 +17,6 @@ locals {
   rule_name     = "capture-to-s3"
   # ARN de la receipt-rule como STRING (no referencia a recurso) para romper ciclos de policy.
   receipt_rule_arn = "arn:aws:ses:us-east-1:${local.account_id}:receipt-rule-set/${local.rule_set_name}:receipt-rule/${local.rule_name}"
-  # Principal que puede ASUMIR el rol worker (credenciales temporales STS). Por defecto root
-  # de la cuenta (amplio) — se RECOMIENDA fijar un bootstrap principal explícito (variables.tf).
-  worker_assumer = var.worker_assumer_principal_arn != "" ? var.worker_assumer_principal_arn : "arn:aws:iam::${local.account_id}:root"
 }
 
 # Prefijos: ambos deben terminar en '/' y NO solaparse (evita colisiones RAW/markers).
@@ -329,7 +326,7 @@ resource "aws_iam_role" "worker" {
     Statement = [{
       Sid       = "AllowAssumeByBootstrap"
       Effect    = "Allow"
-      Principal = { AWS = local.worker_assumer }
+      Principal = { AWS = var.worker_assumer_principal_arn } # específico, no root (NEW-P5)
       Action    = "sts:AssumeRole"
     }]
   })

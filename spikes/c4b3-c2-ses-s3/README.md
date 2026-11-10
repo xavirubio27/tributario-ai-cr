@@ -99,7 +99,7 @@ Terraform v1.9.8 (binario descargado localmente, **sin tocar AWS**):
 - `terraform plan` → **NO ejecutado** (requiere credenciales sandbox autorizadas).
 
 Pruebas locales (sin AWS, stdlib + fakes):
-- `python3 tests/test_poc.py` → **Ran 15 tests — OK** (12 escenarios + manifest-fail + concurrencia + raw-ref).
+- `python3 tests/test_poc.py` → **Ran 18 tests — OK** (12 escenarios + concurrencia real 8 hilos + heartbeat async + version-pinning + manifest-mismatch + cuarentena independiente + aceptación).
 - `python3 poc_smoke_test.py` → E2E: complete=1, orphan=1, quarantine=1.
 - `python3 -m py_compile` (worker/reconcile/smoke/fakes/test) → PASS · scan de secretos → limpio.
 

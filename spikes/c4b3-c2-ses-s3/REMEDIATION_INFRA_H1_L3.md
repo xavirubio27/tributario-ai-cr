@@ -98,6 +98,27 @@ scan de secretos                                   → sin secretos
 7. Aislamiento **C4-B1 + RLS** (fuera del alcance de esta PoC; integración posterior).
 8. Costos reales medidos.
 
+## Ronda 3 — bloqueantes finales (reauditoría de `38e96d6`)
+
+| Prioridad | Fix | Evidencia (test/validate) |
+|---|---|---|
+| 1 Carrera Head/Get | HeadObject fija `VersionId` y el GetObject lee **esa** versión (consistencia intra-invocación) | `test_12_version_pinned_no_race` |
+| 2 Conflictos | Marker `conflict/v2` **append-only** con locators COMPLETOS de **canonical y observed**; no se confunde con `completed` ni se sobrescribe | `test_02_conflict_full_locators` |
+| 3 Cuarentena global | Eliminada `quarantine/unknown.json`: identidad propia por notificación (messageId válido o `raw-<digest>`) | `test_14_quarantine_independent_identity` |
+| 4 Cuarentena+alerta en reconcile | `poc_reconcile.py` escribe cuarentena **durable** de orphans (condicional) y emite **alerta accionable** (sink inyectable → SNS en real) | `test_05_sns_lost_orphan_quarantined_and_alerted` |
+| 5 Comparación de manifest | En `exists`, se compara ÍNTEGRO (expected + object.key); mismatch → cuarentena `manifest_mismatch` durable | `test_13_manifest_mismatch` |
+| 6 Heartbeat | Cierre con `join`; **verificación final** de `hb.failed` antes de confirmar; fallo asíncrono real aborta sin borrar | `test_08b_heartbeat_async_failure`, `test_08_*` |
+| 7 Concurrencia | Pruebas con **8 hilos simultáneos** (un único `completed`) y fallo asíncrono | `test_15_concurrency_real_threads` |
+| 8 Terraform | Principal STS **obligatorio y específico** (sin root, validación); `check` de prefijos; `depends_on` (SSE/activación); outputs de confirmación de email | `terraform validate` PASS |
+| Aceptación | NUNCA True/DeleteMessage sin terminal durable preservado | `test_17_acceptance_no_delete_without_durable` |
+
+**Verificaciones ejecutadas (ronda 3, reales):**
+```
+python3 tests/test_poc.py            → Ran 18 tests — OK
+python3 poc_smoke_test.py            → complete/orphan(+cuarentena durable+alerta)/quarantine
+terraform v1.9.8 (local, sin AWS): fmt -check exit 0 · validate "Success! valid." · plan NO ejecutado
+```
+
 ## Commit final para reauditoría
 Ver el commit de esta remediación en la rama `docs/adr-050-draft` del PR #1 (no merge). Auditar
 con `CODEX_AUDIT_PROMPT.md`. **C4B3-01 NO se declara cerrado**: requiere ejecutar la PoC (P1–P5)

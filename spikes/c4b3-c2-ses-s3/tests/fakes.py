@@ -1,12 +1,15 @@
-"""Stubs AWS en memoria para las pruebas locales (sin boto3/moto, solo stdlib).
+"""Stubs AWS en memoria para pruebas locales (stdlib, sin boto3/moto).
 
-Implementan lo justo que usan poc_worker/poc_reconcile: S3 con escritura CONDICIONAL
-(If-None-Match:*), versionado, get/head/list; y SQS con change_message_visibility.
-Fallos inyectables para cubrir los escenarios obligatorios.
+S3 con escritura CONDICIONAL (If-None-Match:*), HISTORIAL DE VERSIONES (para fijar y verificar
+VersionId y descartar carreras Head/Get), thread-safe (concurrencia real), y fallos inyectables.
+SQS con change_message_visibility (fallo inyectable). Body opcionalmente "lento" para ejercitar
+el heartbeat de forma asíncrona.
 """
 from __future__ import annotations
 
 import io
+import threading
+import time
 
 
 class FakeClientError(Exception):
@@ -23,51 +26,87 @@ class _LastModified:
         return self._ts
 
 
+class _SlowBody(io.BytesIO):
+    def __init__(self, data: bytes, delay: float):
+        super().__init__(data)
+        self._delay = delay
+
+    def read(self, n=-1):
+        time.sleep(self._delay)
+        return super().read(n)
+
+
 class FakeS3:
     def __init__(self):
-        self.objects: dict[str, dict] = {}           # key -> {body, version_id, lm}
+        self._lock = threading.RLock()
+        self.objects: dict[str, dict] = {}   # key -> {versions:{vid:bytes}, latest:vid, lm}
         self._ver = 0
-        self.fail_put_keys: set[str] = set()         # lanza AccessDenied en PutObject
-        self.fail_get_keys: set[str] = set()         # lanza error en GetObject (RAW)
+        self.fail_put_keys: set[str] = set()
+        self.fail_get_keys: set[str] = set()
+        self.slow_keys: dict[str, float] = {}   # key -> delay por read (body lento)
         self.put_calls: list[str] = []
 
-    # --- helpers de siembra para tests ---
-    def seed_raw(self, key: str, body: bytes, lm_ts: float = 1000.0):
+    def _next_vid(self) -> str:
         self._ver += 1
-        self.objects[key] = {"body": body, "version_id": f"v{self._ver}", "lm": _LastModified(lm_ts)}
+        return f"v{self._ver}"
+
+    # --- siembra para tests ---
+    def seed_raw(self, key: str, body: bytes, lm_ts: float = 1000.0, slow_delay: float | None = None):
+        with self._lock:
+            vid = self._next_vid()
+            rec = self.objects.setdefault(key, {"versions": {}, "latest": None, "lm": _LastModified(lm_ts)})
+            rec["versions"][vid] = bytes(body)
+            rec["latest"] = vid
+            rec["lm"] = _LastModified(lm_ts)
+            if slow_delay is not None:
+                self.slow_keys[key] = slow_delay
+            return vid
 
     def exists(self, key: str) -> bool:
         return key in self.objects
 
     # --- API estilo boto3 ---
     def put_object(self, Bucket=None, Key=None, Body=b"", ContentType=None, IfNoneMatch=None, **_):
-        self.put_calls.append(Key)
-        if Key in self.fail_put_keys:
-            raise FakeClientError("AccessDenied", 403)
-        if IfNoneMatch == "*" and Key in self.objects:
-            raise FakeClientError("PreconditionFailed", 412)
-        self._ver += 1
-        body = Body if isinstance(Body, (bytes, bytearray)) else bytes(Body)
-        self.objects[Key] = {"body": bytes(body), "version_id": f"v{self._ver}", "lm": _LastModified(1000.0)}
-        return {"VersionId": self.objects[Key]["version_id"], "ETag": f'"{self._ver}"'}
+        with self._lock:
+            self.put_calls.append(Key)
+            if Key in self.fail_put_keys:
+                raise FakeClientError("AccessDenied", 403)
+            if IfNoneMatch == "*" and Key in self.objects:
+                raise FakeClientError("PreconditionFailed", 412)
+            vid = self._next_vid()
+            data = bytes(Body) if not isinstance(Body, (bytes, bytearray)) else bytes(Body)
+            rec = self.objects.setdefault(Key, {"versions": {}, "latest": None, "lm": _LastModified(1000.0)})
+            rec["versions"][vid] = data
+            rec["latest"] = vid
+            return {"VersionId": vid, "ETag": f'"{vid}"'}
 
-    def get_object(self, Bucket=None, Key=None, **_):
+    def _resolve(self, Key, VersionId):
         if Key in self.fail_get_keys:
             raise FakeClientError("InternalError", 500)
-        if Key not in self.objects:
+        rec = self.objects.get(Key)
+        if rec is None:
             raise FakeClientError("NoSuchKey", 404)
-        o = self.objects[Key]
-        return {"Body": io.BytesIO(o["body"]), "VersionId": o["version_id"]}
+        vid = VersionId or rec["latest"]
+        if vid not in rec["versions"]:
+            raise FakeClientError("NoSuchVersion", 404)
+        return vid, rec["versions"][vid]
 
-    def head_object(self, Bucket=None, Key=None, **_):
-        if Key not in self.objects:
-            raise FakeClientError("NotFound", 404)
-        o = self.objects[Key]
-        return {"VersionId": o["version_id"], "ContentLength": len(o["body"])}
+    def get_object(self, Bucket=None, Key=None, VersionId=None, **_):
+        with self._lock:
+            vid, data = self._resolve(Key, VersionId)
+            delay = self.slow_keys.get(Key)
+        body = _SlowBody(data, delay) if delay else io.BytesIO(data)
+        return {"Body": body, "VersionId": vid}
+
+    def head_object(self, Bucket=None, Key=None, VersionId=None, **_):
+        with self._lock:
+            vid, data = self._resolve(Key, VersionId)
+            return {"VersionId": vid, "ContentLength": len(data)}
 
     def list_objects_v2(self, Bucket=None, Prefix="", ContinuationToken=None, **_):
-        keys = sorted(k for k in self.objects if k.startswith(Prefix))
-        contents = [{"Key": k, "LastModified": self.objects[k]["lm"]} for k in keys]
+        with self._lock:
+            keys = sorted(k for k in self.objects if k.startswith(Prefix))
+            contents = [{"Key": k, "LastModified": self.objects[k]["lm"]} for k in keys]
         return {"Contents": contents, "IsTruncated": False}
 
 
@@ -87,5 +126,11 @@ class FakeSQS:
         self.deleted.append(ReceiptHandle)
         return {}
 
-    def receive_message(self, **_):
-        return {"Messages": []}
+
+class CollectingSink:
+    """Sink de alertas accionables para tests (en producción publicaría a SNS)."""
+    def __init__(self):
+        self.alerts: list[dict] = []
+
+    def __call__(self, alert: dict):
+        self.alerts.append(alert)

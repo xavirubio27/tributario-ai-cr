@@ -55,12 +55,11 @@ variable "object_expiration_days" {
 }
 
 variable "worker_assumer_principal_arn" {
-  description = "ARN del principal (bootstrap) que puede asumir el rol worker vía STS (credenciales temporales). Vacío => root de la cuenta (amplio; se RECOMIENDA fijar uno explícito)."
+  description = "ARN del principal bootstrap ESPECÍFICO que asume el rol worker vía STS (credenciales temporales). OBLIGATORIO; NO se admite root — debe ser user/ o role/."
   type        = string
-  default     = ""
   validation {
-    condition     = var.worker_assumer_principal_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:(root|user/.+|role/.+)$", var.worker_assumer_principal_arn))
-    error_message = "Debe ser vacío o un ARN IAM válido (root/user/role)."
+    condition     = can(regex("^arn:aws:iam::[0-9]{12}:(user|role)/.+$", var.worker_assumer_principal_arn))
+    error_message = "Debe ser un ARN IAM específico (user/ o role/). NO se admite root ni vacío (NEW-P5)."
   }
 }
 

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""PoC C4-B3 / C2 — reconciliación (NEW-H3/H4).
+"""PoC C4-B3 / C2 — reconciliación (fix 4: cuarentena durable + alerta accionable).
 
-S3 es la FUENTE DE VERDAD. Para cada RAW (`inbound-raw/<messageId>`) determina el estado por
-CONJUNTO usando el MANIFEST inmutable:
-  - terminal `rejected`/`quarantine` (clave exacta)      -> done
-  - manifest presente: pending = expected - completed     -> complete | partial
-  - sin manifest ni terminal                              -> orphan (sobre NO recuperable)
+S3 es la FUENTE DE VERDAD. Para cada RAW determina el estado por CONJUNTO vía el MANIFEST:
+  terminal rejected/quarantine (clave exacta) -> done ; manifest -> complete|partial ;
+  sin manifest ni terminal -> ORPHAN (sobre NO recuperable).
 
-Evita prefijos ambiguos (abc vs abcd): markers de mensaje por CLAVE EXACTA; el conjunto
-`completed` se lista con prefijo con DELIMITADOR final `completed/<messageId>/`.
-
-NO lee el contenido del correo -> no revela datos personales. Inyectable para tests.
+Acciones: los ORPHAN se ponen en CUARENTENA DURABLE (escritura condicional, idempotente) y se
+emite una ALERTA ACCIONABLE; los PARTIAL emiten alerta de reproceso. `alert_sink` es inyectable
+(en producción publica al SNS de alertas; en tests, recoge). Claves exactas con delimitador
+(sin prefijos ambiguos). No lee el contenido del correo -> sin PII.
 """
 from __future__ import annotations
 
@@ -42,25 +40,28 @@ def _list(ctx: W.Ctx, prefix: str):
 
 def _completed_refs(ctx: W.Ctx, message_id: str) -> set[str]:
     prefix = f"{ctx.markers_prefix}completed/{message_id}/"  # delimitador final -> sin ambigüedad
-    refs = set()
-    for obj in _list(ctx, prefix):
-        name = obj["Key"][len(prefix):]
-        if name.endswith(".json"):
-            refs.add(name[:-len(".json")])
-    return refs
+    return {obj["Key"][len(prefix):-len(".json")] for obj in _list(ctx, prefix)
+            if obj["Key"].endswith(".json")}
 
 
-def reconcile(ctx: W.Ctx, now: float | None = None) -> dict:
+def reconcile(ctx: W.Ctx, now: float | None = None, alert_sink=None, quarantine_orphans: bool = True) -> dict:
     now = now if now is not None else time.time()
     states = {"complete": 0, "partial": 0, "rejected": 0, "quarantine": 0, "orphan": 0}
-    attention = []  # partial + orphan (requieren acción), sin PII
+    alerts = []
+
+    def alert(a: dict):
+        alerts.append(a)
+        if alert_sink:
+            alert_sink(a)
+
     total = 0
     for obj in _list(ctx, ctx.raw_prefix):
         message_id = obj["Key"][len(ctx.raw_prefix):]
         if not message_id or message_id.endswith("/"):
             continue
         total += 1
-        age = int(now - obj["LastModified"].timestamp()) if hasattr(obj["LastModified"], "timestamp") else None
+        lm = obj.get("LastModified")
+        age = int(now - lm.timestamp()) if hasattr(lm, "timestamp") else None
 
         if W._get_marker(ctx, W._marker_key(ctx, "rejected", message_id)) is not None:
             states["rejected"] += 1
@@ -71,21 +72,32 @@ def reconcile(ctx: W.Ctx, now: float | None = None) -> dict:
         manifest = W._get_marker(ctx, W._marker_key(ctx, "manifest", message_id))
         if manifest is None:
             states["orphan"] += 1
-            attention.append({"message_id": message_id, "age_seconds": age,
-                              "state": "orphan",
-                              "reason": "no_manifest(notificacion perdida): sobre NO recuperable -> cuarentena manual, nunca MIME"})
+            durable = False
+            if quarantine_orphans:
+                try:
+                    W._put_marker_if_absent(ctx, W._marker_key(ctx, "quarantine", message_id), {
+                        "schema": "quarantine/v2", "kind": "orphan_no_manifest",
+                        "event_id": message_id, "age_seconds": age,
+                        "reason": "notificacion perdida; sobre NO recuperable (nunca MIME)",
+                        "ts": int(now)})
+                    durable = True
+                except Exception:  # noqa: BLE001
+                    durable = False
+            alert({"level": "action_required", "state": "orphan", "message_id": message_id,
+                   "age_seconds": age, "quarantine_durable": durable,
+                   "action": "revisión manual; el tenant NO se resuelve automáticamente; nunca MIME"})
             continue
-        expected = set(manifest.get("expected_recipients", []))
-        pending = expected - _completed_refs(ctx, message_id)
+        pending = set(manifest.get("expected_recipients", [])) - _completed_refs(ctx, message_id)
         if pending:
             states["partial"] += 1
-            attention.append({"message_id": message_id, "age_seconds": age, "state": "partial",
-                              "pending_count": len(pending), "expected_count": len(expected)})
+            alert({"level": "action_required", "state": "partial", "message_id": message_id,
+                   "age_seconds": age, "pending_count": len(pending),
+                   "action": "reprocesar/investigar recipients pendientes"})
         else:
             states["complete"] += 1
 
-    return {"scanned_raw_objects": total, "states": states, "attention": attention,
-            "note": "orphans/partials requieren accion; orphan sin manifest NO se enruta por MIME"}
+    return {"scanned_raw_objects": total, "states": states, "alerts": alerts,
+            "note": "orphan -> cuarentena durable + alerta; partial -> alerta; nunca MIME"}
 
 
 def main() -> int:
@@ -94,7 +106,17 @@ def main() -> int:
     ctx = W.Ctx(s3=boto3.client("s3"), sqs=None, bucket=os.environ["RAW_BUCKET"],
                 queue_url="", raw_prefix=os.environ.get("RAW_PREFIX", "inbound-raw/"),
                 markers_prefix=os.environ.get("MARKERS_PREFIX", "markers/"))
-    report = reconcile(ctx)
+
+    import boto3 as _b
+    sns_arn = os.environ.get("ALERTS_TOPIC_ARN")
+    sns = _b.client("sns") if sns_arn else None
+
+    def sink(a):
+        if sns:
+            sns.publish(TopicArn=sns_arn, Subject="tribuu-poc reconcile alert",
+                        Message=json.dumps(a))
+
+    report = reconcile(ctx, alert_sink=sink if sns else None)
     print(json.dumps(report, indent=2))
     return 1 if (report["states"]["orphan"] or report["states"]["partial"]) else 0
 

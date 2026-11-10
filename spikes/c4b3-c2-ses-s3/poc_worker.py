@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-"""PoC C4-B3 / C2 — worker consumidor de SQS (remediación NEW-H1..H5, NEW-M1/M2).
+"""PoC C4-B3 / C2 — worker consumidor de SQS (remediación final de bloqueantes).
 
 SOLO PRUEBAS, SOLO EVIDENCIA SINTÉTICA. No es código productivo.
 
-Diseño: SES -> S3 (MIME crudo, SSE-KMS) + notificación SNS nativa -> SQS -> este worker.
-Autoridad de tenant = `receipt.recipients` del SOBRE SES; NUNCA cabeceras MIME To/Cc.
+Fixes de esta ronda:
+  1. Sin carrera Head/Get: se FIJA el VersionId del HeadObject y se lee ESA versión.
+  2. Conflictos con locators COMPLETOS de ambas evidencias (canonical vs observed); nunca se
+     confunde `conflict` con `completed` ni se sobrescribe el canónico (append-only).
+  3. Sin clave global `quarantine/unknown.json`: cada notificación inválida tiene identidad
+     propia (messageId válido, o digest del cuerpo) y cuarentena independiente.
+  5. Comparación ÍNTEGRA del manifest existente con la nueva notificación (mismatch -> durable).
+  6. Heartbeat: cierre con join y VERIFICACIÓN final (si falló, no se confirma SQS).
 
-Garantías (verificadas por tests/ con fakes AWS; comportamiento real pendiente de PoC):
-  NEW-H1  Escritura de markers CONDICIONAL (If-None-Match:*). 412 -> se lee el existente y se
-          compara; conflictos en markers APPEND-ONLY (clave por sha observado), sin sobrescribir.
-          Verificación de CONTENIDO del marker (GetObject + comparación), no solo HeadObject.
-  NEW-H2..H4  MANIFEST inmutable de recipients esperados; completitud por CONJUNTO
-          (expected - completed); estados completo/parcial/rechazado/cuarentena; claves EXACTAS
-          con delimitador (sin prefijos ambiguos abc/abcd).
-  NEW-M1/M2  Cada marker referencia inequívocamente la evidencia (bucket, key, VersionId, sha256,
-          size, tipo, event_id, recipientRef). Schema SES validado estrictamente; incoherente ->
-          cuarentena. Nunca MIME como autoridad.
-  NEW-H5  Heartbeat durante TODO el procesamiento (incl. fan-out); si falla la renovación de
-          visibilidad, se aborta sin borrar. NUNCA DeleteMessage sin resultado durable.
-
-Inyectable para tests: `process_message(sqs_msg, ctx)` recibe clientes/stubs en `ctx`.
+Invariante de aceptación: NUNCA se devuelve True (=> DeleteMessage) sin un resultado terminal
+DURABLE y verificado (completed/rejected/quarantine/conflict-preservado).
 """
 from __future__ import annotations
 
@@ -32,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-try:  # import-safe: los tests usan fakes, no requieren boto3
+try:
     import boto3
 except Exception:  # noqa: BLE001
     boto3 = None
@@ -62,15 +56,11 @@ class SchemaError(Exception):
     pass
 
 
-# ---------- utilidades ----------
 def _redact(value: str | None) -> str:
-    if not value:
-        return "-"
-    return hmac.new(_LOG_SALT, value.encode(), hashlib.sha256).hexdigest()[:10]
+    return "-" if not value else hmac.new(_LOG_SALT, value.encode(), hashlib.sha256).hexdigest()[:10]
 
 
 def _rref(recipient: str) -> str:
-    """Referencia segura (no PII) y estable de la identidad del destinatario."""
     return hashlib.sha256(recipient.encode()).hexdigest()
 
 
@@ -81,7 +71,7 @@ def _error_code(exc: Exception) -> str | None:
     return getattr(exc, "code", None)
 
 
-_ABSENT = {"NoSuchKey", "404", "NotFound"}
+_ABSENT = {"NoSuchKey", "NoSuchVersion", "404", "NotFound"}
 _EXISTS = {"PreconditionFailed", "412"}
 
 
@@ -89,12 +79,11 @@ def _canonical(payload: dict) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
-# ---------- markers durables (escritura condicional + verificación de contenido) ----------
 def _marker_key(ctx: Ctx, kind: str, message_id: str, *parts: str) -> str:
-    # Claves EXACTAS con delimitador '/'; evita colisiones de prefijo (abc vs abcd).
-    tail = "".join(f"{p}/" for p in parts[:-1]) + (parts[-1] if parts else "")
-    base = f"{ctx.markers_prefix}{kind}/{message_id}/"
-    return base + tail + ".json" if parts else f"{ctx.markers_prefix}{kind}/{message_id}.json"
+    if not parts:
+        return f"{ctx.markers_prefix}{kind}/{message_id}.json"
+    tail = "".join(f"{p}/" for p in parts[:-1]) + parts[-1]
+    return f"{ctx.markers_prefix}{kind}/{message_id}/{tail}.json"
 
 
 def _get_marker(ctx: Ctx, key: str) -> dict | None:
@@ -108,10 +97,7 @@ def _get_marker(ctx: Ctx, key: str) -> dict | None:
 
 
 def _put_marker_if_absent(ctx: Ctx, key: str, payload: dict) -> tuple[str, dict]:
-    """Escritura CONDICIONAL If-None-Match:*. Devuelve ('created'|'exists', contenido_durable).
-
-    'created' se VERIFICA releyendo el contenido (NEW-H1). 'exists' devuelve el contenido previo.
-    """
+    """Escritura CONDICIONAL If-None-Match:*. 'created' se VERIFICA releyendo el contenido."""
     body = _canonical(payload)
     try:
         ctx.s3.put_object(Bucket=ctx.bucket, Key=key, Body=body,
@@ -123,14 +109,12 @@ def _put_marker_if_absent(ctx: Ctx, key: str, payload: dict) -> tuple[str, dict]
                 raise
             return "exists", existing
         raise
-    # Verificación de CONTENIDO (no solo HeadObject): releer y comparar canónico.
     readback = _get_marker(ctx, key)
     if readback is None or _canonical(readback) != body:
-        raise RuntimeError(f"marker no verificable tras escritura: {key}")
+        raise RuntimeError(f"marker no verificable: {key}")
     return "created", readback
 
 
-# ---------- heartbeat (NEW-H5) ----------
 class Heartbeat:
     def __init__(self, ctx: Ctx, receipt_handle: str):
         self._ctx, self._rh = ctx, receipt_handle
@@ -145,7 +129,7 @@ class Heartbeat:
                     QueueUrl=self._ctx.queue_url, ReceiptHandle=self._rh,
                     VisibilityTimeout=HEARTBEAT_VISIBILITY)
             except Exception:  # noqa: BLE001
-                self.failed.set()  # no se puede garantizar exclusividad -> abortar
+                self.failed.set()
                 return
 
     def __enter__(self):
@@ -154,39 +138,38 @@ class Heartbeat:
 
     def __exit__(self, *_):
         self._stop.set()
+        self._t.join(timeout=5)  # cierre limpio del hilo
 
 
-# ---------- validación estricta del schema SES (NEW-M2) ----------
 def validate_notification(note: dict, ctx: Ctx) -> dict:
     if not isinstance(note, dict) or note.get("notificationType") != "Received":
         raise SchemaError("notificationType!=Received")
     receipt, mail = note.get("receipt"), note.get("mail")
     if not isinstance(receipt, dict) or not isinstance(mail, dict):
         raise SchemaError("receipt/mail ausente")
-    action = receipt.get("action", {})
-    if action.get("type") != "S3":
+    if receipt.get("action", {}).get("type") != "S3":
         raise SchemaError("action.type!=S3")
     message_id = mail.get("messageId")
-    bucket = action.get("bucketName")
-    key = action.get("objectKey")
+    bucket = receipt["action"].get("bucketName")
+    key = receipt["action"].get("objectKey")
     recipients = receipt.get("recipients")
     if not isinstance(message_id, str) or not message_id or "/" in message_id or "\n" in message_id:
         raise SchemaError("messageId invalido")
-    if bucket != ctx.bucket:  # NEW-M2 / escenario 11: bucket ajeno/incorrecto
+    if bucket != ctx.bucket:
         raise SchemaError("bucketName no coincide con el bucket configurado")
-    if not isinstance(key, str) or not key.startswith(ctx.raw_prefix):
-        raise SchemaError("objectKey fuera del prefijo RAW")
-    if key != f"{ctx.raw_prefix}{message_id}":  # SES: objectKey == messageId
-        raise SchemaError("objectKey no corresponde al messageId")
+    if not isinstance(key, str) or key != f"{ctx.raw_prefix}{message_id}":
+        raise SchemaError("objectKey no corresponde al messageId/prefijo")
     if not isinstance(recipients, list) or not recipients or not all(isinstance(r, str) and r for r in recipients):
         raise SchemaError("recipients invalido")
     return {"message_id": message_id, "bucket": bucket, "key": key, "recipients": recipients}
 
 
-def _stream_sha256_size(ctx: Ctx, key: str, hb: Heartbeat) -> tuple[str, int, str | None]:
-    resp = ctx.s3.get_object(Bucket=ctx.bucket, Key=key)
-    version_id = resp.get("VersionId")
-    body = resp["Body"]
+def _stream_sha256_size(ctx: Ctx, key: str, version_id: str | None, hb: Heartbeat) -> tuple[str, int]:
+    # VersionId FIJADO: se lee exactamente la versión validada (sin carrera Head/Get).
+    kwargs = {"Bucket": ctx.bucket, "Key": key}
+    if version_id:
+        kwargs["VersionId"] = version_id
+    body = ctx.s3.get_object(**kwargs)["Body"]
     h, total = hashlib.sha256(), 0
     for chunk in iter(lambda: body.read(READ_CHUNK), b""):
         if hb.failed.is_set():
@@ -196,133 +179,148 @@ def _stream_sha256_size(ctx: Ctx, key: str, hb: Heartbeat) -> tuple[str, int, st
             body.close()
             raise ValueError("oversize")
         h.update(chunk)
-    return h.hexdigest(), total, version_id
+    return h.hexdigest(), total
 
 
-# ---------- procesamiento ----------
+def _quarantine(ctx: Ctx, qid: str, payload: dict) -> bool:
+    try:
+        _put_marker_if_absent(ctx, _marker_key(ctx, "quarantine", qid), payload)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def process_message(sqs_msg: dict, ctx: Ctx) -> bool:
-    """True SOLO si el resultado completo quedó DURABLE (se puede DeleteMessage)."""
     raw_body = sqs_msg.get("Body", "")
+    raw_digest = hashlib.sha256(raw_body.encode() if isinstance(raw_body, str) else bytes(raw_body)).hexdigest()
+    now = int(sqs_msg.get("_now", time.time()))
     try:
         note = json.loads(raw_body)
         if "Message" in note and "notificationType" not in note:
-            note = json.loads(note["Message"])  # por si no es raw delivery
+            note = json.loads(note["Message"])
     except Exception:  # noqa: BLE001
-        log.error("notificacion ilegible -> no borrar (reintento/DLQ)")
+        log.error("notificacion ilegible -> no borrar")
         return False
 
-    # Validación estricta -> incoherente => cuarentena durable del mensaje (NEW-M2).
     try:
         v = validate_notification(note, ctx)
     except SchemaError as exc:
-        mid = (note.get("mail", {}) or {}).get("messageId") if isinstance(note, dict) else None
-        qkey = _marker_key(ctx, "quarantine", mid or "unknown")
-        try:
-            _put_marker_if_absent(ctx, qkey, {
-                "schema": "quarantine/v1", "event_id": mid, "reason": f"schema:{exc}",
-                "ts": int(sqs_msg.get("_now", time.time()))})
-            log.error("QUARANTINE schema msg=%s reason=%s durable=yes", _redact(mid), exc)
-            return True
-        except Exception:  # noqa: BLE001
-            log.error("QUARANTINE no durable msg=%s -> reintento", _redact(mid))
-            return False
+        mid = note.get("mail", {}).get("messageId") if isinstance(note, dict) else None
+        # Identidad INDEPENDIENTE por notificación inválida: messageId válido o digest del cuerpo.
+        qid = mid if (isinstance(mid, str) and mid and "/" not in mid) else f"raw-{raw_digest}"
+        ok = _quarantine(ctx, qid, {"schema": "quarantine/v2", "kind": "schema_invalid",
+                                    "event_id": mid, "raw_digest": raw_digest,
+                                    "reason": str(exc), "ts": now})
+        log.error("QUARANTINE schema qid=%s reason=%s durable=%s", _redact(qid), exc, ok)
+        return ok
 
     message_id, bucket, key, recipients = v["message_id"], v["bucket"], v["key"], v["recipients"]
     expected = sorted({_rref(r) for r in recipients})
 
     with Heartbeat(ctx, sqs_msg.get("ReceiptHandle", "")) as hb:
-        # Confirmar objeto durable + capturar VersionId/sha/size.
         try:
             head = ctx.s3.head_object(Bucket=ctx.bucket, Key=key)
         except Exception:  # noqa: BLE001
-            log.warning("HeadObject raw fallo key=%s -> reintento", _redact(key))
+            log.warning("HeadObject fallo key=%s -> reintento", _redact(key))
             return False
+        version_id = head.get("VersionId")  # FIJADO
 
-        # MANIFEST inmutable de recipients esperados (NEW-H2). First-writer-wins.
+        # MANIFEST inmutable + comparación íntegra si ya existe (fix 5).
         manifest_key = _marker_key(ctx, "manifest", message_id)
-        manifest = {
-            "schema": "manifest/v1", "event_id": message_id,
-            "object": {"bucket": bucket, "key": key, "version_id": head.get("VersionId")},
-            "expected_recipients": expected,
-            "recipients_clear": recipients,  # cifrado en reposo (SSE-KMS); autoridad del sobre
-            "ts": int(sqs_msg.get("_now", time.time())),
-        }
+        manifest = {"schema": "manifest/v2", "event_id": message_id,
+                    "object": {"bucket": bucket, "key": key, "version_id": version_id},
+                    "expected_recipients": expected, "recipients_clear": recipients, "ts": now}
         try:
-            _, manifest = _put_marker_if_absent(ctx, manifest_key, manifest)
+            status, existing = _put_marker_if_absent(ctx, manifest_key, manifest)
         except Exception:  # noqa: BLE001
             log.error("manifest no durable msg=%s -> reintento", _redact(message_id))
             return False
+        if status == "exists":
+            same = (sorted(set(existing.get("expected_recipients", []))) == expected
+                    and existing.get("object", {}).get("key") == key)
+            if not same:
+                ok = _quarantine(ctx, f"{message_id}", {
+                    "schema": "quarantine/v2", "kind": "manifest_mismatch", "event_id": message_id,
+                    "existing": {"expected": existing.get("expected_recipients"),
+                                 "object": existing.get("object")},
+                    "incoming": {"expected": expected, "object": manifest["object"]}, "ts": now})
+                log.error("MANIFEST_MISMATCH msg=%s durable=%s", _redact(message_id), ok)
+                return ok
+            manifest = existing
+            # NO se reusa la versión del manifest: se lee la versión del HEAD de ESTA
+            # invocación (consistencia anti-carrera intra-invocación) para poder detectar
+            # conflictos si una reentrega cambió el objeto.
         expected = sorted(set(manifest["expected_recipients"]))
 
         try:
-            sha_hex, size, version_id = _stream_sha256_size(ctx, key, hb)
-        except ValueError:  # oversize -> rechazo terminal (todos los expected)
+            sha_hex, size = _stream_sha256_size(ctx, key, version_id, hb)
+        except ValueError:
             rkey = _marker_key(ctx, "rejected", message_id)
-            try:
-                _put_marker_if_absent(ctx, rkey, {
-                    "schema": "rejected/v1", "event_id": message_id, "reason": "oversize",
-                    "object": {"bucket": bucket, "key": key, "version_id": head.get("VersionId")},
-                    "limit_bytes": ctx.max_bytes, "ts": int(sqs_msg.get("_now", time.time()))})
-                log.error("REJECTED oversize msg=%s durable=yes", _redact(message_id))
-                return True
-            except Exception:  # noqa: BLE001
-                return False
-        except RuntimeError:  # heartbeat_failed
-            log.warning("heartbeat fallo msg=%s -> abortar sin borrar", _redact(message_id))
+            ok = _quarantine_like_rejected(ctx, rkey, message_id, bucket, key, version_id, ctx.max_bytes, now)
+            log.error("REJECTED oversize msg=%s durable=%s", _redact(message_id), ok)
+            return ok
+        except RuntimeError:
+            log.warning("heartbeat fallo (descarga) msg=%s -> abortar", _redact(message_id))
             return False
         except Exception:  # noqa: BLE001
             log.warning("GetObject fallo key=%s -> reintento", _redact(key))
             return False
 
-        # Fan-out por destinatario (bajo heartbeat). Completitud por CONJUNTO.
+        observed_locator = {"bucket": bucket, "key": key, "version_id": version_id,
+                            "sha256": sha_hex, "size_bytes": size}
         completed: set[str] = set()
         for recipient in recipients:
             if hb.failed.is_set():
-                log.warning("heartbeat fallo en fan-out msg=%s -> abortar", _redact(message_id))
+                log.warning("heartbeat fallo (fan-out) msg=%s -> abortar", _redact(message_id))
                 return False
             rref = _rref(recipient)
             ckey = _marker_key(ctx, "completed", message_id, rref)
-            payload = {
-                "schema": "completed/v1", "result": "captured", "event_id": message_id,
-                "recipient_ref": rref,
-                "object": {"bucket": bucket, "key": key, "version_id": version_id,
-                           "sha256": sha_hex, "size_bytes": size},
-                "ts": int(sqs_msg.get("_now", time.time())),
-            }
+            payload = {"schema": "completed/v2", "result": "captured", "event_id": message_id,
+                       "recipient_ref": rref, "object": observed_locator, "ts": now}
             try:
-                status, durable = _put_marker_if_absent(ctx, ckey, payload)
+                st, durable = _put_marker_if_absent(ctx, ckey, payload)
             except Exception:  # noqa: BLE001
                 log.warning("completed no durable msg=%s rcpt=%s -> reintento",
                             _redact(message_id), _redact(recipient))
                 return False
-            if status == "exists" and durable.get("object", {}).get("sha256") != sha_hex:
-                # CONFLICTO: append-only, no sobrescribe el canónico (NEW-H1).
+            if st == "exists" and durable.get("object", {}).get("sha256") != sha_hex:
+                # CONFLICTO append-only con locators COMPLETOS de AMBAS evidencias (fix 2).
                 conflict_key = _marker_key(ctx, "conflict", message_id, rref, sha_hex)
                 try:
                     _put_marker_if_absent(ctx, conflict_key, {
-                        "schema": "conflict/v1", "event_id": message_id, "recipient_ref": rref,
-                        "canonical_sha256": durable.get("object", {}).get("sha256"),
-                        "observed_sha256": sha_hex, "size_bytes": size,
-                        "ts": int(sqs_msg.get("_now", time.time()))})
+                        "schema": "conflict/v2", "event_id": message_id, "recipient_ref": rref,
+                        "canonical": durable.get("object"), "observed": observed_locator, "ts": now})
                     log.error("EVIDENCE_CONFLICT msg=%s rcpt=%s durable=yes",
                               _redact(message_id), _redact(recipient))
                 except Exception:  # noqa: BLE001
                     return False
             completed.add(rref)
 
-        pending = set(expected) - completed
-        if pending:
-            log.warning("INCOMPLETO msg=%s pendientes=%d -> no borrar", _redact(message_id), len(pending))
+        if set(expected) - completed:
+            log.warning("INCOMPLETO msg=%s -> no borrar", _redact(message_id))
+            return False
+        if hb.failed.is_set():  # VERIFICACIÓN FINAL antes de confirmar SQS (fix 6)
+            log.warning("heartbeat fallo (final) msg=%s -> no confirmar", _redact(message_id))
             return False
         log.info("COMPLETO msg=%s recipients=%d size=%d sha=%s…",
                  _redact(message_id), len(expected), size, sha_hex[:12])
         return True
 
 
-# ---------- loop ----------
+def _quarantine_like_rejected(ctx, rkey, message_id, bucket, key, version_id, limit, now) -> bool:
+    try:
+        _put_marker_if_absent(ctx, rkey, {
+            "schema": "rejected/v2", "event_id": message_id, "reason": "oversize",
+            "object": {"bucket": bucket, "key": key, "version_id": version_id},
+            "limit_bytes": limit, "ts": now})
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def make_ctx() -> Ctx:
     if boto3 is None:
-        raise RuntimeError("boto3 no disponible; este modo requiere AWS (solo para ejecución real)")
+        raise RuntimeError("boto3 no disponible (solo ejecución real)")
     return Ctx(s3=boto3.client("s3"), sqs=boto3.client("sqs"),
                bucket=os.environ["RAW_BUCKET"], queue_url=os.environ["INTAKE_QUEUE_URL"],
                raw_prefix=os.environ.get("RAW_PREFIX", "inbound-raw/"),
@@ -331,14 +329,13 @@ def make_ctx() -> Ctx:
 
 def main() -> int:
     ctx = make_ctx()
-    log.info("worker iniciado; polling %s", _redact(ctx.queue_url))
+    log.info("worker iniciado")
     while True:
         resp = ctx.sqs.receive_message(QueueUrl=ctx.queue_url, MaxNumberOfMessages=10,
                                        WaitTimeSeconds=20, VisibilityTimeout=HEARTBEAT_VISIBILITY)
         for sqs_msg in resp.get("Messages", []):
             if process_message(sqs_msg, ctx):
                 ctx.sqs.delete_message(QueueUrl=ctx.queue_url, ReceiptHandle=sqs_msg["ReceiptHandle"])
-            # delete SOLO con resultado DURABLE completo; si no, SQS re-entrega -> DLQ.
 
 
 if __name__ == "__main__":
