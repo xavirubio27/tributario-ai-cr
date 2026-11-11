@@ -275,5 +275,47 @@ class PoCTests(unittest.TestCase):
             W.Heartbeat = orig
 
 
+    def test_23_heartbeat_thread_alive_fail_closed(self):
+        # Renovación BLOQUEADA más allá del join: el hilo sigue vivo -> fail-closed -> NO confirmar.
+        s3 = FakeS3(); s3.seed_raw(RAWP + "hb", b"payload", slow_delay=0.15)
+        sqs = FakeSQS(block_seconds=0.6)
+        c = ctx(s3, sqs=sqs, max_bytes=10_000)
+        oe, oj = W.HEARTBEAT_EVERY, W.HEARTBEAT_JOIN_TIMEOUT
+        W.HEARTBEAT_EVERY, W.HEARTBEAT_JOIN_TIMEOUT = 0.01, 0.05
+        try:
+            confirmed = W.process_message(make_note("hb", ["a@d"]), c)
+        finally:
+            W.HEARTBEAT_EVERY, W.HEARTBEAT_JOIN_TIMEOUT = oe, oj
+        if confirmed:                       # emula el guard del loop principal
+            sqs.delete_message(QueueUrl="q", ReceiptHandle="rh-hb")
+        self.assertFalse(confirmed)          # fail-closed: hilo vivo => inseguro
+        self.assertEqual(sqs.deleted, [])    # NO DeleteMessage
+
+    def test_24_manifest_strict_negatives(self):
+        rref_a = W._rref("a@d")
+
+        def base(mid):
+            return {"schema": "manifest/v2", "event_id": mid,
+                    "object": {"bucket": BUCKET, "key": RAWP + mid, "version_id": "v1"},
+                    "expected_recipients": [rref_a], "recipients_clear": ["a@d"], "ts": 1}
+
+        cases = {}
+        m = base("n_schema"); m["schema"] = "manifest/v1"; cases["n_schema"] = ("manifest_schema", m)
+        m = base("n_exp"); m["expected_recipients"] = [123]; cases["n_exp"] = ("manifest_expected_type", m)
+        m = base("n_ver"); m["object"]["version_id"] = 123; cases["n_ver"] = ("manifest_version_id_type", m)
+        m = base("n_obj"); m["object"] = "nodict"; cases["n_obj"] = ("manifest_object_type", m)
+        m = base("n_clr"); m["recipients_clear"] = [1]; cases["n_clr"] = ("manifest_recipients_clear_type", m)
+
+        for mid, (expected_kind, manifest) in cases.items():
+            s3 = FakeS3(); s3.seed_raw(RAWP + mid, b"x"); c = ctx(s3)
+            s3.put_object(Bucket=BUCKET, Key=f"markers/manifest/{mid}.json",
+                          Body=json.dumps(manifest).encode())  # sin If-None-Match (siembra)
+            self.assertTrue(W.process_message(make_note(mid, ["a@d"]), c))
+            q = W._get_marker(c, f"markers/quarantine/{mid}.json")
+            self.assertIsNotNone(q, mid)
+            self.assertEqual(q["kind"], expected_kind, mid)
+            self.assertEqual(completed_keys(s3), [], mid)     # NO se reutiliza manifest inválido
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

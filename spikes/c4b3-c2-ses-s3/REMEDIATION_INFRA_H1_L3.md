@@ -136,6 +136,21 @@ python3 poc_smoke_test.py   → orphan con alerta DURABLE (pending; sin sink en 
 terraform v1.9.8 (local, sin AWS): fmt -check exit 0 · init -backend=false exit 0 · validate "Success! valid." · plan NO ejecutado
 ```
 
+## Ronda 5 — corrección focalizada (reauditoría de `8566afb`)
+
+| Hallazgo | Fix | Evidencia |
+|---|---|---|
+| 1 Heartbeat (OPEN/bloqueante) | `stop_and_check()` **fail-closed**: tras `join(timeout)`, si `thread.is_alive()` sigue True (renovación bloqueada/indeterminada) devuelve **inseguro** → `process_message` NO confirma SQS. Semántica inequívoca (True=inseguro). `HEARTBEAT_JOIN_TIMEOUT` configurable (no se oculta subiendo el timeout). | `test_23_heartbeat_thread_alive_fail_closed` (ChangeMessageVisibility BLOQUEADO más allá del join → sin DeleteMessage) |
+| 2 Manifest (PARTIAL) | `_validate_manifest` estricto: `schema == "manifest/v2"` EXACTO; `expected_recipients` todos strings **sin coerción**; `version_id` tipo `str|None` (contrato); campos/tipos obligatorios; malformado → **cuarentena durable**; NO se reutiliza un manifest parcialmente válido. | `test_24_manifest_strict_negatives` (schema/expected_type/version_id_type/object_type/recipients_clear_type) + `test_13/20/21` |
+
+**Verificaciones ejecutadas (ronda 5, reales):**
+```
+python3 tests/test_poc.py   → Ran 25 tests — OK
+python3 poc_smoke_test.py   → exit 0
+python3 -m py_compile (worker,reconcile,smoke,fakes,test) → PASS
+terraform: NO re-ejecutado (la configuración `terraform/` NO se modificó esta ronda).
+```
+
 ## Commit final para reauditoría
 Ver el commit de esta remediación en la rama `docs/adr-050-draft` del PR #1 (no merge). Auditar
 con `CODEX_AUDIT_PROMPT.md`. **C4B3-01 NO se declara cerrado**: requiere ejecutar la PoC (P1–P5)

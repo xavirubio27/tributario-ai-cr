@@ -35,6 +35,7 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 READ_CHUNK = 1024 * 1024
 HEARTBEAT_EVERY = 60
 HEARTBEAT_VISIBILITY = 300
+HEARTBEAT_JOIN_TIMEOUT = 5
 _LOG_SALT = os.urandom(16)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -137,10 +138,17 @@ class Heartbeat:
         return self
 
     def stop_and_check(self) -> bool:
-        """Detiene el hilo, hace join y devuelve el RESULTADO FINAL (True si falló alguna
-        renovación de visibilidad). Idempotente. Un True aquí debe impedir confirmar SQS."""
+        """FAIL-CLOSED. Devuelve True si el heartbeat NO es seguro para confirmar SQS:
+        - señala stop y hace join con timeout;
+        - si el hilo SIGUE VIVO tras el join (p. ej. una renovación bloqueada), NO conocemos el
+          resultado -> se considera INSEGURO (True);
+        - si el hilo terminó, devuelve el estado de `failed`.
+        Semántica inequívoca: True = inseguro/fallo (prohibir DeleteMessage); False = seguro.
+        Idempotente."""
         self._stop.set()
-        self._t.join(timeout=5)
+        self._t.join(timeout=HEARTBEAT_JOIN_TIMEOUT)
+        if self._t.is_alive():
+            return True  # renovación en curso/indeterminada -> fail-closed
         return self.failed.is_set()
 
     def __exit__(self, *_):
@@ -172,23 +180,32 @@ def validate_notification(note: dict, ctx: Ctx) -> dict:
 
 def _validate_manifest(existing: dict, message_id: str, bucket: str, key: str,
                        expected: list[str], recipients: list[str]) -> tuple[bool, str | None]:
-    """Valida un manifest reutilizado: schema/tipos, identidad y coherencia de recipients."""
+    """Valida ESTRICTAMENTE un manifest reutilizado (sin coerción de tipos). No se reutiliza un
+    manifest parcialmente válido: cualquier fallo -> cuarentena durable."""
     if not isinstance(existing, dict):
         return False, "corrupt"
-    if not str(existing.get("schema", "")).startswith("manifest"):
+    if existing.get("schema") != "manifest/v2":              # schema EXACTO
         return False, "schema"
-    if existing.get("event_id") != message_id:
+    if not isinstance(existing.get("event_id"), str) or existing["event_id"] != message_id:
         return False, "event_id"
     obj = existing.get("object")
-    if not isinstance(obj, dict) or obj.get("bucket") != bucket or obj.get("key") != key:
-        return False, "object"
+    if not isinstance(obj, dict):
+        return False, "object_type"
+    if not isinstance(obj.get("bucket"), str) or obj["bucket"] != bucket:
+        return False, "object_bucket"
+    if not isinstance(obj.get("key"), str) or obj["key"] != key:
+        return False, "object_key"
+    if not isinstance(obj.get("version_id"), (str, type(None))):  # contrato: str | None
+        return False, "version_id_type"
     exp = existing.get("expected_recipients")
-    if not isinstance(exp, list) or sorted(set(map(str, exp))) != expected:
+    if not isinstance(exp, list) or not exp or not all(isinstance(e, str) and e for e in exp):
+        return False, "expected_type"                        # strings válidos, SIN coerción
+    if sorted(set(exp)) != expected:
         return False, "recipients"
     clear = existing.get("recipients_clear")
-    if not isinstance(clear, list) or not all(isinstance(r, str) for r in clear):
-        return False, "recipients_clear"
-    if sorted({_rref(r) for r in clear}) != sorted(set(map(str, exp))):
+    if not isinstance(clear, list) or not clear or not all(isinstance(r, str) and r for r in clear):
+        return False, "recipients_clear_type"
+    if sorted({_rref(r) for r in clear}) != sorted(set(exp)):
         return False, "recipients_clear_incoherent"
     return True, None
 

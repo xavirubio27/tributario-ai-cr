@@ -111,13 +111,16 @@ class FakeS3:
 
 
 class FakeSQS:
-    def __init__(self, fail_visibility: bool = False):
+    def __init__(self, fail_visibility: bool = False, block_seconds: float = 0.0):
         self.fail_visibility = fail_visibility
+        self.block_seconds = block_seconds   # bloquea la renovación (hilo sigue vivo tras join)
         self.visibility_calls = 0
         self.deleted: list[str] = []
 
     def change_message_visibility(self, QueueUrl=None, ReceiptHandle=None, VisibilityTimeout=None, **_):
         self.visibility_calls += 1
+        if self.block_seconds:
+            time.sleep(self.block_seconds)
         if self.fail_visibility:
             raise FakeClientError("ReceiptHandleIsInvalid", 400)
         return {}
