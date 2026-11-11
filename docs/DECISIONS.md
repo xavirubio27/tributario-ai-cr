@@ -33,12 +33,12 @@
 | [ADR-008](#adr-008) | Precisión monetaria decimal exacta | ✅ |
 | [ADR-009](#adr-009) | Knowledge Base compartida vs. datos fiscales aislados | ✅ |
 | [ADR-010](#adr-010) | `AI_INSTRUCTIONS.md` como fuente de verdad; convención de idioma | ✅ |
-| [ADR-011](#adr-011) | Hosting del backend FastAPI | ⏳ |
+| [ADR-011](#adr-011) | Hosting del backend FastAPI | 📝 |
 | [ADR-012](#adr-012) | Mecanismo de propagación de identidad hacia RLS | ✅ |
 | [ADR-013](#adr-013) | Proveedor LLM inicial | ⏳ |
 | [ADR-014](#adr-014) | Estrategia de embeddings | ⏳ |
 | [ADR-015](#adr-015) | Modelo de permisos usuario–empresa | ✅ |
-| [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | ⏳ |
+| [ADR-016](#adr-016) | Estrategia de procesamiento en segundo plano | 📝 |
 | [ADR-017](#adr-017) | Frontera entre datos de identidad/tenancy y datos fiscales | ✅ |
 | [ADR-018](#adr-018) | Proyecto Supabase alojado de desarrollo; entorno local diferido | ✅ |
 | [ADR-019](#adr-019) | Confirmación de email desactivada solo en desarrollo | ✅ |
@@ -72,6 +72,7 @@
 | [ADR-047](#adr-047) | Resend como proveedor inbound MVP y captura durable antes del ACK | ✅ |
 | [ADR-048](#adr-048) | Identidad de máquina inbound y Buzón Tribuu provider-agnostic | ✅ |
 | [ADR-049](#adr-049) | Adaptador inbound de Resend, verificación Svix e identidad de evento | ✅ |
+| [ADR-050](#adr-050) | Abstracción EvidenceBlob: BYTEA inicial y migración planificada a Object Storage | 📝 |
 
 ---
 ---
@@ -407,30 +408,68 @@ envejecer bien si el equipo crece.
 <a id="adr-011"></a>
 ## ADR-011 — Hosting del backend FastAPI
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 1
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de aceptación · **A cerrar en:** antes de
+implementar C4-B3 · **Relacionada con:** [ADR-016](#adr-016) · [ADR-047](#adr-047) ·
+diseño `docs/design/C4-B3.md`
 
-### Contexto
+> **DRAFT abierto por mandato del orquestador (C4-B3).** No se acepta todavía. No se
+> despliega. Las cifras de costo exactas deben verificarse en el momento de decidir
+> (cambian con frecuencia): aquí se comparan **modelos** de costo, no precios.
 
-El hosting del frontend está previsto en Vercel. Para el backend solo se ha definido
-"servicio administrado compatible con FastAPI", sin elección concreta.
+### Contexto y alcance ampliado
 
-### Por qué importa
+El frontend va en Vercel. El backend se definió como "servicio administrado compatible
+con FastAPI", sin elección concreta. **C4-B3 amplía el alcance:** el hosting debe soportar
+DOS cargas distintas:
 
-La elección condiciona la Fase 2. Si el servicio tiene arranques en frío o límites
-estrictos de duración de petición, la ingesta de XML no podrá procesarse de forma
-síncrona y requerirá procesamiento en segundo plano (**ADR-016**).
+1. **Endpoint webhook (HTTP, síncrono):** debe responder **2xx en ≤15 s** (timeout Svix
+   verificado). Un arranque en frío que consuma ese presupuesto es inaceptable en el
+   camino del ACK.
+2. **Worker durable (proceso de larga vida):** la fase 2 de C4-B3 (ADR-016) sondea una
+   cola/outbox en PostgreSQL, descarga el RAW (hasta 64 MiB) y lo persiste. Necesita un
+   **proceso persistente**, no una función efímera por petición, y memoria suficiente
+   (≈ `W × 64 MiB`).
 
-También condiciona: gestión de secretos, conectividad con Supabase, observabilidad,
-backups y costes.
+### Criterios de selección
 
-### Qué falta
+Soporte de **worker de larga vida**; **cold start** nulo o mínimo en el servicio web;
+límites de duración/memoria de petición (la fase 1 es corta; la fase 2 vive en el worker);
+gestión de **secretos** (`RESEND_WEBHOOK_SECRET` rotado, credenciales de DB);
+**conectividad y latencia a Supabase** (región/US); **observabilidad** (logs/métricas);
+**backups**; **facilidad de despliegue** (desde GitHub); **modelo de costo** (always-on vs
+scale-to-zero vs por-petición); **región**; carga operativa.
 
-Definir criterios de selección (coste, arranque en frío, límites de ejecución, región,
-facilidad de despliegue, observabilidad) y evaluar opciones concretas.
+### Alternativas (matriz cualitativa `[PROPUESTO]`)
 
-### Situación actual
+| Opción | Worker larga vida | Cold start web | Límites req | Despliegue | Modelo de costo | Carga ops |
+|---|---|---|---|---|---|---|
+| **Render** (usado en spike C4-B0) | ✔ (background worker + cron) | evitable (always-on de pago) | holgados | GitHub nativo | always-on / por servicio | baja |
+| **Fly.io** | ✔ (machines persistentes) | configurable (evitar scale-to-zero en web) | holgados | CLI/GitHub | por máquina/uso | media |
+| **Railway** | ✔ (servicios + worker) | evitable | holgados | GitHub | por uso | baja-media |
+| **Vercel** (frontend ya aquí) | ✖ (funciones efímeras) | sí (serverless) | estrictos (duración) | GitHub | por invocación | baja |
+| **AWS (Fargate/App Runner + Lambda)** | ✔ | evitable | configurables | más setup | granular | alta |
+| **VPS** (p. ej. Hetzner/DO) | ✔ | n/a (always-on) | ninguno impuesto | manual | compute plano | alta (parcheo, TLS) |
 
-Abierta. No bloquea la Fase 0.
+### Opción líder provisional `[PROPUESTO, NO ACEPTADO]`
+
+Un **PaaS de contenedores** que ejecute **web service always-on + background worker + cron**
+desde GitHub (p. ej. **Render** —ya validado en el spike C4-B0— o **Fly.io**), porque:
+soporta el worker durable sin reintroducir serverless con cold start en el camino del ACK;
+despliega ambos procesos desde el mismo repo; secretos y conectividad a Supabase sencillos.
+**Frontend permanece en Vercel.** Vercel queda descartado para el backend por el worker de
+larga vida y los límites de duración.
+
+### Seguridad y despliegue
+
+Secretos en el gestor del proveedor (nunca en el repo; `RESEND_WEBHOOK_SECRET` rotado,
+jamás el del spike); egress/TLS a Supabase; aislamiento del proceso worker; observabilidad
+con logs estructurados sin PII (ver `docs/design/C4-B3.md` §4.9).
+
+### Lo que este ADR NO decide / NO hace
+
+No se acepta la opción todavía · no se despliega nada · no se fijan precios (verificar
+vigentes al decidir) · no se crea infraestructura. Depende de este ADR el dimensionado de
+concurrencia/memoria del worker de ADR-016.
 
 ---
 
@@ -678,28 +717,66 @@ dato fiscal. Es la fuente que consultará el mecanismo de [ADR-012](#adr-012).
 <a id="adr-016"></a>
 ## ADR-016 — Estrategia de procesamiento en segundo plano
 
-**Estado:** ⏳ Pendiente · **A cerrar en:** Fase 2
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de aceptación · **A cerrar en:** antes de
+implementar C4-B3 (fase 2) · **Relacionada con:** [ADR-011](#adr-011) · [ADR-047](#adr-047)
+· [ADR-049](#adr-049) · diseño `docs/design/C4-B3.md`
+
+> **DRAFT abierto por mandato del orquestador (C4-B3).** No se acepta todavía. No se
+> implementa. Define el mecanismo del **procesamiento asíncrono durable** que ADR-047 exige
+> "después del ACK".
 
 ### Contexto
 
-La ingesta de XML (parseo, validación, normalización, almacenamiento, hash) puede no ser
-apropiada para ejecución síncrona dentro de una petición HTTP, especialmente en cargas
-de múltiples documentos.
+C4-B3 adopta captura en **dos fases**: la fase 1 persiste el evento verificado y responde
+el ACK en ≤15 s; la **fase 2** descarga el RAW (hasta 64 MiB), lo hashea y lo persiste de
+forma durable. La fase 2 **no puede** vivir en la petición del webhook. Hace falta un
+mecanismo de trabajo asíncrono durable, idempotente y seguro multitenant.
 
-### Por qué importa
+### Decisión propuesta `[PROPUESTO]` — cola/outbox durable sobre PostgreSQL
 
-Depende directamente de **ADR-011**: los límites del hosting elegido determinan si el
-procesamiento síncrono es viable. Afecta a la experiencia de carga, al manejo de errores
-parciales y a la idempotencia de la reingesta.
+Reutilizar **`inbound.provider_events`** como cola/outbox: las filas con `state='received'`
+son trabajo pendiente. Sin infraestructura nueva, todo bajo RLS y en la misma DB
+transaccional.
 
-### Qué falta
+- **Polling:** el worker consulta filas *due* (`state='received' AND next_attempt_at<=now()
+  AND (leased_until IS NULL OR leased_until<=now())`), en lotes acotados, orden por
+  `created_at`.
+- **Lease / claim (visibility timeout):** claim atómico en transacción **corta** con
+  `SELECT … FOR UPDATE SKIP LOCKED` que fija `leased_until = now() + T_lease`; el trabajo
+  pesado (descarga de hasta 64 MiB) ocurre **fuera** de toda transacción; la persistencia
+  final va en otra transacción corta. No se mantiene un lock de DB durante la descarga.
+- **Recuperación ante fallos:** si el worker muere a mitad, `leased_until` expira y otro
+  worker reclama la fila → **at-least-once**; los INSERT posteriores son idempotentes
+  (`UNIQUE` + `ON CONFLICT`), así que el reproceso es inocuo.
+- **Reintentos + backoff:** `attempts` y `next_attempt_at` con backoff exponencial y
+  presupuesto máximo de intentos/tiempo (muy dentro de la retención `[OBSERVADO ≥17 d]`).
+- **Dead-letter:** al agotar → `state='fetch_failed_exhausted'` + alerta + visibilidad para
+  **replay manual** (Resend soporta replay).
+- **Concurrencia:** varios workers coexisten con `SKIP LOCKED`; pool acotado `W` dimensionado
+  a memoria/host (**ADR-011**).
+- **Aislamiento multitenant del despachador:** el despachador debe tomar trabajo de **todos**
+  los tenants sin `BYPASSRLS`. Opción líder: una función **`SECURITY DEFINER`**
+  (`private.inbound_claim_next`) que reclama atómicamente la siguiente fila *due* across-tenant
+  y devuelve SOLO los identificadores de enrutado + el contexto de tenant (jamás bytes de
+  evidencia). El worker entra entonces en el contexto del tenant
+  (`private.enter_inbound_context`) y TODA la E/S de evidencia queda bajo RLS. El despachador
+  nunca lee evidencia cross-tenant. Requiere añadir `leased_until timestamptz` a
+  `provider_events` (ver `docs/design/C4-B3.md`).
 
-Decidir si la ingesta es síncrona, asíncrona o mixta, y qué mecanismo se utiliza.
-Evaluar tras cerrar ADR-011.
+### Alternativas consideradas
 
-### Situación actual
+| Opción | Veredicto |
+|---|---|
+| **PG-outbox + polling + SKIP LOCKED + lease** (propuesta) | **Líder**: sin infra nueva, durable, RLS-nativo |
+| Cola externa (SQS / RabbitMQ / Redis) | Diferir: más infra/credenciales; rompe "todo en PG bajo RLS" |
+| Cron serverless drenando la cola | Cold start/latencia; peor para el worker durable |
+| `LISTEN`/`NOTIFY` | No durable por sí solo; puede **complementar** el polling como señal, no sustituirlo |
 
-Abierta. No bloquea la Fase 1.
+### Lo que este ADR NO decide / NO hace
+
+No se acepta todavía · no implementa worker ni función · no crea migraciones. Depende de
+**ADR-011** para dimensionar concurrencia/memoria. El diseño detallado vive en
+`docs/design/C4-B3.md`.
 
 ---
 ---
@@ -3507,3 +3584,104 @@ captura durable y recién entonces activará el endpoint real con ACK. No se usa
 `BackgroundTasks` como sustituto de captura durable. Sin `service_role`, sin
 JWT de navegador, sin usuario/membresía ficticios. La idempotencia física, el
 RAW durable, los adjuntos y el ACK pertenecen a C4-B3.
+
+---
+
+<a id="adr-050"></a>
+
+## ADR-050 — Abstracción EvidenceBlob: BYTEA inicial y migración planificada a Object Storage
+
+**Estado:** 📝 Propuesta (DRAFT) — pendiente de revisión/aprobación · **Criticidad: alta**
+
+> **Alcance del estado.** La evolución CONCEPTUAL de almacenamiento
+> `postgres_bytea` (MVP) → `object_storage` (futuro), junto con su invariante de
+> identidad y la deuda técnica «Evidence Blob Object Storage migration», está
+> **aprobada**. El resto del ADR —diseño FÍSICO de C4-B3: captura durable
+> pre-ACK, RAW RFC822, `EvidenceBlob`, provider events, email messages,
+> idempotencia, conflictos, tenancy, lifecycle y semántica de errores— está
+> **PROPUESTO y aún no revisado/aprobado**. Por tanto ADR-050 **no es ACCEPTED
+> todavía**; pasará a ✅ cuando el diseño físico se revise y se acepte.
+
+
+**Relacionada con:** [ADR-044](#adr-044) · [ADR-046](#adr-046) · [ADR-047](#adr-047) ·
+[ADR-048](#adr-048) · [ADR-049](#adr-049)
+
+### Contexto
+
+C4-B3 capturará evidencia inbound durable antes del ACK (ADR-047). El backend
+durable INICIAL del MVP/pilotos será **PostgreSQL BYTEA**, porque permite que
+metadata, bytes e idempotencia queden bajo UNA sola transacción PostgreSQL
+antes de responder 2xx — la atomicidad pre-ACK que ADR-047 exige. Esa elección
+**no es la arquitectura final para escala**: los bytes pesados deberán vivir en
+Object Storage antes de escala comercial significativa. Para que esa migración
+futura no obligue a reescribir C4-B4, C2 ni los consumidores de evidencia, la
+abstracción debe desacoplarse DESDE AHORA.
+
+### Decisión — desacoplar identidad lógica de ubicación física
+
+Se introduce la abstracción conceptual **`EvidenceBlob`**: separa la IDENTIDAD
+LÓGICA de una evidencia de la UBICACIÓN FÍSICA de sus bytes. Los consumidores
+posteriores (C4-B4, C2, inteligencia documental, conciliación) dependen del
+`EvidenceBlob`, **nunca directamente de una columna BYTEA**.
+
+```text
+EmailMessage
+    ↓ raw_blob_id
+EvidenceBlob
+    ├── id
+    ├── company_id
+    ├── sha256
+    ├── size_bytes
+    ├── storage_backend          (MVP: 'postgres_bytea'; futuro: 'object_storage')
+    ├── bytes en PostgreSQL / locator inicial
+    ├── object key/locator futuro
+    ├── created_at
+    └── provenance
+```
+
+**MVP** — `storage_backend = 'postgres_bytea'`: los bytes viven en PostgreSQL,
+atomicidad pre-ACK garantizada. **Target futuro** — `storage_backend =
+'object_storage'`: los bytes pesados en Object Storage y PostgreSQL conserva
+blob/evidence id, company_id, SHA-256, size, provenance, storage_backend,
+object key/locator, lifecycle/status y las relaciones con EmailMessage/Evento
+— es decir, PostgreSQL permanece como ÍNDICE y fuente de verdad de metadata,
+no de bytes.
+
+El diseño físico EXACTO (nombres de tablas/columnas, tipos, constraints) se
+decide en C4-B3, pero debe preservar esta abstracción.
+
+### Invariante
+
+**Mover una evidencia entre backends NO cambia su identidad.** La identidad y
+la verificación dependen de `blob/evidence id` + `SHA-256` + `size/provenance`,
+jamás de la ubicación física. Un consumidor que pida un `EvidenceBlob` por su
+id obtiene los mismos bytes verificables con independencia del backend.
+
+### Migración futura segura (mínimo obligatorio)
+
+1. leer el BYTEA original;
+2. verificar su SHA-256;
+3. subir a Object Storage;
+4. recuperar/verificar el objeto almacenado;
+5. comprobar mismo SHA-256 y tamaño;
+6. actualizar de forma transaccional el locator/backend en PostgreSQL;
+7. solo tras verificación exitosa, permitir eliminar el BYTEA;
+8. nunca perder la única copia durable durante la transición.
+
+### Deuda técnica planificada — «Evidence Blob Object Storage migration»
+
+> C4-B3 usa PostgreSQL BYTEA como backend durable inicial para obtener
+> atomicidad pre-ACK durante MVP/pilotos. Esta elección no es permanente. Antes
+> de escala comercial significativa, los blobs de evidencia deberán migrarse a
+> Object Storage. PostgreSQL permanecerá como índice y fuente de verdad de
+> metadata, provenance, hash, tenant y ubicación lógica.
+
+**`PostgreSQL BYTEA MUST NOT be treated as the permanent scaled storage backend.`**
+
+### Lo que este ADR NO decide / NO hace
+
+No implementa Object Storage en C4-B3 · no introduce credenciales de S3 /
+Storage ahora · no fija el esquema físico del `EvidenceBlob` (eso es C4-B3) ·
+no toca C2, Tax Engine ni consumidores existentes. Solo fija la abstracción
+para que la migración futura no requiera reescribir C4-B4, C2 ni los
+consumidores de evidencia.
