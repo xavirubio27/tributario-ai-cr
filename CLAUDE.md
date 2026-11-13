@@ -126,15 +126,57 @@ implementación.
 
 ## Estado del repositorio
 
-**Día 2 completado.** Existen tenancy con RLS, autenticación y UI de empresa. No existe
-todavía ningún dato fiscal: ni facturas, ni XML, ni Tax Engine, ni FastAPI, ni IA.
+**La fotografía vigente está en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)**
+(sección *Current Phase* y *Next Action*) — es el punto de entrada de toda sesión.
+Aquí solo va el mapa grueso, para orientarse; ante cualquier duda manda Git.
 
-**La fotografía vigente está en [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md)** — es el
-punto de entrada de toda sesión. Este documento no la duplica, para no volver a quedar
-obsoleto.
+| Componente | Estado (nov 2026) |
+|---|---|
+| Tenancy multiempresa, RLS, Auth, UI de empresa | Existe y probado |
+| FastAPI + identidad JWT → PostgreSQL → RLS, roles `app_backend` / `fiscal_backend` / `inbound_backend` | Existe y probado |
+| Dominio fiscal CR: parser XML v4.4, validación XSD, persistencia en dos fases, subida web y bandeja (C1–C3) | Existe y probado |
+| Canal de correo (C4): registro de Buzones Tribuu y adaptador Resend/Svix (C4-B1, C4-B2) | Existe **como librería**; sin endpoint de webhook montado |
+| C4-B3 — captura durable, idempotencia, RAW/adjuntos, ACK | Diseñado, **no implementado** (ADR-050 en DRAFT) |
+| Tax Engine (`tax-engine/`), Knowledge Base, AI Agent, LLM, WhatsApp | **No existen** |
+
+Fixtures reales: `backend/tests/fixtures/fiscal/real/` contiene comprobantes reales del
+propio titular del proyecto y de su empresa, versionados con su autorización expresa.
+Es una excepción consciente a la Regla 6; no añadir comprobantes de terceros ajenos.
 
 **Supabase:** proyecto de **DESARROLLO** conectado. Migraciones en `supabase/migrations/`,
 aplicadas con `supabase db push`. Config como código con `supabase config push`
 (ver Regla 15). Entorno local con Docker diferido (ADR-018).
 
 Verifica contra Git, tests y migraciones antes de asumir que algo existe (Regla 16).
+
+---
+
+## Cómo se trabaja con agentes
+
+Hasta nov 2026 el ciclo era manual: ChatGPT orquestaba, Claude Code implementaba y Codex
+auditaba, con el titular copiando y pegando entre ellos. Ahora todo ocurre aquí:
+
+| Rol | Quién | Cómo |
+|---|---|---|
+| Orquestador e implementador | La sesión principal de Claude Code | `/checkpoint <tarea>` |
+| Aprobación de diseño (el **GO**) | **Xavier**, el titular | La sesión se detiene y espera su GO explícito |
+| Auditor independiente (antes Codex) | Subagente `auditor` | `/auditar` o lo invoca `/checkpoint` |
+
+Reglas del ciclo:
+
+- **Ninguna implementación arranca sin GO explícito de Xavier** sobre el diseño. Un diseño
+  aprobado se registra (ADR o documento de diseño) antes de escribir código.
+- **Quien implementa no se audita a sí mismo.** El cierre de un checkpoint exige un
+  reporte del subagente `auditor` sin hallazgos CRÍTICO/ALTO abiertos.
+- **Commit solo tras auditoría PASS y con visto bueno de Xavier.** Nunca `push` a `main`
+  sin que él lo pida.
+- Las decisiones de negocio y los criterios tributarios los valida una persona (Xavier
+  o un contador). Los tests validan código, no criterio fiscal.
+
+### Ejecución en este entorno
+
+- La ruta local del repo contiene `:` y rompe la resolución de binarios por PATH:
+  usar `./node_modules/.bin/<bin>` y, en Python, `PYTHONPATH=./.pydeps:.`.
+- La suite completa del backend tarda ~1 h contra Supabase DEV: durante el ciclo se
+  corren **tests focalizados**; la suite completa, al cierre del checkpoint.
+- Flake ambiental conocido: `test_transaction_identity.py::test_identity_disappears_after_rollback`.
