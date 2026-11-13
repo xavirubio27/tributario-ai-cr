@@ -3,7 +3,7 @@
 > **PoC NO PRODUCTIVA.** Investiga la resolución del CRITICAL **C4B3-01**. **IaC NO APLICADA.**
 > **Ninguna persona de Claude Code puede aprovisionar esto** (sin credenciales AWS, cuenta ni
 > DNS): lo aplica y ejecuta el **propietario** tras aprobar §A. **Solo datos sintéticos.**
-> PR #1 en DRAFT; ADR aceptados intactos; ADR-047/050/016 en DRAFT.
+> PR #1 en DRAFT; ADR aceptados intactos (**ADR-047 sigue ACCEPTED**); ADR-050/016 en DRAFT.
 >
 > **Diseño unificado:** `SES receipt rule → acción S3 (MIME crudo, SSE-KMS) + notificación SNS
 > nativa (receipt.recipients + objectKey) → SQS → worker`. **Sin Lambda ni sidecar.** Ledger
@@ -189,6 +189,6 @@ terraform plan \
 ```
 
 ## H. Gobierno
-PR #1 DRAFT · ADR aceptados intactos · ADR-047/050/016 DRAFT · sin merge · **IaC no aplicada** ·
+PR #1 DRAFT · ADR aceptados intactos (ADR-047 ACCEPTED) · ADR-050/016 DRAFT · sin merge · **IaC no aplicada** ·
 sin recursos AWS/DNS · sin datos reales/PII · **C4B3-01 NO se declara cerrado** sin PoC real +
 reauditoría Codex.
