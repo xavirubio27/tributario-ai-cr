@@ -1,0 +1,8 @@
+# Evidencia local del experimento y credenciales — NUNCA al repo.
+capturas/
+retention.jsonl
+__pycache__/
+.env
+.env.*
+*.pem
+*_accesskey*
